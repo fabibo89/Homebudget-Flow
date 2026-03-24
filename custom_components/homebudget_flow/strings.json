@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HomeBudget Flow",
+        "description": "URL des Servers und dieselben Zugangsdaten wie in der Web-App.",
+        "data": {
+          "api_url": "API-URL",
+          "email": "E-Mail",
+          "password": "Passwort",
+          "scan_interval_minutes": "Aktualisierung (Minuten)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "E-Mail oder Passwort ungültig.",
+      "cannot_connect": "API nicht erreichbar oder ungültige Antwort.",
+      "missing_credentials": "E-Mail und Passwort angeben."
+    },
+    "abort": {
+      "import_failed": "Import fehlgeschlagen (Zugangsdaten oder Erreichbarkeit prüfen).",
+      "already_configured": "Für diese API-URL existiert bereits eine Konfiguration."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HomeBudget Flow",
+        "data": {
+          "scan_interval_minutes": "Aktualisierung (Minuten)"
+        }
+      }
+    }
+  }
+}

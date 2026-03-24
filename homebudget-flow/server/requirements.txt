@@ -1,0 +1,16 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+sqlalchemy[asyncio]>=2.0.36
+asyncpg>=0.29.0
+aiosqlite>=0.20.0
+pydantic-settings>=2.5.0
+python-jose[cryptography]>=3.3.0
+# bcrypt 5.x entfernt Attribute, mit denen ältere passlib-Versionen crashen; wir nutzen bcrypt direkt, bleiben aber <5 für stabile API.
+bcrypt>=4.1.3,<5
+apscheduler>=3.10.4
+httpx>=0.27.0
+python-multipart>=0.0.9
+email-validator>=2.0.0
+fints>=4,<6
+python-dotenv>=1.0.0
+cryptography>=42.0.0

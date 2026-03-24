@@ -1,0 +1,3 @@
+# FinTS client (PSD2 / HBCI Pin/TAN) — nur für devtools/fints_test.py
+fints>=4,<6
+python-dotenv>=1,<2

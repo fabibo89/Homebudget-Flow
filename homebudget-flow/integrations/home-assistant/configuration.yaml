@@ -1,0 +1,12 @@
+# Home Assistant: HomeBudget Flow
+#
+# Beispiel (in die HA-configuration.yaml einfügen oder per !include):
+#
+# homebudget_flow:
+#   api_url: "http://127.0.0.1:8000"
+#   email: "du@example.com"
+#   password: "dein-app-passwort"
+#   scan_interval:
+#     minutes: 15
+#
+# Siehe README.md in diesem Ordner.

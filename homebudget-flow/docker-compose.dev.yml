@@ -1,0 +1,24 @@
+# Entwicklung: Postgres erreichbar vom Host + API mit Hot-Reload bei Codeänderungen.
+# Nutzung:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+# Nur Datenbank (API lokal mit uvicorn --reload, siehe README):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up db
+
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    volumes:
+      - ./server/app:/app/app
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+      ]

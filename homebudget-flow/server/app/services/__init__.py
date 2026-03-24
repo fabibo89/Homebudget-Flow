@@ -1,0 +1,1 @@
+# Geschäftslogik (Sync, Zugriff)

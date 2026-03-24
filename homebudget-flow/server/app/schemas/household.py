@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+from app.db.models import AccountSyncState, BankAccount
+
+
+class HouseholdCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class HouseholdOut(BaseModel):
+    id: int
+    name: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class HouseholdUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+
+
+class AccountGroupCreate(BaseModel):
+    household_id: int
+    name: str
+    description: str = ""
+    member_user_ids: list[int] = Field(default_factory=list)
+
+
+class AccountGroupOut(BaseModel):
+    id: int
+    household_id: int
+    name: str
+    description: str
+
+    model_config = {"from_attributes": True}
+
+
+class AccountGroupUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=500)
+
+
+class BankAccountCreate(BaseModel):
+    account_group_id: int
+    provider: str = "comdirect"
+    iban: str = Field(
+        ...,
+        min_length=15,
+        max_length=34,
+        description="IBAN des Kontos (ohne Leerzeichen; gleiche Kennung wie beim FinTS-Sync).",
+    )
+    name: str
+    currency: str = "EUR"
+    credential_id: int = Field(
+        ...,
+        description="FinTS-Zugang dieses Nutzers für Saldo- und Umsatzabruf.",
+    )
+
+
+class BankAccountOut(BaseModel):
+    id: int
+    account_group_id: int
+    household_id: int
+    credential_id: Optional[int]
+    provider: str
+    name: str
+    iban: str
+    currency: str
+    balance: str
+    balance_at: Optional[datetime]
+    balance_attempt_at: Optional[datetime] = None
+    balance_success_at: Optional[datetime] = None
+    transactions_attempt_at: Optional[datetime] = None
+    transactions_success_at: Optional[datetime] = None
+    last_salary_booking_date: Optional[date] = None
+    last_salary_amount: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+def bank_account_to_out(
+    acc: BankAccount,
+    sync: Optional[AccountSyncState] = None,
+    *,
+    household_id: Optional[int] = None,
+) -> BankAccountOut:
+    """API-Antwort inkl. Sync-Zeitstempel aus ``AccountSyncState`` (optional)."""
+    hid = household_id
+    if hid is None:
+        if acc.account_group is None:
+            raise ValueError("BankAccount.account_group muss geladen sein oder household_id setzen.")
+        hid = acc.account_group.household_id
+    return BankAccountOut(
+        id=acc.id,
+        account_group_id=acc.account_group_id,
+        household_id=hid,
+        credential_id=acc.credential_id,
+        provider=acc.provider,
+        name=acc.name,
+        iban=acc.iban,
+        currency=acc.currency,
+        balance=str(acc.balance),
+        balance_at=acc.balance_at,
+        balance_attempt_at=sync.balance_attempt_at if sync else None,
+        balance_success_at=sync.balance_success_at if sync else None,
+        transactions_attempt_at=sync.transactions_attempt_at if sync else None,
+        transactions_success_at=sync.transactions_success_at if sync else None,
+        last_salary_booking_date=acc.last_salary_booking_date,
+        last_salary_amount=(
+            str(acc.last_salary_amount) if acc.last_salary_amount is not None else None
+        ),
+    )
+
+
+class BankAccountUpdate(BaseModel):
+    """Nur gesetzte Felder ändern. ``credential_id`` kann auf einen anderen FinTS-Zugang desselben Nutzers zeigen, nicht auf null."""
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    iban: Optional[str] = Field(default=None, min_length=15, max_length=34)
+    currency: Optional[str] = Field(default=None, min_length=1, max_length=8)
+    provider: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    credential_id: Optional[int] = Field(
+        default=None,
+        description="Anderer FinTS-Zugang (gleicher Nutzer); nicht leer setzen.",
+    )

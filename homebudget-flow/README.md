@@ -61,6 +61,7 @@ Navigation: Seitenleiste **Übersicht**; **Einstellungen** (Einrichtung, Bank-Zu
 | **2. Dev: API + DB in Docker** | `docker-compose.yml` + `docker-compose.dev.yml` | Bind-Mount `./server/app` → `/app/app` | Postgres + **127.0.0.1:5432** nach außen | ja (`uvicorn --reload`) |
 | **3. Dev: nur Postgres in Docker** | `docker-compose.yml` + `docker-compose.dev.yml`, nur Service `db` | API läuft **auf dem Host** (kein API-Container) | wie Zeile 2 | ja (lokales `uvicorn --reload`) |
 | **4. Alles lokal ohne Docker-DB** | — | komplett auf dem Host | SQLite (`server/homebudget.db` per `.env`) | ja |
+| **5. Produktion, externe Postgres** | `docker-compose.prod.yml` | Im Image | beliebiger Postgres (z. B. anderer Stack, gemeinsames Docker-Netz) | nein |
 
 Details zu **2** und **3**: `docker-compose.dev.yml` ergänzt den **DB-Port** `127.0.0.1:5432:5432` und beim Service `api` das Volume **`./server/app:/app/app`** sowie den Startbefehl mit **`--reload`**.
 
@@ -76,6 +77,20 @@ docker compose up --build
 ```
 
 **Browser:** **http://localhost:3003/** (Compose `3003:8000`; im Container weiter Port 8000). Postgres nur intern im Compose-Netz.
+
+---
+
+### 1b. Produktion mit externer Datenbank (`docker-compose.prod.yml`)
+
+Nur der **API**-Container; **kein** Postgres in diesem Compose. `server/.env` muss existieren und u. a. **`DATABASE_URL`**, **`JWT_SECRET`**, **`CREDENTIALS_FERNET_KEY`** setzen. `DATABASE_URL` nutzt den **Container-Hostnamen** deines Postgres (z. B. `plantbot_db`), wenn API und DB im **gleichen Docker-Netz** hängen.
+
+```bash
+cd homebudget-flow
+cp server/.env.example server/.env   # anpassen
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Netzwerkname (extern, muss bereits existieren) und Host-Port sind per Umgebung überschreibbar: **`HOMEBUDGET_EXTERNAL_NETWORK`** (Standard: `plantbot-server_plantbot_network`), **`HOMEBUDGET_PUBLISH`** (Standard: `3003`). Optional in einer `.env` neben der Compose-Datei setzen.
 
 ---
 

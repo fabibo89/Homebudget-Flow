@@ -1,0 +1,41 @@
+# Produktion: nur API-Container, Postgres läuft extern (z. B. anderer Compose-Stack).
+# Voraussetzung: server/.env mit DATABASE_URL (Host = Containername/Hostname des Postgres im gemeinsamen Docker-Netz)
+# und JWT_SECRET, CREDENTIALS_FERNET_KEY, …
+#
+# Start:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Optionale Variablen (Projekt-.env neben dieser Datei oder export):
+#   HOMEBUDGET_EXTERNAL_NETWORK  (Default: plantbot-server_plantbot_network)
+#   HOMEBUDGET_PUBLISH           (Default: 3003)  Host-Port -> Container 8000
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HOMEBUDGET_PUBLISH:-3003}:8000"
+    env_file:
+      - path: server/.env
+        required: true
+    networks:
+      - external_postgres
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+networks:
+  external_postgres:
+    external: true
+    name: ${HOMEBUDGET_EXTERNAL_NETWORK:-plantbot-server_plantbot_network}

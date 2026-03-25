@@ -48,7 +48,11 @@ class Settings(BaseSettings):
     fints_product_id: str = ""
     # Einmalige TAN für automatisierte Syncs (PhotoTAN-Ziffern); leer = Fehler bei TAN-Pflicht
     fints_tan: str = ""
-    # Optional: Sekunden vor send_tan("") bei decoupled (App-Bestätigung); nicht in der DB
+    # Decoupled (DKB-App u. a.): Polling mit send_tan(None), vgl. python-fints #183 / dkb_fints_common.
+    # TIMEOUT_SEC: Default 180 s, damit DKB auch ohne UI-Kanal (Cron) sinnvoll per Polling laufen kann.
+    fints_decoupled_poll_sec: float = 1.0
+    fints_decoupled_timeout_sec: float = 180.0
+    # Legacy: früher einmalige Wartezeit vor send_tan(""); ungenutzt, bleibt für bestehende .env
     fints_decoupled_wait_sec: int = 0
 
 

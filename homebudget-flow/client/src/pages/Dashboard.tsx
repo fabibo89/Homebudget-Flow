@@ -56,6 +56,8 @@ import {
   type Transaction,
 } from '../api/client';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
+import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
+import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import { addMonthsToIsoDate, formatDate, formatDateTime, formatMoney } from '../lib/transactionUi';
 
 /** Eine Zeile für Konto-Dropdown: Buchungsdatum + Betrag der letzten Gehalt-Buchung (Cache). */
@@ -129,6 +131,8 @@ export default function Dashboard() {
   const [saldoEditBalance, setSaldoEditBalance] = useState('');
   const [saldoEditCurrency, setSaldoEditCurrency] = useState('EUR');
   const [saldoEditRecordedAt, setSaldoEditRecordedAt] = useState('');
+  /** Ein Klappzustand für alle Konto-Karten („Zuletzt Saldo & Umsätze“). */
+  const [accountSyncDetailsExpanded, setAccountSyncDetailsExpanded] = useState(false);
 
   useEffect(() => {
     setOffset(0);
@@ -138,6 +142,8 @@ export default function Dashboard() {
     queryKey: ['accounts'],
     queryFn: fetchAccounts,
   });
+
+  const { groupLabelById } = useAccountGroupLabelMap();
 
   const txQuery = useQuery({
     queryKey: [
@@ -225,7 +231,10 @@ export default function Dashboard() {
     },
   });
 
-  const accounts = accountsQuery.data ?? [];
+  const accounts = useMemo(
+    () => sortBankAccountsForDisplay(accountsQuery.data ?? [], groupLabelById),
+    [accountsQuery.data, groupLabelById],
+  );
 
   const accountNameById = useMemo(() => {
     const m = new Map<number, string>();
@@ -462,6 +471,8 @@ export default function Dashboard() {
                       const summary = lastFullSyncLabel(a);
                       return (
                         <Accordion
+                          expanded={accountSyncDetailsExpanded}
+                          onChange={(_, expanded) => setAccountSyncDetailsExpanded(expanded)}
                           disableGutters
                           elevation={0}
                           sx={{

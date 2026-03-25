@@ -116,7 +116,14 @@ async def sync_bank_account(
         st.balance_attempt_at = _utc_now_naive()
         await session.flush()
 
-        balance, currency = await connector.fetch_balance(_iban_for_fints(acc))
+        try:
+            balance, currency = await connector.fetch_balance(_iban_for_fints(acc))
+        except Exception as e:  # noqa: BLE001
+            # Wichtig: auch bei Balance-Fehlschlag Umsätze-Versuch-Zeitstempel speichern,
+            # damit die UI/DB konsistent signalisiert: Umsätze wurden zumindest versucht
+            # (und nicht erst nach erfolgreichem Balance-Abruf).
+            st.transactions_attempt_at = _utc_now_naive()
+            raise
         acc.balance = balance
         acc.currency = currency
         t_bal = _utc_now_naive()
@@ -233,9 +240,11 @@ async def sync_bank_account(
             st.transactions_success_at = _utc_now_naive()
             st.status = SyncStatus.ok.value
     except NotImplementedError as e:
+        logger.exception("Sync[%s] failed (NotImplementedError)", acc.id)
         st.last_error = str(e)
         st.status = SyncStatus.error.value
     except Exception as e:  # noqa: BLE001
+        logger.exception("Sync[%s] failed", acc.id)
         st.last_error = repr(e)
         st.status = SyncStatus.error.value
 

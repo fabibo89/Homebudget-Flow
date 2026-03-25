@@ -361,7 +361,17 @@ export default function AccountGroupFinTsPanel({
                       <TableCell>{c.provider}</TableCell>
                       <TableCell>{c.fints_blz}</TableCell>
                       <TableCell>{c.fints_user}</TableCell>
-                      <TableCell>{c.has_pin ? 'ja' : 'nein'}</TableCell>
+                      <TableCell>
+                        {c.has_pin ? (
+                          <Typography component="span" variant="body2" color="text.secondary">
+                            ja
+                          </Typography>
+                        ) : (
+                          <Typography component="span" variant="body2" color="error" sx={{ fontWeight: 600 }}>
+                            PIN fehlt
+                          </Typography>
+                        )}
+                      </TableCell>
                       <TableCell>
                         {c.fints_verified_ok === false ? (
                           <Typography component="span" variant="body2" color="error">

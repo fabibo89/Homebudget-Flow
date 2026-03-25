@@ -26,13 +26,13 @@ import {
   Typography,
 } from '@mui/material';
 import { Edit as EditIcon } from '@mui/icons-material';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
+import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import {
   apiErrorMessage,
-  fetchAccountGroups,
   fetchAccounts,
   fetchBankCredentials,
-  fetchHouseholds,
   updateBankAccount,
   type BankAccount,
 } from '../api/client';
@@ -60,26 +60,7 @@ function formatDate(iso: string | null): string {
 
 export default function BankAccountsSettings() {
   const qc = useQueryClient();
-  const householdsQuery = useQuery({ queryKey: ['households'], queryFn: fetchHouseholds });
-  const households = householdsQuery.data ?? [];
-
-  const groupQueries = useQueries({
-    queries: households.map((h) => ({
-      queryKey: ['account-groups', h.id],
-      queryFn: () => fetchAccountGroups(h.id),
-      enabled: householdsQuery.isSuccess,
-    })),
-  });
-
-  const groupLabelById = useMemo(() => {
-    const m = new Map<number, string>();
-    households.forEach((h, hi) => {
-      for (const g of groupQueries[hi]?.data ?? []) {
-        m.set(g.id, `${h.name} · ${g.name}`);
-      }
-    });
-    return m;
-  }, [households, groupQueries]);
+  const { groupLabelById, loading: groupsLoading } = useAccountGroupLabelMap();
 
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
 
@@ -135,9 +116,11 @@ export default function BankAccountsSettings() {
     setEditOpen(true);
   }
 
-  const loading =
-    householdsQuery.isLoading || groupQueries.some((q) => q.isLoading) || accountsQuery.isLoading;
-  const rows = accountsQuery.data ?? [];
+  const loading = groupsLoading || accountsQuery.isLoading;
+  const rows = useMemo(
+    () => sortBankAccountsForDisplay(accountsQuery.data ?? [], groupLabelById),
+    [accountsQuery.data, groupLabelById],
+  );
 
   return (
     <Stack spacing={3}>

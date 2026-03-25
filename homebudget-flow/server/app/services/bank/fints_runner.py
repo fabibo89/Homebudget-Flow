@@ -1,7 +1,9 @@
 """
 Synchroner FinTS-Lauf (Comdirect): gleiche Bausteine wie fints_test.py.
 
-Hinweis: TAN/PhotoTAN – für Server-Sync `FINTS_TAN` setzen; optional decoupled: `FINTS_DECOUPLED_WAIT_SEC` in der Server-.env.
+Hinweis: TAN/PhotoTAN – `FINTS_TAN` für PhotoTAN-Sync. Decoupled (DKB-App): Polling mit
+``FINTS_DECOUPLED_POLL_SEC`` / ``FINTS_DECOUPLED_TIMEOUT_SEC``; bei Hintergrundjobs ohne UI-Kanal muss
+TIMEOUT_SEC > 0 gesetzt sein.
 """
 
 from __future__ import annotations
@@ -89,8 +91,59 @@ def _resolve_fints_field(field: str, cred: FintsCredentials | None) -> str:
     return _fints(field)
 
 
-def _resolve_decoupled_wait_sec(_cred: FintsCredentials | None) -> int:
-    return max(0, int(settings.fints_decoupled_wait_sec))
+def _decoupled_poll_interval_sec() -> float:
+    return max(0.2, float(settings.fints_decoupled_poll_sec or 1.0))
+
+
+def _decoupled_timeout_seconds(tx_tan_channel: TransactionTanChannel | None) -> float | None:
+    """None = Decoupled hier nicht ausführbar (Timeout nicht konfiguriert / Hintergrund)."""
+    t = float(settings.fints_decoupled_timeout_sec or 0)
+    if tx_tan_channel is not None:
+        return max(5.0, t if t > 0 else 180.0)
+    if t <= 0:
+        return None
+    return max(5.0, t)
+
+
+def _poll_decoupled_until_ready(
+    client: FinTS3PinTanClient,
+    r: NeedTANResponse,
+    timeout_sec: float,
+) -> Any:
+    start = time.monotonic()
+    poll = _decoupled_poll_interval_sec()
+    cur: Any = r
+    while isinstance(cur, NeedTANResponse) and cur.decoupled:
+        if (time.monotonic() - start) > timeout_sec:
+            raise RuntimeError(
+                f"FinTS decoupled: Timeout ({timeout_sec:.0f}s) — Freigabe in der Banking-App nicht rechtzeitig."
+            )
+        time.sleep(poll)
+        cur = client.send_tan(cur, None)
+    return cur
+
+
+def _resolve_decoupled_then_chip_tan(
+    client: FinTS3PinTanClient,
+    r: NeedTANResponse,
+    cred: FintsCredentials | None,
+    tx_tan_channel: TransactionTanChannel | None,
+) -> Any | None:
+    """Decoupled per Polling, danach ggf. chipTAN/PhotoTAN. None wenn Timeout nicht erlaubt."""
+    timeout = _decoupled_timeout_seconds(tx_tan_channel)
+    if timeout is None:
+        return None
+    logger.info(
+        "FinTS decoupled: Polling (timeout=%.0fs, interval=%.2fs)",
+        timeout,
+        _decoupled_poll_interval_sec(),
+    )
+    cur = _poll_decoupled_until_ready(client, r, timeout)
+    while isinstance(cur, NeedTANResponse) and not cur.decoupled:
+        tan = _prompt_tan_for_response(cur, cred, tx_tan_channel)
+        cur = client.send_tan(cur, tan)
+    return cur
+
 
 T = TypeVar("T")
 
@@ -109,26 +162,13 @@ def _get_sepa_accounts_list_resolving_tan(
         r = accounts
         rounds += 1
         if r.decoupled:
-            if tx_tan_channel is None:
-                wait = _resolve_decoupled_wait_sec(cred)
-                if wait <= 0:
-                    raise RuntimeError(
-                        "FinTS decoupled TAN (SEPA-Konten): in der Banking-App bestätigen und "
-                        "FINTS_DECOUPLED_WAIT_SEC (>0) setzen, dann erneut versuchen."
-                    )
-                logger.info("FinTS SEPA-Liste decoupled: warte %s s", wait)
-                time.sleep(wait)
-                client.send_tan(r, "")
-                continue
-            wait = _resolve_decoupled_wait_sec(cred)
-            if wait <= 0:
+            resolved = _resolve_decoupled_then_chip_tan(client, r, cred, tx_tan_channel)
+            if resolved is None:
                 raise RuntimeError(
-                    "FinTS decoupled TAN für SEPA-Kontenliste: FINTS_DECOUPLED_WAIT_SEC (>0) setzen, "
-                    "in der Banking-App bestätigen und erneut versuchen."
+                    "FinTS decoupled TAN (SEPA-Konten): Freigabe in der Banking-App und "
+                    "FINTS_DECOUPLED_TIMEOUT_SEC (>0) in der Server-.env (ohne UI-Kanal), "
+                    "oder FinTS-Test über die Web-App mit TAN-Dialog."
                 )
-            logger.info("FinTS SEPA-Liste decoupled (UI): warte %s s", wait)
-            time.sleep(wait)
-            client.send_tan(r, "")
             continue
 
         if tx_tan_channel is None:
@@ -220,15 +260,12 @@ def _resolve_init_tan(
         if not isinstance(r, NeedTANResponse):
             return
         if r.decoupled:
-            wait = _resolve_decoupled_wait_sec(cred)
-            if wait == 0:
+            cur = _resolve_decoupled_then_chip_tan(client, r, cred, tx_tan_channel)
+            if cur is None:
                 raise RuntimeError(
-                    "FinTS decoupled TAN: in der Banking-App bestätigen und "
-                    "FINTS_DECOUPLED_WAIT_SEC (Sekunden Wartezeit) setzen, dann erneut."
+                    "FinTS decoupled (Init): ohne UI-Kanal bitte FINTS_DECOUPLED_TIMEOUT_SEC (>0) setzen "
+                    "oder Zugang in der App mit FinTS-Dialog anlegen/testen."
                 )
-            logger.info("FinTS decoupled: warte %s s", wait)
-            time.sleep(wait)
-            cur: Any = client.send_tan(r, "")
         else:
             tan = _prompt_tan_for_response(r, cred, tx_tan_channel)
             cur = client.send_tan(r, tan)
@@ -448,7 +485,26 @@ def run_with_fints_session(
 def fetch_balance_sync(iban: str, cred: FintsCredentials | None = None) -> tuple[Decimal, str]:
     def inner(client: FinTS3PinTanClient) -> tuple[Decimal, str]:
         acc = _find_sepa_account(client, iban)
-        bal = client.get_balance(acc)
+        rounds = 0
+        bal: Any = None
+        while rounds < 12:
+            bal = client.get_balance(acc)
+            if not isinstance(bal, NeedTANResponse):
+                break
+            rounds += 1
+            r = bal
+            if r.decoupled:
+                resolved = _resolve_decoupled_then_chip_tan(client, r, cred, None)
+                if resolved is None:
+                    raise RuntimeError(
+                        "FinTS Saldo (decoupled): FINTS_DECOUPLED_TIMEOUT_SEC (>0) in der Server-.env setzen "
+                        "oder Abruf über die App mit TAN-Dialog."
+                    )
+                continue
+            tan = _prompt_tan_for_response(r, cred, None)
+            client.send_tan(r, tan)
+        else:
+            raise RuntimeError("FinTS: zu viele TAN-Runden beim Saldoabruf")
         if bal is None:
             raise RuntimeError("FinTS: kein Saldo in der Antwort")
         return _balance_to_decimal(bal)
@@ -482,28 +538,14 @@ def fetch_transactions_sync(
             rounds += 1
             r = txs
             if r.decoupled:
-                if tx_tan_channel is None:
-                    wait = _resolve_decoupled_wait_sec(cred)
-                    if wait <= 0:
-                        logger.error(
-                            "FinTS Umsatzabruf: decoupled TAN erforderlich, aber "
-                            "FINTS_DECOUPLED_WAIT_SEC=0 — überspringe Umsätze (Hintergrundsync). IBAN=%s",
-                            iban,
-                        )
-                        raise SkipTransactionsForAutomationTan()
-                    logger.info("FinTS Umsatzabruf decoupled: warte %s s (Hintergrundsync)", wait)
-                    time.sleep(wait)
-                    client.send_tan(r, "")
-                    continue
-                wait = _resolve_decoupled_wait_sec(cred)
-                if wait <= 0:
-                    raise RuntimeError(
-                        "FinTS decoupled TAN für Umsatzabruf: FINTS_DECOUPLED_WAIT_SEC (>0) setzen, "
-                        "in der Banking-App bestätigen und erneut synchronisieren."
+                resolved = _resolve_decoupled_then_chip_tan(client, r, cred, tx_tan_channel)
+                if resolved is None:
+                    logger.error(
+                        "FinTS Umsatzabruf decoupled: FINTS_DECOUPLED_TIMEOUT_SEC>0 nötig (Hintergrund) "
+                        "oder Sync mit UI-TAN. IBAN=%s",
+                        iban,
                     )
-                logger.info("FinTS Umsatzabruf decoupled: warte %s s (UI-Sync)", wait)
-                time.sleep(wait)
-                client.send_tan(r, "")
+                    raise SkipTransactionsForAutomationTan()
                 continue
 
             if tx_tan_channel is None:

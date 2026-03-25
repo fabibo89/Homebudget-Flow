@@ -35,6 +35,8 @@ import {
 } from '../api/client';
 import { CategorySymbolDisplay } from '../components/CategorySymbol';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
+import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
+import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import {
   addMonthsToIsoDate,
   flattenCategoriesWithMeta,
@@ -555,6 +557,8 @@ export default function Analyses() {
     queryFn: fetchAccounts,
   });
 
+  const { groupLabelById } = useAccountGroupLabelMap();
+
   const rangeOk = from <= to;
   const txQuery = useQuery({
     queryKey: ['analyses-transactions', from, to, accountFilter],
@@ -580,7 +584,10 @@ export default function Analyses() {
     setVerlaufSelectedPeriodIndex(null);
   }
 
-  const accounts = accountsQuery.data ?? [];
+  const accounts = useMemo(
+    () => sortBankAccountsForDisplay(accountsQuery.data ?? [], groupLabelById),
+    [accountsQuery.data, groupLabelById],
+  );
   const defaultCurrency = accounts[0]?.currency ?? 'EUR';
 
   const daily = useMemo(() => {

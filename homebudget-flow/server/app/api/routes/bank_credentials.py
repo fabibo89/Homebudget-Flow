@@ -39,6 +39,12 @@ from app.services.credential_crypto import decrypt_secret, encrypt_secret
 
 logger = logging.getLogger(__name__)
 
+
+def _log_fints_task_exc(exc: BaseException, msg: str) -> None:
+    """Volle Traceback zu Background-Task-Fehlern (``logger.exception`` außerhalb ``except`` ist nutzlos)."""
+    logger.error("%s: %s", msg, exc, exc_info=exc)
+
+
 router = APIRouter(prefix="/bank-credentials", tags=["bank-credentials"])
 
 
@@ -53,6 +59,20 @@ def _credential_to_out(row: BankCredential, fints_log: Optional[str] = None) -> 
         has_pin=bool(row.pin_encrypted and row.pin_encrypted.strip()),
         created_at=row.created_at,
         fints_log=fints_log,
+        fints_verified_ok=bool(getattr(row, "fints_verified_ok", True)),
+        fints_verification_message=str(getattr(row, "fints_verification_message", "") or ""),
+    )
+
+
+def _fints_verification_summary(exc: BaseException) -> str:
+    """Kurztext für DB/API (ohne kompletten Traceback)."""
+    return f"{type(exc).__name__}: {exc}"[:4000]
+
+
+def _format_fints_failure_save_log(message: str) -> str:
+    return (
+        "FinTS beim Speichern: fehlgeschlagen — Zugang wurde dennoch gespeichert (nicht verifiziert).\n\n"
+        f"{(message or '').strip()}"
     )
 
 
@@ -247,9 +267,12 @@ def _json_needs_fints_tan(job_id: str, channel: TransactionTanChannel) -> JSONRe
 
 async def _persist_bank_credential_create(
     session: AsyncSession,
-    user: CurrentUser,
+    user_id: int,
     body: BankCredentialCreate,
     accounts: list[Any],
+    *,
+    verified_ok: bool = True,
+    verification_message: str = "",
 ) -> tuple[BankCredential, str]:
     pin_plain = body.pin.strip()
     try:
@@ -259,34 +282,43 @@ async def _persist_bank_credential_create(
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
 
-    fints_log = _format_sepa_log_on_save(accounts)
+    ver_msg = (verification_message or "")[:4000]
+    fints_log = (
+        _format_sepa_log_on_save(accounts)
+        if verified_ok
+        else _format_fints_failure_save_log(ver_msg or "Unbekannter Fehler")
+    )
     row = BankCredential(
-        user_id=user.id,
+        user_id=user_id,
         provider=body.provider,
         fints_blz=body.fints_blz,
         fints_user=body.fints_user,
         fints_endpoint=body.fints_endpoint,
         pin_encrypted=enc,
+        fints_verified_ok=verified_ok,
+        fints_verification_message="" if verified_ok else ver_msg,
     )
     session.add(row)
     try:
         await session.flush()
-        await ensure_bank_accounts_from_sepa_accounts(
-            session, row, accounts, body.provision_account_group_id
-        )
+        if verified_ok and accounts:
+            await ensure_bank_accounts_from_sepa_accounts(
+                session, row, accounts, body.provision_account_group_id
+            )
         await session.commit()
         logger.info(
-            "bank_credentials created id=%s user_id=%s provision_group=%s provider=%s",
+            "bank_credentials created id=%s user_id=%s provision_group=%s provider=%s verified_ok=%s",
             row.id,
-            user.id,
+            user_id,
             body.provision_account_group_id,
             body.provider,
+            verified_ok,
         )
     except IntegrityError as e:
         await session.rollback()
         logger.info(
             "bank_credentials duplicate user_id=%s provider=%s blz=%s fints_user=%s",
-            user.id,
+            user_id,
             body.provider,
             body.fints_blz,
             body.fints_user,
@@ -306,11 +338,22 @@ async def _persist_bank_credential_update(
     credential_id: int,
     body: BankCredentialUpdate,
     accounts: list[Any],
+    *,
+    verified_ok: bool = True,
+    verification_message: str = "",
 ) -> tuple[BankCredential, str]:
     row = await _get_credential_if_access(session, user, credential_id)
     data = body.model_dump(exclude_unset=True)
 
-    fints_log = _format_sepa_log_on_save(accounts)
+    ver_msg = (verification_message or "")[:4000]
+    fints_log = (
+        _format_sepa_log_on_save(accounts)
+        if verified_ok
+        else _format_fints_failure_save_log(ver_msg or "Unbekannter Fehler")
+    )
+
+    row.fints_verified_ok = verified_ok
+    row.fints_verification_message = "" if verified_ok else ver_msg
 
     if "provider" in data and data["provider"] is not None:
         row.provider = str(data["provider"]).strip()
@@ -337,19 +380,19 @@ async def _persist_bank_credential_update(
             except ValueError as e:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
 
-    provision_gid = await _provision_group_for_credential(
-        session,
-        user,
-        row,
-        data.get("provision_account_group_id"),
-    )
-
     try:
         await session.flush()
-        await ensure_bank_accounts_from_sepa_accounts(session, row, accounts, provision_gid)
+        if verified_ok and accounts:
+            provision_gid = await _provision_group_for_credential(
+                session,
+                user,
+                row,
+                data.get("provision_account_group_id"),
+            )
+            await ensure_bank_accounts_from_sepa_accounts(session, row, accounts, provision_gid)
         await session.commit()
         await session.refresh(row)
-        logger.info("bank_credentials updated id=%s user_id=%s", row.id, user.id)
+        logger.info("bank_credentials updated id=%s user_id=%s verified_ok=%s", row.id, user.id, verified_ok)
     except IntegrityError as e:
         await session.rollback()
         raise HTTPException(
@@ -401,15 +444,46 @@ async def create_bank_credential(
     )
     channel = TransactionTanChannel()
     job_id = new_job_id()
+    user_id = user.id
+    save_on_fail = body.save_on_fints_failure
 
     async def runner() -> None:
-        accounts = await asyncio.to_thread(list_sepa_accounts_sync, cred, channel)
+        try:
+            accounts = await asyncio.to_thread(list_sepa_accounts_sync, cred, channel)
+        except BaseException as e:
+            if isinstance(e, asyncio.CancelledError):
+                raise
+            if not save_on_fail:
+                raise
+            _log_fints_task_exc(e, f"FinTS discover on create user_id={user_id} (saved unverified)")
+            msg = _fints_verification_summary(e)
+            async with SessionLocal() as s:
+                row, flog = await _persist_bank_credential_create(
+                    s, user_id, body, [], verified_ok=False, verification_message=msg
+                )
+            attach_job_result(job_id, _credential_to_out(row, fints_log=flog).model_dump())
+            return
+
         if not accounts:
-            raise ValueError("FinTS meldet keine SEPA-Konten. Zugang nicht gespeichert.")
+            if not save_on_fail:
+                raise ValueError("FinTS meldet keine SEPA-Konten. Zugang nicht gespeichert.")
+            async with SessionLocal() as s:
+                row, flog = await _persist_bank_credential_create(
+                    s,
+                    user_id,
+                    body,
+                    [],
+                    verified_ok=False,
+                    verification_message="FinTS meldet keine SEPA-Konten.",
+                )
+            attach_job_result(job_id, _credential_to_out(row, fints_log=flog).model_dump())
+            return
+
         async with SessionLocal() as s:
-            row, flog = await _persist_bank_credential_create(s, user, body, accounts)
-            out = _credential_to_out(row, fints_log=flog)
-            attach_job_result(job_id, out.model_dump())
+            row, flog = await _persist_bank_credential_create(
+                s, user_id, body, accounts, verified_ok=True, verification_message=""
+            )
+        attach_job_result(job_id, _credential_to_out(row, fints_log=flog).model_dump())
 
     task = asyncio.create_task(runner())
     register_job(
@@ -433,7 +507,10 @@ async def create_bank_credential(
                 raise exc
             if isinstance(exc, ValueError):
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-            logger.exception("FinTS discover on create user_id=%s", user.id)
+            if isinstance(exc, RuntimeError):
+                _log_fints_task_exc(exc, f"FinTS discover on create user_id={user.id} (RuntimeError)")
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+            _log_fints_task_exc(exc, f"FinTS discover on create user_id={user.id}")
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"FinTS-Prüfung fehlgeschlagen: {exc}",
@@ -504,15 +581,46 @@ async def update_bank_credential(
     cred = _build_fints_cred_plain(eff_blz, eff_user, eff_ep, pin_plain)
     channel = TransactionTanChannel()
     job_id = new_job_id()
+    save_on_fail = body.save_on_fints_failure if body.save_on_fints_failure is not None else True
 
     async def runner() -> None:
-        accounts = await asyncio.to_thread(list_sepa_accounts_sync, cred, channel)
+        try:
+            accounts = await asyncio.to_thread(list_sepa_accounts_sync, cred, channel)
+        except BaseException as e:
+            if isinstance(e, asyncio.CancelledError):
+                raise
+            if not save_on_fail:
+                raise
+            _log_fints_task_exc(e, f"FinTS discover on update id={credential_id} (saved unverified)")
+            msg = _fints_verification_summary(e)
+            async with SessionLocal() as s:
+                row_out, flog = await _persist_bank_credential_update(
+                    s, user, credential_id, body, [], verified_ok=False, verification_message=msg
+                )
+            attach_job_result(job_id, _credential_to_out(row_out, fints_log=flog).model_dump())
+            return
+
         if not accounts:
-            raise ValueError("FinTS meldet keine SEPA-Konten. Änderungen nicht gespeichert.")
+            if not save_on_fail:
+                raise ValueError("FinTS meldet keine SEPA-Konten. Änderungen nicht gespeichert.")
+            async with SessionLocal() as s:
+                row_out, flog = await _persist_bank_credential_update(
+                    s,
+                    user,
+                    credential_id,
+                    body,
+                    [],
+                    verified_ok=False,
+                    verification_message="FinTS meldet keine SEPA-Konten.",
+                )
+            attach_job_result(job_id, _credential_to_out(row_out, fints_log=flog).model_dump())
+            return
+
         async with SessionLocal() as s:
-            row_out, flog = await _persist_bank_credential_update(s, user, credential_id, body, accounts)
-            out = _credential_to_out(row_out, fints_log=flog)
-            attach_job_result(job_id, out.model_dump())
+            row_out, flog = await _persist_bank_credential_update(
+                s, user, credential_id, body, accounts, verified_ok=True, verification_message=""
+            )
+        attach_job_result(job_id, _credential_to_out(row_out, fints_log=flog).model_dump())
 
     task = asyncio.create_task(runner())
     register_job(
@@ -536,7 +644,10 @@ async def update_bank_credential(
                 raise exc
             if isinstance(exc, ValueError):
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-            logger.exception("FinTS discover on update id=%s", credential_id)
+            if isinstance(exc, RuntimeError):
+                _log_fints_task_exc(exc, f"FinTS discover on update id={credential_id} (RuntimeError)")
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+            _log_fints_task_exc(exc, f"FinTS discover on update id={credential_id}")
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"FinTS-Prüfung fehlgeschlagen: {exc}",

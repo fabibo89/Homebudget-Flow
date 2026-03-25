@@ -69,7 +69,57 @@ export async function patchCurrentUser(body: { all_household_transactions: boole
 
 // --- Haushalt / Kontogruppen / Bankkonten ---
 
-export type Household = { id: number; name: string; created_at: string };
+export type Household = {
+  id: number;
+  name: string;
+  created_at: string;
+  my_role: 'owner' | 'member';
+};
+
+export type HouseholdInvitationIncoming = {
+  id: number;
+  household_id: number;
+  household_name: string;
+  inviter_email: string;
+  invitee_email: string;
+  created_at: string;
+  expires_at: string;
+};
+
+export type HouseholdInvitationOutgoing = {
+  id: number;
+  invitee_email: string;
+  created_at: string;
+  expires_at: string;
+};
+
+export async function fetchIncomingHouseholdInvitations(): Promise<HouseholdInvitationIncoming[]> {
+  const { data } = await api.get<HouseholdInvitationIncoming[]>('/api/households/invitations/incoming');
+  return data;
+}
+
+export async function fetchOutgoingHouseholdInvitations(householdId: number): Promise<HouseholdInvitationOutgoing[]> {
+  const { data } = await api.get<HouseholdInvitationOutgoing[]>(
+    `/api/households/${householdId}/invitations`,
+  );
+  return data;
+}
+
+export async function inviteHouseholdMember(householdId: number, email: string): Promise<HouseholdInvitationOutgoing> {
+  const { data } = await api.post<HouseholdInvitationOutgoing>(`/api/households/${householdId}/invitations`, {
+    email,
+  });
+  return data;
+}
+
+export async function acceptHouseholdInvitation(invitationId: number): Promise<Household> {
+  const { data } = await api.post<Household>(`/api/households/invitations/${invitationId}/accept`);
+  return data;
+}
+
+export async function deleteHouseholdInvitation(invitationId: number): Promise<void> {
+  await api.delete(`/api/households/invitations/${invitationId}`);
+}
 
 export async function fetchHouseholds(): Promise<Household[]> {
   const { data } = await api.get<Household[]>('/api/households');
@@ -288,6 +338,16 @@ export async function updateCategoryRule(
   return data;
 }
 
+export async function reverseCategoryRule(
+  householdId: number,
+  ruleId: number,
+): Promise<CategoryRuleCreatedOut> {
+  const { data } = await api.post<CategoryRuleCreatedOut>(
+    `/api/households/${householdId}/category-rules/${ruleId}/reverse`,
+  );
+  return data;
+}
+
 export async function bulkPatchTransactionCategories(body: {
   items: { transaction_id: number; category_id: number }[];
 }): Promise<{ updated: number }> {
@@ -413,6 +473,22 @@ export async function fetchBalanceSnapshots(
     { params: { limit } },
   );
   return data;
+}
+
+export async function updateBalanceSnapshot(
+  bankAccountId: number,
+  snapshotId: number,
+  body: { balance?: string; currency?: string; recorded_at?: string },
+): Promise<BalanceSnapshotOut> {
+  const { data } = await api.patch<BalanceSnapshotOut>(
+    `/api/accounts/${bankAccountId}/balance-snapshots/${snapshotId}`,
+    body,
+  );
+  return data;
+}
+
+export async function deleteBalanceSnapshot(bankAccountId: number, snapshotId: number): Promise<void> {
+  await api.delete(`/api/accounts/${bankAccountId}/balance-snapshots/${snapshotId}`);
 }
 
 // --- Transaktionen ---
@@ -584,6 +660,9 @@ export type BankCredential = {
   created_at: string;
   /** Nur nach POST/PATCH: Log des FinTS-Abrufs */
   fints_log?: string | null;
+  /** False, wenn der Zugang ohne erfolgreiche FinTS-Prüfung gespeichert wurde */
+  fints_verified_ok?: boolean;
+  fints_verification_message?: string;
 };
 
 /** Alle FinTS-Zugänge des angemeldeten Nutzers (nicht an Kontogruppe gebunden). */
@@ -602,6 +681,8 @@ export async function createBankCredential(body: {
   fints_user: string;
   fints_endpoint?: string;
   pin: string;
+  /** Default true: bei FinTS-Fehler/leerer SEPA-Liste Zugang trotzdem speichern (nicht verifiziert) */
+  save_on_fints_failure?: boolean;
 }): Promise<BankCredentialOrNeedsTan> {
   const res = await api.post<unknown>(
     '/api/bank-credentials',
@@ -612,6 +693,7 @@ export async function createBankCredential(body: {
       fints_user: body.fints_user,
       fints_endpoint: body.fints_endpoint ?? 'https://fints.comdirect.de/fints',
       pin: body.pin,
+      save_on_fints_failure: body.save_on_fints_failure ?? true,
     },
     { validateStatus: (s) => s === 200 || s === 202 },
   );
@@ -633,6 +715,7 @@ export async function updateBankCredential(
     fints_endpoint?: string;
     /** Nur setzen, wenn eine neue PIN gespeichert werden soll */
     pin?: string;
+    save_on_fints_failure?: boolean;
   },
 ): Promise<BankCredentialOrNeedsTan> {
   const res = await api.patch<unknown>(`/api/bank-credentials/${id}`, body, {

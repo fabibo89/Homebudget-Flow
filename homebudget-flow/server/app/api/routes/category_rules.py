@@ -43,6 +43,7 @@ from app.services.category_rules import (
     apply_category_rules_to_uncategorized,
     build_rule_allowed_bank_account_ids,
     list_category_rule_overwrite_candidates,
+    reverse_category_rule_assignments,
 )
 from app.services.salary_cache import refresh_salary_cache_for_household
 from app.services.default_income_categories import (
@@ -475,4 +476,45 @@ async def update_category_rule(
         transactions_updated=n_updated,
         category_overwrite_candidates=overwrite_candidates,
         category_overwrite_truncated=overwrite_truncated,
+    )
+
+
+@router.post(
+    "/{household_id}/category-rules/{rule_id}/reverse",
+    response_model=CategoryRuleCreatedOut,
+)
+async def reverse_category_rule(
+    household_id: int,
+    rule_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> CategoryRuleCreatedOut:
+    """Setzt Kategorie auf NULL für alle Buchungen, die in diese Regel fallen."""
+    if not await user_has_household(session, user.id, household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+
+    row = await session.get(CategoryRule, rule_id)
+    if row is None or row.household_id != household_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Regel nicht gefunden.")
+
+    u = await session.get(User, user.id)
+    if u is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Nicht angemeldet.")
+
+    n_updated = await reverse_category_rule_assignments(
+        session,
+        user=u,
+        household_id=household_id,
+        rule=row,
+    )
+
+    await session.commit()
+    await session.refresh(row)
+    umap = await _user_map_by_ids(session, {row.created_by_user_id} if row.created_by_user_id else set())
+    base = _rule_to_out(row, umap)
+    return CategoryRuleCreatedOut(
+        **base.model_dump(),
+        transactions_updated=n_updated,
+        category_overwrite_candidates=[],
+        category_overwrite_truncated=False,
     )

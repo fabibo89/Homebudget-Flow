@@ -31,6 +31,7 @@ import {
   apiErrorMessage,
   createCategoryRule,
   updateCategoryRule,
+  reverseCategoryRule,
   fetchCategories,
   type CategoryRuleCondition,
   type CategoryRuleCreatedOut,
@@ -268,7 +269,17 @@ export default function CreateCategoryRuleDialog({
     },
   });
 
-  const busy = createRuleMut.isPending || updateRuleMut.isPending || applyRuleMut.isPending;
+  const reverseRuleMut = useMutation({
+    mutationFn: (args: { householdId: number; ruleId: number }) =>
+      reverseCategoryRule(args.householdId, args.ruleId),
+    onSuccess: (data, variables) => {
+      invalidateAfterRuleChange(variables.householdId);
+      onRuleApplied?.(data);
+    },
+  });
+
+  const busy =
+    createRuleMut.isPending || updateRuleMut.isPending || applyRuleMut.isPending || reverseRuleMut.isPending;
 
   const previewConditions = useMemo(() => {
     if (!ruleFormHasSubmitPayload(rulePattern, amountMin, amountMax)) return [];
@@ -286,6 +297,7 @@ export default function CreateCategoryRuleDialog({
     createRuleMut.reset();
     updateRuleMut.reset();
     applyRuleMut.reset();
+    reverseRuleMut.reset();
     onClose();
   }
 
@@ -602,6 +614,9 @@ export default function CreateCategoryRuleDialog({
                 {applyRuleMut.isError ? (
                   <Alert severity="error">{apiErrorMessage(applyRuleMut.error)}</Alert>
                 ) : null}
+                {reverseRuleMut.isError ? (
+                  <Alert severity="error">{apiErrorMessage(reverseRuleMut.error)}</Alert>
+                ) : null}
               </>
             )}
           </Stack>
@@ -647,6 +662,25 @@ export default function CreateCategoryRuleDialog({
             }}
           >
             {applyRuleMut.isPending ? 'Wird angewendet…' : 'Regel anwenden'}
+          </Button>
+        ) : null}
+        {isEditing ? (
+          <Button
+            variant="outlined"
+            color="warning"
+            disabled={busy || householdId == null || !editingRule}
+            onClick={() => {
+              if (householdId == null || !editingRule) return;
+              if (
+                !window.confirm(
+                  'Alle Buchungen, die aktuell in diese Regel fallen, werden auf „keine Kategorie“ zurückgesetzt. Die Regel bleibt bestehen. Fortfahren?',
+                )
+              )
+                return;
+              reverseRuleMut.mutate({ householdId, ruleId: editingRule.id });
+            }}
+          >
+            {reverseRuleMut.isPending ? 'Wird zurückgesetzt…' : 'Buchungen zurücksetzen (Kategorie entfernen)'}
           </Button>
         ) : null}
         <Button

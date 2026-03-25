@@ -96,8 +96,9 @@ async def legacy_ui_redirect():
 
 
 @app.get("/{full_path:path}")
-async def spa_fallback(_full_path: str):
+async def spa_fallback(full_path: str):
     """Alle übrigen Pfade → SPA (API/Doku/Assets sind spezifischere Routen und zuerst registriert)."""
+    _ = full_path
     if os.path.isfile(_ui_index):
         return FileResponse(_ui_index)
     raise HTTPException(status_code=404, detail="UI nicht gebaut")

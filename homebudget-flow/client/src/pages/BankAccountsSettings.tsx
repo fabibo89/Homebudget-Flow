@@ -43,6 +43,11 @@ function formatMoney(amount: string, currency: string): string {
   return new Intl.NumberFormat('de-DE', { style: 'currency', currency: currency || 'EUR' }).format(n);
 }
 
+function moneyIsNegative(amount: string): boolean {
+  const n = Number(amount);
+  return !Number.isNaN(n) && n < 0;
+}
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   try {
@@ -186,7 +191,12 @@ export default function BankAccountsSettings() {
                       {a.iban}
                     </Typography>
                   </TableCell>
-                  <TableCell align="right">{formatMoney(a.balance, a.currency)}</TableCell>
+                  <TableCell
+                    align="right"
+                    sx={{ fontVariantNumeric: 'tabular-nums', color: moneyIsNegative(a.balance) ? 'error.main' : 'text.primary' }}
+                  >
+                    {formatMoney(a.balance, a.currency)}
+                  </TableCell>
                   <TableCell align="right">
                     <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => openEdit(a)}>
                       Bearbeiten

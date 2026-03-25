@@ -77,6 +77,40 @@ async def _ensure_category_rules_applies_to_household(conn) -> None:
         )
 
 
+async def _ensure_bank_credentials_fints_verification(conn) -> None:
+    """FinTS-Verifikationsstatus je Zugang (Legacy-Zeilen: verifiziert = ok)."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(bank_credentials)"))
+        cols = [row[1] for row in r.fetchall()]
+        if not cols:
+            return
+        if "fints_verified_ok" not in cols:
+            await conn.execute(
+                text("ALTER TABLE bank_credentials ADD COLUMN fints_verified_ok BOOLEAN NOT NULL DEFAULT 1"),
+            )
+        r2 = await conn.execute(text("PRAGMA table_info(bank_credentials)"))
+        cols2 = [row[1] for row in r2.fetchall()]
+        if cols2 and "fints_verification_message" not in cols2:
+            await conn.execute(
+                text("ALTER TABLE bank_credentials ADD COLUMN fints_verification_message TEXT NOT NULL DEFAULT ''"),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_credentials ADD COLUMN IF NOT EXISTS fints_verified_ok "
+                "BOOLEAN NOT NULL DEFAULT TRUE",
+            ),
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_credentials ADD COLUMN IF NOT EXISTS fints_verification_message "
+                "TEXT NOT NULL DEFAULT ''",
+            ),
+        )
+
+
 async def _ensure_bank_accounts_last_salary_cache(conn) -> None:
     """Cache-Spalten für letzte Gehalt-Buchung (Standardkategorie)."""
     url = settings.database_url.lower()
@@ -289,6 +323,7 @@ async def init_db() -> None:
         await _ensure_category_rules_created_by_user_id(conn)
         await _ensure_category_rules_applies_to_household(conn)
         await _ensure_bank_accounts_last_salary_cache(conn)
+        await _ensure_bank_credentials_fints_verification(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)
 
 

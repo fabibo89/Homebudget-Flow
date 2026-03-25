@@ -3,7 +3,25 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AccountGroup, AccountGroupMember, BankAccount, HouseholdMember, User
+from app.db.models import (
+    AccountGroup,
+    AccountGroupMember,
+    BankAccount,
+    HouseholdMember,
+    HouseholdMemberRole,
+    User,
+)
+
+
+async def user_is_household_owner(session: AsyncSession, user_id: int, household_id: int) -> bool:
+    r = await session.execute(
+        select(HouseholdMember.id).where(
+            HouseholdMember.user_id == user_id,
+            HouseholdMember.household_id == household_id,
+            HouseholdMember.role == HouseholdMemberRole.owner.value,
+        )
+    )
+    return r.scalar_one_or_none() is not None
 
 
 async def user_has_household(session: AsyncSession, user_id: int, household_id: int) -> bool:

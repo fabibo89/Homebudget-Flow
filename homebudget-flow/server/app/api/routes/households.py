@@ -1,7 +1,10 @@
+from datetime import datetime, timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser
 from app.db.models import (
@@ -10,8 +13,10 @@ from app.db.models import (
     BankAccount,
     BankCredential,
     Household,
+    HouseholdInvitation,
     HouseholdMember,
     HouseholdMemberRole,
+    User,
 )
 from app.db.session import get_session
 from app.schemas.household import (
@@ -21,15 +26,117 @@ from app.schemas.household import (
     BankAccountCreate,
     BankAccountOut,
     HouseholdCreate,
+    HouseholdInvitationCreate,
+    HouseholdInvitationOutgoingOut,
+    HouseholdInvitationOut,
     HouseholdOut,
     HouseholdUpdate,
     bank_account_to_out,
+    household_to_out,
 )
-from app.services.access import user_can_access_account_group, user_has_household
+from app.services.access import user_can_access_account_group, user_has_household, user_is_household_owner
 from app.services.bank_account_provision import normalize_iban
 from app.services.default_income_categories import ensure_income_category_tree
 
 router = APIRouter(prefix="/households", tags=["households"])
+
+_INVITE_VALID_DAYS = 14
+
+
+@router.get("/invitations/incoming", response_model=list[HouseholdInvitationOut])
+async def list_incoming_invitations(
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> list[HouseholdInvitationOut]:
+    now = datetime.utcnow()
+    r = await session.execute(
+        select(HouseholdInvitation)
+        .where(
+            HouseholdInvitation.invitee_user_id == user.id,
+            HouseholdInvitation.expires_at > now,
+        )
+        .options(
+            selectinload(HouseholdInvitation.household),
+            selectinload(HouseholdInvitation.inviter),
+            selectinload(HouseholdInvitation.invitee),
+        )
+    )
+    rows = r.scalars().all()
+    return [
+        HouseholdInvitationOut(
+            id=inv.id,
+            household_id=inv.household_id,
+            household_name=inv.household.name,
+            inviter_email=inv.inviter.email,
+            invitee_email=inv.invitee.email,
+            created_at=inv.created_at,
+            expires_at=inv.expires_at,
+        )
+        for inv in rows
+    ]
+
+
+@router.post("/invitations/{invitation_id}/accept", response_model=HouseholdOut)
+async def accept_household_invitation(
+    invitation_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> HouseholdOut:
+    r_inv = await session.execute(
+        select(HouseholdInvitation)
+        .where(HouseholdInvitation.id == invitation_id)
+        .options(selectinload(HouseholdInvitation.household)),
+    )
+    inv = r_inv.scalar_one_or_none()
+    if inv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Einladung nicht gefunden.")
+    if inv.invitee_user_id != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Diese Einladung gilt nicht für dich.")
+    now = datetime.utcnow()
+    if inv.expires_at <= now:
+        await session.delete(inv)
+        await session.commit()
+        raise HTTPException(status.HTTP_410_GONE, "Die Einladung ist abgelaufen.")
+    r_m = await session.execute(
+        select(HouseholdMember.id).where(
+            HouseholdMember.user_id == user.id,
+            HouseholdMember.household_id == inv.household_id,
+        )
+    )
+    if r_m.scalar_one_or_none() is not None:
+        await session.delete(inv)
+        await session.commit()
+        raise HTTPException(status.HTTP_409_CONFLICT, "Du bist bereits Mitglied dieses Haushalts.")
+    session.add(
+        HouseholdMember(
+            household_id=inv.household_id,
+            user_id=user.id,
+            role=HouseholdMemberRole.member.value,
+        )
+    )
+    await session.delete(inv)
+    await session.commit()
+    return household_to_out(inv.household, HouseholdMemberRole.member.value)
+
+
+@router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def decline_or_revoke_invitation(
+    invitation_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    inv = await session.get(HouseholdInvitation, invitation_id)
+    if inv is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Einladung nicht gefunden.")
+    if inv.invitee_user_id == user.id:
+        await session.delete(inv)
+        await session.commit()
+        return
+    if await user_is_household_owner(session, user.id, inv.household_id):
+        await session.delete(inv)
+        await session.commit()
+        return
+    raise HTTPException(status.HTTP_403_FORBIDDEN, "Keine Berechtigung für diese Einladung.")
 
 
 @router.delete("/account-groups/{account_group_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -92,18 +199,18 @@ async def create_household(
     await ensure_income_category_tree(session, h.id, created_by_user_id=user.id)
     await session.commit()
     await session.refresh(h)
-    return HouseholdOut.model_validate(h)
+    return household_to_out(h, HouseholdMemberRole.owner.value)
 
 
 @router.get("", response_model=list[HouseholdOut])
 async def list_households(user: CurrentUser, session: AsyncSession = Depends(get_session)) -> list[HouseholdOut]:
     r = await session.execute(
-        select(Household)
+        select(Household, HouseholdMember)
         .join(HouseholdMember)
-        .where(HouseholdMember.user_id == user.id)
+        .where(HouseholdMember.user_id == user.id),
     )
-    rows = r.scalars().all()
-    return [HouseholdOut.model_validate(x) for x in rows]
+    rows = r.all()
+    return [household_to_out(h, hm.role) for h, hm in rows]
 
 
 @router.patch("/account-groups/{account_group_id}", response_model=AccountGroupOut)
@@ -151,7 +258,104 @@ async def update_household(
         h.name = n
     await session.commit()
     await session.refresh(h)
-    return HouseholdOut.model_validate(h)
+    hm_r = await session.execute(
+        select(HouseholdMember.role).where(
+            HouseholdMember.user_id == user.id,
+            HouseholdMember.household_id == household_id,
+        ),
+    )
+    my_role = hm_r.scalar_one()
+    return household_to_out(h, my_role)
+
+
+@router.post("/{household_id}/invitations", response_model=HouseholdInvitationOutgoingOut)
+async def create_household_invitation(
+    household_id: int,
+    body: HouseholdInvitationCreate,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> HouseholdInvitationOutgoingOut:
+    if not await user_is_household_owner(session, user.id, household_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Nur der Haushaltsbesitzer kann andere Personen einladen.",
+        )
+    email_norm = body.email.strip().lower()
+    if not email_norm:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "E-Mail darf nicht leer sein.")
+    r_u = await session.execute(select(User).where(func.lower(User.email) == email_norm))
+    invitee = r_u.scalar_one_or_none()
+    if invitee is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Kein Benutzer mit dieser E-Mail — die Person braucht zuerst ein Konto.",
+        )
+    if invitee.id == user.id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Du kannst dich nicht selbst einladen.")
+    r_mem = await session.execute(
+        select(HouseholdMember.id).where(
+            HouseholdMember.user_id == invitee.id,
+            HouseholdMember.household_id == household_id,
+        ),
+    )
+    if r_mem.scalar_one_or_none() is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Diese Person ist bereits Mitglied dieses Haushalts.")
+    if await session.get(Household, household_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Haushalt nicht gefunden.")
+    exp = datetime.utcnow() + timedelta(days=_INVITE_VALID_DAYS)
+    inv = HouseholdInvitation(
+        household_id=household_id,
+        inviter_user_id=user.id,
+        invitee_user_id=invitee.id,
+        expires_at=exp,
+    )
+    session.add(inv)
+    try:
+        await session.commit()
+        await session.refresh(inv)
+    except IntegrityError as e:
+        await session.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Für diese Person liegt bereits eine ausstehende Einladung vor.",
+        ) from e
+    return HouseholdInvitationOutgoingOut(
+        id=inv.id,
+        invitee_email=invitee.email,
+        created_at=inv.created_at,
+        expires_at=inv.expires_at,
+    )
+
+
+@router.get("/{household_id}/invitations", response_model=list[HouseholdInvitationOutgoingOut])
+async def list_outgoing_invitations(
+    household_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> list[HouseholdInvitationOutgoingOut]:
+    if not await user_is_household_owner(session, user.id, household_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Nur der Haushaltsbesitzer sieht ausstehende Einladungen.",
+        )
+    now = datetime.utcnow()
+    r = await session.execute(
+        select(HouseholdInvitation, User)
+        .join(User, User.id == HouseholdInvitation.invitee_user_id)
+        .where(
+            HouseholdInvitation.household_id == household_id,
+            HouseholdInvitation.expires_at > now,
+        ),
+    )
+    return [
+        HouseholdInvitationOutgoingOut(
+            id=inv.id,
+            invitee_email=u.email,
+            created_at=inv.created_at,
+            expires_at=inv.expires_at,
+        )
+        for inv, u in r.all()
+    ]
 
 
 @router.get("/{household_id}/account-groups", response_model=list[AccountGroupOut])

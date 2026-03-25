@@ -78,6 +78,9 @@ class BankCredential(Base):
     fints_endpoint: Mapped[str] = mapped_column(String(512), default="https://fints.comdirect.de/fints")
     pin_encrypted: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Letzte FinTS-Prüfung beim Speichern (SEPA-Liste); False = Zugang ohne erfolgreiche Verifikation gespeichert.
+    fints_verified_ok: Mapped[bool] = mapped_column(Boolean, default=True)
+    fints_verification_message: Mapped[str] = mapped_column(Text, default="")
 
     user: Mapped[User] = relationship(back_populates="bank_credentials")
     bank_accounts: Mapped[list["BankAccount"]] = relationship(back_populates="credential")
@@ -113,6 +116,30 @@ class Household(Base):
         back_populates="household",
         cascade="all, delete-orphan",
     )
+    invitations: Mapped[list["HouseholdInvitation"]] = relationship(
+        back_populates="household",
+        cascade="all, delete-orphan",
+    )
+
+
+class HouseholdInvitation(Base):
+    """Einladung eines registrierten Nutzers in einen Haushalt (nur Einladender/Eingeladener)."""
+
+    __tablename__ = "household_invitations"
+    __table_args__ = (
+        UniqueConstraint("household_id", "invitee_user_id", name="uq_hh_invite_one_pending"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    inviter_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    invitee_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+    household: Mapped[Household] = relationship(back_populates="invitations")
+    inviter: Mapped["User"] = relationship(foreign_keys=[inviter_user_id])
+    invitee: Mapped["User"] = relationship(foreign_keys=[invitee_user_id])
 
 
 class HouseholdMember(Base):

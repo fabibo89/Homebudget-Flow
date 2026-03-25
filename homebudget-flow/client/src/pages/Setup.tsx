@@ -32,20 +32,26 @@ import {
   Add as AddIcon,
   DeleteOutline as DeleteOutlineIcon,
   EditOutlined as EditOutlinedIcon,
+  PersonAddAlt1 as PersonAddAlt1Icon,
 } from '@mui/icons-material';
 import { Link as RouterLink } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  acceptHouseholdInvitation,
   apiErrorMessage,
   createAccountGroup,
   createBankAccount,
   createHousehold,
   deleteAccountGroup,
   deleteHousehold,
+  deleteHouseholdInvitation,
   fetchAccountGroups,
   fetchAccounts,
   fetchBankCredentials,
   fetchHouseholds,
+  fetchIncomingHouseholdInvitations,
+  fetchOutgoingHouseholdInvitations,
+  inviteHouseholdMember,
   updateAccountGroup,
   updateHousehold,
   type BankAccount,
@@ -115,6 +121,11 @@ export default function Setup() {
 
   const householdsQuery = useQuery({ queryKey: ['households'], queryFn: fetchHouseholds });
 
+  const incomingInvQuery = useQuery({
+    queryKey: ['household-invitations-incoming'],
+    queryFn: fetchIncomingHouseholdInvitations,
+  });
+
   const [hhDialogOpen, setHhDialogOpen] = useState(false);
   const [editingHouseholdId, setEditingHouseholdId] = useState<number | null>(null);
   const [hhName, setHhName] = useState('');
@@ -142,12 +153,23 @@ export default function Setup() {
   const [bankError, setBankError] = useState('');
 
   const households = householdsQuery.data ?? [];
-  const [expandedHh, setExpandedHh] = useState<number | null>(null);
+  const [inviteEmailByHh, setInviteEmailByHh] = useState<Record<number, string>>({});
+  const [inviteErrorByHh, setInviteErrorByHh] = useState<Record<number, string>>({});
 
-  const groupsQuery = useQuery({
-    queryKey: ['account-groups', expandedHh],
-    queryFn: () => fetchAccountGroups(expandedHh!),
-    enabled: expandedHh != null,
+  const groupQueries = useQueries({
+    queries: households.map((h) => ({
+      queryKey: ['account-groups', h.id],
+      queryFn: () => fetchAccountGroups(h.id),
+      enabled: householdsQuery.isSuccess && households.length > 0,
+    })),
+  });
+
+  const outgoingInvQueries = useQueries({
+    queries: households.map((h) => ({
+      queryKey: ['household-invitations-out', h.id],
+      queryFn: () => fetchOutgoingHouseholdInvitations(h.id),
+      enabled: householdsQuery.isSuccess && households.length > 0 && h.my_role === 'owner',
+    })),
   });
 
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
@@ -161,16 +183,12 @@ export default function Setup() {
       }
       return createHousehold(name);
     },
-    onSuccess: (h) => {
-      const expandNewHousehold = editingHouseholdId === null;
+    onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['households'] });
       setHhDialogOpen(false);
       setEditingHouseholdId(null);
       setHhName('');
       setHhError('');
-      if (expandNewHousehold) {
-        setExpandedHh(h.id);
-      }
     },
     onError: (e) => setHhError(apiErrorMessage(e)),
   });
@@ -198,9 +216,6 @@ export default function Setup() {
       setGroupName('');
       setGroupDesc('');
       setGroupError('');
-      if (wasCreate && hhId !== '') {
-        setExpandedHh(Number(hhId));
-      }
     },
     onError: (e) => setGroupError(apiErrorMessage(e)),
   });
@@ -213,7 +228,6 @@ export default function Setup() {
       void qc.invalidateQueries({ queryKey: ['transactions'] });
       void qc.invalidateQueries({ queryKey: ['sync-overview'] });
       void qc.invalidateQueries({ queryKey: ['bank-credentials'] });
-      setExpandedHh(null);
     },
     onError: (e) => window.alert(apiErrorMessage(e)),
   });
@@ -221,9 +235,7 @@ export default function Setup() {
   const deleteGroupMut = useMutation({
     mutationFn: deleteAccountGroup,
     onSuccess: () => {
-      if (expandedHh != null) {
-        void qc.invalidateQueries({ queryKey: ['account-groups', expandedHh] });
-      }
+      void qc.invalidateQueries({ queryKey: ['account-groups'] });
       void qc.invalidateQueries({ queryKey: ['households'] });
       void qc.invalidateQueries({ queryKey: ['accounts'] });
       void qc.invalidateQueries({ queryKey: ['transactions'] });
@@ -267,13 +279,46 @@ export default function Setup() {
     onError: (e) => setBankError(apiErrorMessage(e)),
   });
 
+  const acceptInvMut = useMutation({
+    mutationFn: acceptHouseholdInvitation,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['households'] });
+      void qc.invalidateQueries({ queryKey: ['household-invitations-incoming'] });
+      void qc.invalidateQueries({ queryKey: ['household-invitations-out'] });
+      void qc.invalidateQueries({ queryKey: ['account-groups'] });
+    },
+  });
+
+  const deleteInvMut = useMutation({
+    mutationFn: deleteHouseholdInvitation,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['household-invitations-incoming'] });
+      void qc.invalidateQueries({ queryKey: ['household-invitations-out'] });
+    },
+  });
+
+  const inviteMut = useMutation({
+    mutationFn: ({ householdId, email }: { householdId: number; email: string }) =>
+      inviteHouseholdMember(householdId, email),
+    onSuccess: (_, v) => {
+      void qc.invalidateQueries({ queryKey: ['household-invitations-out', v.householdId] });
+      setInviteEmailByHh((prev) => ({ ...prev, [v.householdId]: '' }));
+      setInviteErrorByHh((prev) => {
+        const n = { ...prev };
+        delete n[v.householdId];
+        return n;
+      });
+    },
+    onError: (e, v) =>
+      setInviteErrorByHh((prev) => ({ ...prev, [v.householdId]: apiErrorMessage(e) })),
+  });
+
   const bankCredsForDialog = useQuery({
     queryKey: ['bank-credentials'],
     queryFn: () => fetchBankCredentials(),
     enabled: bankDialog.open && bankDialog.accountGroupId != null,
   });
   const creds = bankCredsForDialog.data ?? [];
-  const groupList = groupsQuery.data ?? [];
 
   return (
     <Stack spacing={3}>
@@ -287,6 +332,42 @@ export default function Setup() {
           Anmeldung über <strong>Bankkonto hinzufügen</strong>. Anschließend in der Übersicht synchronisieren.
         </Typography>
       </Box>
+
+      {incomingInvQuery.isError ? (
+        <Alert severity="warning">{apiErrorMessage(incomingInvQuery.error)}</Alert>
+      ) : null}
+      {(incomingInvQuery.data ?? []).length > 0 ? (
+        <Stack spacing={1.5}>
+          {(incomingInvQuery.data ?? []).map((inv) => (
+            <Alert
+              key={inv.id}
+              severity="info"
+              action={
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={() => acceptInvMut.mutate(inv.id)}
+                    disabled={acceptInvMut.isPending}
+                  >
+                    Annehmen
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => deleteInvMut.mutate(inv.id)}
+                    disabled={deleteInvMut.isPending}
+                  >
+                    Ablehnen
+                  </Button>
+                </Stack>
+              }
+            >
+              <strong>{inv.inviter_email}</strong> lädt dich in den Haushalt „<strong>{inv.household_name}</strong>“
+              ein.
+            </Alert>
+          ))}
+        </Stack>
+      ) : null}
 
       <Box>
         <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap" useFlexGap sx={{ mb: 2 }}>
@@ -329,7 +410,11 @@ export default function Setup() {
           <Alert severity="info">Lege zuerst einen Haushalt an (z. B. „Familie“).</Alert>
         ) : (
           <Stack spacing={2}>
-            {households.map((h) => (
+            {households.map((h, i) => {
+              const gq = groupQueries[i];
+              const groupList = gq?.data ?? [];
+              const oq = outgoingInvQueries[i];
+              return (
               <Card key={h.id} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
                 <CardContent>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ sm: 'center' }}>
@@ -342,13 +427,6 @@ export default function Setup() {
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
-                      <Button
-                        size="small"
-                        variant={expandedHh === h.id ? 'contained' : 'outlined'}
-                        onClick={() => setExpandedHh(expandedHh === h.id ? null : h.id)}
-                      >
-                        {expandedHh === h.id ? 'Kontogruppen ausblenden' : 'Kontogruppen anzeigen'}
-                      </Button>
                       <Tooltip title="Haushalt umbenennen">
                         <span>
                           <IconButton
@@ -367,13 +445,21 @@ export default function Setup() {
                           </IconButton>
                         </span>
                       </Tooltip>
-                      <Tooltip title="Haushalt löschen (nur Besitzer; Kontogruppen und zugehörige Daten werden mit entfernt)">
+                      <Tooltip
+                        title={
+                          h.my_role === 'owner'
+                            ? 'Haushalt löschen (Kontogruppen und zugehörige Daten werden mit entfernt)'
+                            : 'Nur der Haushaltsbesitzer kann den Haushalt löschen'
+                        }
+                      >
                         <span>
                           <IconButton
                             size="small"
                             color="error"
                             aria-label="Haushalt löschen"
-                            disabled={deleteHhMut.isPending || deleteGroupMut.isPending}
+                            disabled={
+                              deleteHhMut.isPending || deleteGroupMut.isPending || h.my_role !== 'owner'
+                            }
                             onClick={() => {
                               if (
                                 window.confirm(
@@ -391,12 +477,104 @@ export default function Setup() {
                     </Stack>
                   </Stack>
 
-                  {expandedHh === h.id ? (
                     <Box sx={{ mt: 2 }}>
-                      {groupsQuery.isLoading ? (
+                      {h.my_role === 'owner' ? (
+                        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+                          <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+                            Mitglieder einladen
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                            Nur für registrierte Nutzer: gleiche E-Mail wie beim Login. Die Person sieht die Einladung
+                            hier unter Einrichtung, sobald sie angemeldet ist.
+                          </Typography>
+                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
+                            <TextField
+                              size="small"
+                              label="E-Mail-Adresse"
+                              type="email"
+                              fullWidth
+                              value={inviteEmailByHh[h.id] ?? ''}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setInviteEmailByHh((prev) => ({ ...prev, [h.id]: v }));
+                                setInviteErrorByHh((prev) => {
+                                  const n = { ...prev };
+                                  delete n[h.id];
+                                  return n;
+                                });
+                              }}
+                              disabled={inviteMut.isPending}
+                            />
+                            <Button
+                              variant="outlined"
+                              startIcon={<PersonAddAlt1Icon />}
+                              disabled={
+                                inviteMut.isPending || !(inviteEmailByHh[h.id] ?? '').trim()
+                              }
+                              onClick={() => {
+                                setInviteErrorByHh((prev) => {
+                                  const n = { ...prev };
+                                  delete n[h.id];
+                                  return n;
+                                });
+                                inviteMut.mutate({
+                                  householdId: h.id,
+                                  email: (inviteEmailByHh[h.id] ?? '').trim(),
+                                });
+                              }}
+                              sx={{ flexShrink: 0 }}
+                            >
+                              Einladen
+                            </Button>
+                          </Stack>
+                          {inviteErrorByHh[h.id] ? (
+                            <Alert severity="error" sx={{ mt: 1 }}>
+                              {inviteErrorByHh[h.id]}
+                            </Alert>
+                          ) : null}
+                          {oq?.isFetching ? (
+                            <Box sx={{ mt: 1 }}>
+                              <CircularProgress size={22} />
+                            </Box>
+                          ) : null}
+                          {(oq?.data ?? []).length > 0 ? (
+                            <Box sx={{ mt: 2 }}>
+                              <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                                Ausstehende Einladungen
+                              </Typography>
+                              <Stack spacing={0.75}>
+                                {(oq?.data ?? []).map((o) => (
+                                  <Stack
+                                    key={o.id}
+                                    direction="row"
+                                    alignItems="center"
+                                    justifyContent="space-between"
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                    gap={1}
+                                  >
+                                    <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                                      {o.invitee_email}
+                                    </Typography>
+                                    <Button
+                                      size="small"
+                                      color="inherit"
+                                      onClick={() => deleteInvMut.mutate(o.id)}
+                                      disabled={deleteInvMut.isPending}
+                                    >
+                                      Zurücknehmen
+                                    </Button>
+                                  </Stack>
+                                ))}
+                              </Stack>
+                            </Box>
+                          ) : null}
+                        </Paper>
+                      ) : null}
+                      {gq?.isLoading ? (
                         <CircularProgress size={28} />
-                      ) : groupsQuery.isError ? (
-                        <Alert severity="error">{apiErrorMessage(groupsQuery.error)}</Alert>
+                      ) : gq?.isError ? (
+                        <Alert severity="error">{apiErrorMessage(gq.error)}</Alert>
                       ) : groupList.length === 0 ? (
                         <Alert severity="warning">Noch keine Kontogruppe – „Neue Kontogruppe“ wählen und Haushalt zuordnen.</Alert>
                       ) : (
@@ -484,10 +662,10 @@ export default function Setup() {
                         </Stack>
                       )}
                     </Box>
-                  ) : null}
                 </CardContent>
               </Card>
-            ))}
+            );
+            })}
           </Stack>
         )}
       </Box>

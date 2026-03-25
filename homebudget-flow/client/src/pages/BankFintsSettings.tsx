@@ -29,6 +29,15 @@ export default function BankFintsSettings() {
     [households, groupQueries],
   );
 
+  const provisionGroupOptions = useMemo(
+    () =>
+      flatGroups.map(({ householdName, group: g }) => ({
+        id: g.id,
+        label: `${householdName} · ${g.name}`,
+      })),
+    [flatGroups],
+  );
+
   const loading = householdsQuery.isLoading || groupQueries.some((q) => q.isLoading);
   const firstGroupError = groupQueries.find((q) => q.isError);
 
@@ -39,8 +48,9 @@ export default function BankFintsSettings() {
           Bankzugang (FinTS)
         </Typography>
         <Typography color="text.secondary" variant="body2">
-          Nur Online-Banking-Zugang (Login/PIN), nutzerweit. Unter jeder Kontogruppe wählst du beim Speichern, in welcher
-          Gruppe neue IBANs als Bankkonten angelegt werden. Die Kontenliste je Gruppe siehst du unter{' '}
+          Nur Online-Banking-Zugang (Login/PIN), nutzerweit. Beim Anlegen oder Bearbeiten eines Zugangs wählst du im
+          Dialog die <strong>Kontogruppe für neue Bankkonten</strong> (erkannte IBANs). Die Kontenliste je Gruppe siehst
+          du unter{' '}
           <Link component={RouterLink} to="/settings/setup" underline="hover">
             Einrichtung
           </Link>{' '}
@@ -86,6 +96,7 @@ export default function BankFintsSettings() {
               key={g.id}
               accountGroupId={g.id}
               groupLabel={`${householdName} · ${g.name}`}
+              provisionGroupOptions={provisionGroupOptions}
               variant="flat"
             />
           ))}

@@ -22,3 +22,12 @@ services:
         "8000",
         "--reload",
       ]
+
+  ui:
+    image: node:20-alpine
+    working_dir: /work/client
+    volumes:
+      - ./client:/work/client
+      # Vite baut nach ../server/app/static/ui (siehe vite.config.ts) – muss ins Repo schreiben
+      - ./server/app/static/ui:/work/server/app/static/ui
+    command: ["sh", "-lc", "npm install && npm run build:watch"]

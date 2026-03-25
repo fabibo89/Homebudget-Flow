@@ -13,7 +13,7 @@ from app.db.models import (
     BankCredential,
 )
 from app.db.session import get_session
-from app.schemas.balance_snapshot import BalanceSnapshotOut, balance_snapshot_to_out
+from app.schemas.balance_snapshot import BalanceSnapshotOut, BalanceSnapshotUpdate, balance_snapshot_to_out
 from app.schemas.household import BankAccountOut, BankAccountUpdate, bank_account_to_out
 from app.services.access import user_can_access_bank_account
 from app.services.bank_account_provision import normalize_iban
@@ -77,6 +77,77 @@ async def list_balance_snapshots(
     )
     rows = r.scalars().all()
     return [balance_snapshot_to_out(s) for s in rows]
+
+
+async def _refresh_account_balance_from_latest_snapshot(session: AsyncSession, bank_account_id: int) -> None:
+    """Wenn Saldo-Snapshots manuell geändert/gelöscht werden, muss `bank_accounts.balance` konsistent bleiben."""
+    r_latest = await session.execute(
+        select(BankAccountBalanceSnapshot)
+        .where(BankAccountBalanceSnapshot.bank_account_id == bank_account_id)
+        .order_by(desc(BankAccountBalanceSnapshot.recorded_at))
+        .limit(1),
+    )
+    latest = r_latest.scalar_one_or_none()
+    acc = await session.get(BankAccount, bank_account_id)
+    if acc is None:
+        return
+    if latest is None:
+        acc.balance_at = None
+        return
+    acc.balance = latest.balance
+    acc.currency = latest.currency
+    acc.balance_at = latest.recorded_at
+
+
+@router.patch(
+    "/{bank_account_id}/balance-snapshots/{snapshot_id}",
+    response_model=BalanceSnapshotOut,
+)
+async def update_balance_snapshot(
+    bank_account_id: int,
+    snapshot_id: int,
+    body: BalanceSnapshotUpdate,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> BalanceSnapshotOut:
+    if not await user_can_access_bank_account(session, user.id, bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this bank account")
+    row = await session.get(BankAccountBalanceSnapshot, snapshot_id)
+    if row is None or row.bank_account_id != bank_account_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Balance snapshot not found")
+
+    data = body.model_dump(exclude_unset=True)
+    if "balance" in data and data["balance"] is not None:
+        row.balance = data["balance"]
+    if "currency" in data and data["currency"] is not None:
+        row.currency = str(data["currency"]).strip().upper() or row.currency
+    if "recorded_at" in data and data["recorded_at"] is not None:
+        row.recorded_at = data["recorded_at"]
+
+    await _refresh_account_balance_from_latest_snapshot(session, bank_account_id)
+    await session.commit()
+    await session.refresh(row)
+    return balance_snapshot_to_out(row)
+
+
+@router.delete(
+    "/{bank_account_id}/balance-snapshots/{snapshot_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_balance_snapshot(
+    bank_account_id: int,
+    snapshot_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    if not await user_can_access_bank_account(session, user.id, bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this bank account")
+    row = await session.get(BankAccountBalanceSnapshot, snapshot_id)
+    if row is None or row.bank_account_id != bank_account_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Balance snapshot not found")
+    await session.delete(row)
+    await _refresh_account_balance_from_latest_snapshot(session, bank_account_id)
+    await session.commit()
 
 
 @router.patch("/{bank_account_id}", response_model=BankAccountOut)

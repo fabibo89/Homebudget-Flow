@@ -16,7 +16,8 @@ from decimal import Decimal
 from typing import Any, Callable, Optional, TypeVar
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
-from fints.exceptions import FinTSClientPINError
+from fints.exceptions import FinTSClientPINError, FinTSConnectionError
+from fints.formals import CUSTOMER_ID_ANONYMOUS
 from fints.models import SEPAAccount
 from fints.utils import minimal_interactive_cli_bootstrap
 from mt940.models import Balance as Mt940Balance
@@ -233,9 +234,9 @@ def _resolve_init_tan(
 
 
 def _balance_to_decimal(bal: Mt940Balance) -> tuple[Decimal, str]:
+    # mt940.Amount negiert bei Status 'D' bereits (Debit => negativer Betrag).
+    # Daher NICHT erneut über bal.status drehen, sonst kippt das Vorzeichen doppelt.
     amt = bal.amount.amount
-    if bal.status == "D":
-        amt = -amt
     cur = bal.amount.currency or "EUR"
     return Decimal(str(amt)), str(cur)
 
@@ -313,6 +314,16 @@ def _normalize_one_tx(tx: Any, iban: str) -> FetchedTransaction:
     )
 
 
+def _endpoint_is_dkb_fints(endpoint: str) -> bool:
+    """True wenn Kommunikationsadresse der DKB (FinTS 3.0)."""
+    return "fints.dkb.de" in (endpoint or "").strip().lower()
+
+
+def _blz_is_dkb(blz: str) -> bool:
+    """DKB-Bankleitzahl 120 300 00 → ohne Leerzeichen 12030000."""
+    return "".join((blz or "").split()) == "12030000"
+
+
 def _validate_settings(cred: FintsCredentials | None) -> None:
     blz = _resolve_fints_field("blz", cred)
     user = _resolve_fints_field("user", cred)
@@ -343,12 +354,31 @@ def _build_client(cred: FintsCredentials | None) -> FinTS3PinTanClient:
         or settings.fints_endpoint
         or "https://fints.comdirect.de/fints"
     )
+    blz = _resolve_fints_field("blz", cred)
+    product_id = _resolve_fints_field("product_id", cred)
+    from_cred = cred is not None and bool((cred.product_id or "").strip())
+    logger.info(
+        "FinTS: Produktkennung (python-fints) Länge=%s, Quelle=%s",
+        len(product_id),
+        "Bank-Zugangsdaten" if from_cred else "FINTS_PRODUCT_ID (Umgebung) oder settings.fints_product_id (.env)",
+    )
+    # DKB: „Kunden-ID bitte frei lassen“ — python-fints setzt sonst customer_id = user_id (falsch für DKB).
+    # Siehe https://www.dkb.de/fragen-antworten/kann-ich-eine-finanzsoftware-fuers-banking-benutzen
+    customer_id: str | None = None
+    if _endpoint_is_dkb_fints(endpoint) or _blz_is_dkb(blz):
+        customer_id = CUSTOMER_ID_ANONYMOUS
+        logger.info(
+            "FinTS DKB: Kunden-ID anonym (HKIDN), Benutzerkennung = FinTS-User; Endpoint=%s BLZ=%s",
+            endpoint,
+            blz,
+        )
     return FinTS3PinTanClient(
-        _resolve_fints_field("blz", cred),
+        blz,
         _resolve_fints_field("user", cred),
         _resolve_fints_field("pin", cred),
         endpoint,
-        product_id=_resolve_fints_field("product_id", cred),
+        customer_id,
+        product_id=product_id,
     )
 
 
@@ -376,10 +406,29 @@ def run_with_fints_session(
         with client:
             _resolve_init_tan(client, cred, tx_tan_channel)
             return fn(client)
+    except FinTSConnectionError as e:
+        endpoint = (
+            _resolve_fints_field("endpoint", cred)
+            if cred is not None
+            else (settings.fints_endpoint or "")
+        )
+        dkb = _endpoint_is_dkb_fints(endpoint)
+        raise RuntimeError(
+            f"FinTS-HTTP-Verbindung fehlgeschlagen: {e}. "
+            + (
+                "DKB: Die Bank hat die HTTPS-Anfrage abgelehnt (HTTP 400). Häufig: ungültige oder fehlende "
+                "FinTS-Produkt-ID — FINTS_PRODUCT_ID in server/.env muss eine bei der ZKA registrierte "
+                "Produktkennung sein; siehe https://www.dkb.de/fragen-antworten/kann-ich-eine-finanzsoftware-fuers-banking-benutzen "
+                "(Parameter FinTS 3.0, Endpoint https://fints.dkb.de/fints)."
+                if dkb
+                else "Prüfe Endpoint, Netzwerk und FINTS_PRODUCT_ID in der Server-.env."
+            )
+        ) from e
     except FinTSClientPINError as e:
         logger.exception("FinTS Authentifizierung")
         raise RuntimeError(
-            "FinTS-Login fehlgeschlagen (PIN/Zugang/product_id/HBCI-Freischaltung prüfen)."
+            "FinTS-Login fehlgeschlagen (PIN/Zugang/product_id/HBCI-Freischaltung prüfen). "
+            "DKB: Anmeldename als Benutzerkennung; Bestätigung per DKB-App oder chipTAN laut Bank."
         ) from e
 
 

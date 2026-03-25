@@ -33,13 +33,21 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
-import { ExpandMore as ExpandMoreIcon, Sync as SyncIcon, CloudSync as CloudSyncIcon } from '@mui/icons-material';
+import {
+  ExpandMore as ExpandMoreIcon,
+  Sync as SyncIcon,
+  CloudSync as CloudSyncIcon,
+  Edit as EditIcon,
+  Delete as DeleteIcon,
+} from '@mui/icons-material';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   apiErrorMessage,
   fetchAccounts,
   fetchBalanceSnapshots,
   fetchTransactions,
+  updateBalanceSnapshot,
+  deleteBalanceSnapshot,
   submitSyncTransactionTan,
   syncAccount,
   syncAll,
@@ -95,7 +103,8 @@ export default function Dashboard() {
     d.setMonth(d.getMonth() - 1);
     return d.toISOString().slice(0, 10);
   }, []);
-  const [from, setFrom] = useState(monthAgo);
+  // Default: unbegrenzt (leer) – erleichtert die Suche nach älteren Buchungen.
+  const [from, setFrom] = useState('');
   const [to, setTo] = useState(today);
   const [searchDescription, setSearchDescription] = useState('');
   const [searchCounterparty, setSearchCounterparty] = useState('');
@@ -114,6 +123,12 @@ export default function Dashboard() {
   } | null>(null);
   const [tanBusy, setTanBusy] = useState(false);
   const [overviewTab, setOverviewTab] = useState<'buchungen' | 'saldo'>('buchungen');
+  const [saldoEditOpen, setSaldoEditOpen] = useState(false);
+  const [saldoEditError, setSaldoEditError] = useState('');
+  const [saldoEditing, setSaldoEditing] = useState<BalanceSnapshotOut | null>(null);
+  const [saldoEditBalance, setSaldoEditBalance] = useState('');
+  const [saldoEditCurrency, setSaldoEditCurrency] = useState('EUR');
+  const [saldoEditRecordedAt, setSaldoEditRecordedAt] = useState('');
 
   useEffect(() => {
     setOffset(0);
@@ -223,8 +238,8 @@ export default function Dashboard() {
   const canPrev = offset > 0;
 
   function shiftBuchungenRangeByMonths(deltaMonths: number) {
-    setFrom((f) => addMonthsToIsoDate(f, deltaMonths));
-    setTo((t) => addMonthsToIsoDate(t, deltaMonths));
+    setFrom((f) => (f ? addMonthsToIsoDate(f, deltaMonths) : f));
+    setTo((t) => (t ? addMonthsToIsoDate(t, deltaMonths) : t));
   }
 
   const saldoQueries = useQueries({
@@ -258,6 +273,57 @@ export default function Dashboard() {
 
   const saldoLoading = overviewTab === 'saldo' && saldoQueries.some((q) => q.isLoading);
   const saldoError = saldoQueries.find((q) => q.isError)?.error;
+
+  function moneyIsNegative(amount: string): boolean {
+    const n = Number(amount);
+    return !Number.isNaN(n) && n < 0;
+  }
+
+  function openEditSaldoSnapshot(s: BalanceSnapshotOut) {
+    setSaldoEditing(s);
+    setSaldoEditBalance(String(s.balance ?? ''));
+    setSaldoEditCurrency(String(s.currency ?? 'EUR'));
+    setSaldoEditRecordedAt(String(s.recorded_at ?? '').slice(0, 19));
+    setSaldoEditError('');
+    setSaldoEditOpen(true);
+  }
+
+  async function saveSaldoSnapshotEdit() {
+    if (!saldoEditing) return;
+    setSaldoEditError('');
+    const bal = saldoEditBalance.trim();
+    const cur = saldoEditCurrency.trim().toUpperCase() || 'EUR';
+    const rec = saldoEditRecordedAt.trim();
+    if (!bal) {
+      setSaldoEditError('Bitte einen Saldo-Betrag angeben.');
+      return;
+    }
+    try {
+      await updateBalanceSnapshot(saldoEditing.bank_account_id, saldoEditing.id, {
+        balance: bal,
+        currency: cur,
+        recorded_at: rec ? new Date(rec).toISOString() : undefined,
+      });
+      setSaldoEditOpen(false);
+      setSaldoEditing(null);
+      void qc.invalidateQueries({ queryKey: ['balance-snapshots'] });
+      void qc.invalidateQueries({ queryKey: ['accounts'] });
+    } catch (e) {
+      setSaldoEditError(apiErrorMessage(e));
+    }
+  }
+
+  async function removeSaldoSnapshot(s: BalanceSnapshotOut) {
+    if (!window.confirm(`Saldo-Snapshot vom ${formatDateTime(s.recorded_at)} löschen?`)) return;
+    try {
+      await deleteBalanceSnapshot(s.bank_account_id, s.id);
+      void qc.invalidateQueries({ queryKey: ['balance-snapshots'] });
+      void qc.invalidateQueries({ queryKey: ['accounts'] });
+    } catch (e) {
+      setSaldoEditError(apiErrorMessage(e));
+      setSaldoEditOpen(true);
+    }
+  }
 
   return (
     <Stack spacing={3}>
@@ -324,6 +390,45 @@ export default function Dashboard() {
                 </Button>
               </DialogActions>
             </Dialog>
+            <Dialog open={saldoEditOpen} onClose={() => setSaldoEditOpen(false)} maxWidth="sm" fullWidth>
+              <DialogTitle>Saldo-Snapshot bearbeiten</DialogTitle>
+              <DialogContent>
+                <Stack spacing={2} sx={{ pt: 1 }}>
+                  {saldoEditError ? <Alert severity="error">{saldoEditError}</Alert> : null}
+                  {saldoEditing ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Konto: {accountNameById.get(saldoEditing.bank_account_id) ?? `#${saldoEditing.bank_account_id}`} ·{' '}
+                      Zeitpunkt: {formatDateTime(saldoEditing.recorded_at)}
+                    </Typography>
+                  ) : null}
+                  <TextField
+                    label="Saldo (z. B. -104.81)"
+                    value={saldoEditBalance}
+                    onChange={(e) => setSaldoEditBalance(e.target.value)}
+                    fullWidth
+                  />
+                  <TextField
+                    label="Währung"
+                    value={saldoEditCurrency}
+                    onChange={(e) => setSaldoEditCurrency(e.target.value)}
+                    fullWidth
+                  />
+                  <TextField
+                    label="Zeitpunkt (optional)"
+                    helperText="ISO/Datum-Zeit; leer lassen, um den Zeitpunkt beizubehalten."
+                    value={saldoEditRecordedAt}
+                    onChange={(e) => setSaldoEditRecordedAt(e.target.value)}
+                    fullWidth
+                  />
+                </Stack>
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={() => setSaldoEditOpen(false)}>Abbrechen</Button>
+                <Button variant="contained" onClick={() => void saveSaldoSnapshotEdit()} disabled={!saldoEditing}>
+                  Speichern
+                </Button>
+              </DialogActions>
+            </Dialog>
             <Box
               sx={{
                 display: 'grid',
@@ -345,7 +450,12 @@ export default function Dashboard() {
                         {a.iban}
                       </Typography>
                     ) : null}
-                    <Typography variant="h5" fontWeight={700} color="primary.main" sx={{ my: 1 }}>
+                    <Typography
+                      variant="h5"
+                      fontWeight={700}
+                      color={moneyIsNegative(a.balance) ? 'error.main' : 'primary.main'}
+                      sx={{ my: 1 }}
+                    >
                       {formatMoney(a.balance, a.currency)}
                     </Typography>
                     {(() => {
@@ -481,6 +591,7 @@ export default function Dashboard() {
                 type="date"
                 value={from}
                 onChange={(e) => setFrom(e.target.value)}
+                placeholder="von (leer = unbegrenzt)"
                 style={{
                   padding: '10px 12px',
                   borderRadius: 8,
@@ -490,6 +601,11 @@ export default function Dashboard() {
                   font: 'inherit',
                 }}
               />
+              {from ? (
+                <Button size="small" variant="text" onClick={() => setFrom('')}>
+                  Von löschen
+                </Button>
+              ) : null}
               <span>–</span>
               <input
                 type="date"
@@ -688,12 +804,13 @@ export default function Dashboard() {
                       <TableCell>Zeitpunkt (Sync)</TableCell>
                       <TableCell>Konto</TableCell>
                       <TableCell align="right">Saldo</TableCell>
+                      <TableCell align="right">Aktion</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
                     {saldoRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={3}>
+                        <TableCell colSpan={4}>
                           <Typography color="text.secondary" sx={{ py: 2 }}>
                             Noch keine Saldo-Snapshots — nach dem nächsten erfolgreichen Sync erscheinen Einträge.
                           </Typography>
@@ -710,8 +827,34 @@ export default function Dashboard() {
                               variant="outlined"
                             />
                           </TableCell>
-                          <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                          <TableCell
+                            align="right"
+                            sx={{
+                              fontVariantNumeric: 'tabular-nums',
+                              fontWeight: 600,
+                              color: moneyIsNegative(s.balance) ? 'error.main' : 'text.primary',
+                            }}
+                          >
                             {formatMoney(s.balance, s.currency)}
+                          </TableCell>
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                            <Button
+                              size="small"
+                              variant="text"
+                              startIcon={<EditIcon fontSize="small" />}
+                              onClick={() => openEditSaldoSnapshot(s)}
+                            >
+                              Bearbeiten
+                            </Button>
+                            <Button
+                              size="small"
+                              variant="text"
+                              color="error"
+                              startIcon={<DeleteIcon fontSize="small" />}
+                              onClick={() => void removeSaldoSnapshot(s)}
+                            >
+                              Löschen
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))

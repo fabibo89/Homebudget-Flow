@@ -18,6 +18,11 @@ class BankCredentialCreate(BaseModel):
     fints_user: str = Field(min_length=1, max_length=128)
     fints_endpoint: str = Field(default="https://fints.comdirect.de/fints", max_length=512)
     pin: str = Field(min_length=1, max_length=128)
+    save_on_fints_failure: bool = Field(
+        default=True,
+        description="True: bei fehlgeschlagener FinTS-Prüfung oder leerer SEPA-Liste Zugang trotzdem speichern "
+        "(als nicht verifiziert). False: wie bisher — ohne erfolgreiche Prüfung kein Speichern.",
+    )
 
 
 class BankCredentialOut(BaseModel):
@@ -32,6 +37,14 @@ class BankCredentialOut(BaseModel):
     fints_log: Optional[str] = Field(
         default=None,
         description="Nur bei POST/PATCH: Log des FinTS-Abrufs (SEPA-Kontenliste).",
+    )
+    fints_verified_ok: bool = Field(
+        default=True,
+        description="False, wenn der Zugang ohne erfolgreiche FinTS-Prüfung gespeichert wurde.",
+    )
+    fints_verification_message: str = Field(
+        default="",
+        description="Kurzgrund bei fehlgeschlagener Verifikation (leer wenn ok).",
     )
 
     model_config = {"from_attributes": True}
@@ -49,6 +62,10 @@ class BankCredentialUpdate(BaseModel):
     fints_user: Optional[str] = Field(default=None, max_length=128)
     fints_endpoint: Optional[str] = Field(default=None, max_length=512)
     pin: Optional[str] = Field(default=None, max_length=128)
+    save_on_fints_failure: Optional[bool] = Field(
+        default=None,
+        description="Wie bei Anlage: bei False nur speichern, wenn FinTS-Prüfung und SEPA-Liste ok sind.",
+    )
 
 
 class BankCredentialFintsTestBody(BaseModel):

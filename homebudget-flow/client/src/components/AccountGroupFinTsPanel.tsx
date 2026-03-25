@@ -1,15 +1,22 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  FormControl,
+  FormControlLabel,
   IconButton,
+  InputLabel,
+  Link,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   Table,
   TableBody,
@@ -33,11 +40,35 @@ import {
   type SyncAccountNeedsTan,
 } from '../api/client';
 
-const emptyForm = () => ({
-  provider: 'comdirect',
-  fints_blz: '',
+/** Voreinstellungen für FinTS; BLZ ohne Leerzeichen. */
+export const FINTS_BANK_PRESETS = {
+  comdirect: {
+    provider: 'comdirect',
+    fints_blz: '20041177',
+    fints_endpoint: 'https://fints.comdirect.de/fints',
+  },
+  dkb: {
+    provider: 'dkb',
+    fints_blz: '12030000',
+    fints_endpoint: 'https://fints.dkb.de/fints',
+  },
+} as const;
+
+export type FinTsBankPresetKey = keyof typeof FINTS_BANK_PRESETS;
+
+type FinTsFormState = {
+  bankPreset: FinTsBankPresetKey;
+  provider: string;
+  fints_blz: string;
+  fints_user: string;
+  fints_endpoint: string;
+  pin: string;
+};
+
+const emptyForm = (): FinTsFormState => ({
+  bankPreset: 'comdirect',
+  ...FINTS_BANK_PRESETS.comdirect,
   fints_user: '',
-  fints_endpoint: 'https://fints.comdirect.de/fints',
   pin: '',
 });
 
@@ -45,22 +76,34 @@ function isNeedsTan(x: unknown): x is SyncAccountNeedsTan {
   return typeof x === 'object' && x !== null && (x as SyncAccountNeedsTan).status === 'needs_transaction_tan';
 }
 
+export type ProvisionGroupOption = { id: number; label: string };
+
 type Props = {
   accountGroupId: number;
   /** z. B. „Haushalt · Kontogruppe“ — nur Anzeige im Titel */
   groupLabel?: string;
+  /** Kontogruppen für die Auswahl „Neue Bankkonten anlegen in …“ im FinTS-Dialog */
+  provisionGroupOptions: ProvisionGroupOption[];
   /** Unter „Bankzugang (FinTS)“: flache Liste ohne innere Einrückung/Trennlinie wie in der Einrichtung */
   variant?: 'default' | 'flat';
 };
 
-export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, variant = 'default' }: Props) {
+export default function AccountGroupFinTsPanel({
+  accountGroupId,
+  groupLabel,
+  provisionGroupOptions,
+  variant = 'default',
+}: Props) {
   const qc = useQueryClient();
+  const provisionSelectLabelId = useId();
+  const bankPresetLabelId = useId();
   const [open, setOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState(emptyForm);
   const [formError, setFormError] = useState('');
   const [testLog, setTestLog] = useState('');
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveVerifiedOk, setSaveVerifiedOk] = useState(true);
   const [saving, setSaving] = useState(false);
   const [fintsTanOpen, setFintsTanOpen] = useState(false);
   const [fintsTanValue, setFintsTanValue] = useState('');
@@ -71,7 +114,15 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
     b64: string;
     hint: string | null;
   } | null>(null);
+  const [provisionGroupId, setProvisionGroupId] = useState(accountGroupId);
+  /** true: FinTS-Fehler/leere SEPA-Liste → Zugang trotzdem speichern (nicht verifiziert) */
+  const [saveOnFintsFailure, setSaveOnFintsFailure] = useState(true);
   const isEdit = editingId !== null;
+
+  const resolvedProvisionOptions =
+    provisionGroupOptions.length > 0
+      ? provisionGroupOptions
+      : [{ id: accountGroupId, label: groupLabel ?? `Kontogruppe #${accountGroupId}` }];
 
   const qKey = ['bank-credentials'] as const;
 
@@ -85,6 +136,7 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
     void qc.invalidateQueries({ queryKey: ['accounts'] });
     setTestLog(c.fints_log ?? '');
     setSaveSuccess(true);
+    setSaveVerifiedOk(c.fints_verified_ok !== false);
     setFormError('');
   }
 
@@ -103,22 +155,24 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
       let r: unknown;
       if (!isEdit) {
         r = await createBankCredential({
-          provision_account_group_id: accountGroupId,
+          provision_account_group_id: provisionGroupId,
           provider: form.provider,
           fints_blz: form.fints_blz.trim(),
           fints_user: form.fints_user.trim(),
           fints_endpoint: form.fints_endpoint.trim(),
           pin: form.pin.trim(),
+          save_on_fints_failure: saveOnFintsFailure,
         });
       } else {
         if (editingId == null) throw new Error('Kein Zugang gewählt');
         const nextPin = form.pin.trim();
         r = await updateBankCredential(editingId, {
-          provision_account_group_id: accountGroupId,
+          provision_account_group_id: provisionGroupId,
           provider: form.provider,
           fints_blz: form.fints_blz.trim(),
           fints_user: form.fints_user.trim(),
           fints_endpoint: form.fints_endpoint.trim(),
+          save_on_fints_failure: saveOnFintsFailure,
           ...(nextPin ? { pin: nextPin } : {}),
         });
       }
@@ -172,21 +226,30 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
     setFormError('');
     setTestLog('');
     setSaveSuccess(false);
+    setSaveVerifiedOk(true);
+    setSaveOnFintsFailure(true);
     setForm(emptyForm());
   }
 
   function openCreate() {
     setEditingId(null);
+    setProvisionGroupId(accountGroupId);
+    setSaveOnFintsFailure(true);
     setForm(emptyForm());
     setFormError('');
     setTestLog('');
     setSaveSuccess(false);
+    setSaveVerifiedOk(true);
     setOpen(true);
   }
 
   function openEdit(c: BankCredential) {
+    const bankPreset: FinTsBankPresetKey = c.provider === 'dkb' ? 'dkb' : 'comdirect';
     setEditingId(c.id);
+    setProvisionGroupId(accountGroupId);
+    setSaveOnFintsFailure(true);
     setForm({
+      bankPreset,
       provider: c.provider,
       fints_blz: c.fints_blz,
       fints_user: c.fints_user,
@@ -196,6 +259,7 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
     setFormError('');
     setTestLog('');
     setSaveSuccess(false);
+    setSaveVerifiedOk(true);
     setOpen(true);
   }
 
@@ -224,13 +288,18 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
       </Typography>
       {variant === 'flat' ? (
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
-          <strong>Speichern</strong> führt die FinTS-Prüfung aus; neu erkannte IBANs werden als Bankkonten in <strong>dieser</strong> Kontogruppe angelegt. Pro Login/Provider nur ein Zugang (nutzerweit). Bei PhotoTAN erscheint ein Dialog wie beim Konten-Sync.
+          <strong>Speichern</strong> führt die FinTS-Prüfung aus; neu erkannte IBANs werden als Bankkonten in der im
+          Dialog gewählten Kontogruppe angelegt (Voreinstellung: diese Gruppe). Optional kann der Zugang auch bei
+          fehlgeschlagener Prüfung gespeichert werden (dann als nicht verifiziert). Pro Login/Provider nur ein Zugang
+          (nutzerweit). Bei PhotoTAN erscheint ein Dialog wie beim Konten-Sync.
         </Typography>
       ) : (
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
           Beim <strong>Speichern</strong> prüft der Server FinTS (SEPA-Kontenliste). Zugang wird <strong>nutzerweit</strong>
-          gespeichert; fehlende <strong>Bankkonten</strong> (IBANs) werden in <strong>dieser</strong> Kontogruppe angelegt.
-          Die Kontogruppe steht am jeweiligen Bankkonto, nicht am FinTS-Zugang. <code>CREDENTIALS_FERNET_KEY</code> in der Server-<code>.env</code>.
+          gespeichert; fehlende <strong>Bankkonten</strong> (IBANs) werden in der im Dialog gewählten Kontogruppe
+          angelegt, sofern die Prüfung ok ist — sonst optional trotzdem speichern (nicht verifiziert). Die Kontogruppe
+          steht am jeweiligen Bankkonto, nicht am FinTS-Zugang.{' '}
+          <code>CREDENTIALS_FERNET_KEY</code> in der Server-<code>.env</code>.
         </Typography>
       )}
 
@@ -257,13 +326,14 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
                 <TableCell>BLZ</TableCell>
                 <TableCell>User</TableCell>
                 <TableCell>PIN</TableCell>
+                <TableCell>FinTS</TableCell>
                 <TableCell align="right">Aktion</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5}>
+                  <TableCell colSpan={6}>
                     <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
                       Noch kein FinTS-Zugang für diesen Nutzer.
                     </Typography>
@@ -276,6 +346,17 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
                     <TableCell>{c.fints_blz}</TableCell>
                     <TableCell>{c.fints_user}</TableCell>
                     <TableCell>{c.has_pin ? 'ja' : 'nein'}</TableCell>
+                    <TableCell>
+                      {c.fints_verified_ok === false ? (
+                        <Typography component="span" variant="body2" color="error">
+                          fehlerhaft
+                        </Typography>
+                      ) : (
+                        <Typography component="span" variant="body2" color="text.secondary">
+                          ok
+                        </Typography>
+                      )}
+                    </TableCell>
                     <TableCell align="right">
                       <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center" flexWrap="wrap">
                         <IconButton
@@ -364,19 +445,79 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
               </Alert>
             ) : null}
             {saveSuccess ? (
-              <Alert severity="success" onClose={() => setSaveSuccess(false)}>
-                Gespeichert. FinTS-Prüfung und Konten-Anlage abgeschlossen.
+              <Alert
+                severity={saveVerifiedOk ? 'success' : 'warning'}
+                onClose={() => setSaveSuccess(false)}
+              >
+                {saveVerifiedOk
+                  ? 'Gespeichert. FinTS-Prüfung und Konten-Anlage abgeschlossen.'
+                  : 'Gespeichert, aber FinTS-Prüfung fehlgeschlagen oder keine SEPA-Konten — Zugang ist nicht verifiziert (keine automatische Konten-Anlage, Sync gesperrt bis erfolgreiche Prüfung).'}
               </Alert>
             ) : null}
 
             {!saveSuccess ? (
               <>
-                <TextField
-                  label="Provider"
-                  fullWidth
-                  value={form.provider}
-                  onChange={(e) => setForm((f) => ({ ...f, provider: e.target.value }))}
-                />
+                <FormControl fullWidth required>
+                  <InputLabel id={provisionSelectLabelId}>Neue Bankkonten anlegen in</InputLabel>
+                  <Select
+                    labelId={provisionSelectLabelId}
+                    label="Neue Bankkonten anlegen in"
+                    value={provisionGroupId}
+                    onChange={(e) => setProvisionGroupId(Number(e.target.value))}
+                  >
+                    {resolvedProvisionOptions.map((opt) => (
+                      <MenuItem key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.5 }}>
+                  Gilt für neu aus FinTS erkannte IBANs beim Speichern; bestehende Konten werden nicht verschoben.
+                </Typography>
+                <FormControl fullWidth required>
+                  <InputLabel id={bankPresetLabelId}>Bank</InputLabel>
+                  <Select
+                    labelId={bankPresetLabelId}
+                    label="Bank"
+                    value={form.bankPreset}
+                    onChange={(e) => {
+                      const key = e.target.value as FinTsBankPresetKey;
+                      const p = FINTS_BANK_PRESETS[key];
+                      setForm((f) => ({
+                        ...f,
+                        bankPreset: key,
+                        provider: p.provider,
+                        fints_blz: p.fints_blz,
+                        fints_endpoint: p.fints_endpoint,
+                      }));
+                    }}
+                  >
+                    <MenuItem value="comdirect">Comdirect</MenuItem>
+                    <MenuItem value="dkb">DKB</MenuItem>
+                  </Select>
+                </FormControl>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.5 }}>
+                  BLZ und Endpoint werden gesetzt — bei Bedarf unten anpassen.
+                </Typography>
+                {form.bankPreset === 'dkb' ? (
+                  <Alert severity="info" variant="outlined">
+                    <Typography variant="body2">
+                      <strong>DKB:</strong> Benutzerkennung = dein <strong>Anmeldename</strong> (wie bei dkb.de). Kunden-ID
+                      bleibt leer (wird serverseitig korrekt gesetzt). Jede Anmeldung bzw. Abrufe erfordern Bestätigung
+                      per <strong>DKB-App</strong> oder <strong>chipTAN</strong>. Offizielle Parameter:{' '}
+                      <Link
+                        href="https://www.dkb.de/fragen-antworten/kann-ich-eine-finanzsoftware-fuers-banking-benutzen"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        underline="hover"
+                      >
+                        DKB – Finanzsoftware / FinTS
+                      </Link>
+                      .
+                    </Typography>
+                  </Alert>
+                ) : null}
                 <TextField
                   label="BLZ"
                   fullWidth
@@ -390,6 +531,11 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
                   required
                   value={form.fints_user}
                   onChange={(e) => setForm((f) => ({ ...f, fints_user: e.target.value }))}
+                  helperText={
+                    form.bankPreset === 'dkb'
+                      ? 'DKB: derselbe Name wie beim Login auf dkb.de (Benutzerkennung).'
+                      : undefined
+                  }
                 />
                 <TextField
                   label="FinTS-Endpoint"
@@ -405,6 +551,15 @@ export default function AccountGroupFinTsPanel({ accountGroupId, groupLabel, var
                   autoComplete="off"
                   value={form.pin}
                   onChange={(e) => setForm((f) => ({ ...f, pin: e.target.value }))}
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={saveOnFintsFailure}
+                      onChange={(e) => setSaveOnFintsFailure(e.target.checked)}
+                    />
+                  }
+                  label="Bei fehlgeschlagener FinTS-Prüfung oder leerer SEPA-Liste Zugang trotzdem speichern (als fehlerhaft / nicht verifiziert)"
                 />
                 <Typography variant="body2" color="text.secondary">
                   Beim Speichern: FinTS-Abfrage und ggf. Anlage mehrerer Bankkonten (je erkannte IBAN). Beim Bearbeiten

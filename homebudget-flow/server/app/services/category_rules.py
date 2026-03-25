@@ -208,3 +208,45 @@ async def apply_category_rules_to_uncategorized(
                 break
     await refresh_salary_cache_for_household(session, household_id)
     return updated
+
+
+async def reverse_category_rule_assignments(
+    session: AsyncSession,
+    *,
+    user: User,
+    household_id: int,
+    rule: CategoryRule,
+) -> int:
+    """Setzt für alle Buchungen, die in diese Regel fallen, die Kategorie auf NULL.
+
+    Berücksichtigt dabei:
+    - Sichtbarkeit der Konten für den aufrufenden Nutzer
+    - den Geltungsbereich der Regel (Haushalt vs. nur Konten des Erstellers)
+    """
+    account_ids = await bank_account_ids_visible_for_user_in_household(session, user, household_id)
+    if not account_ids:
+        return 0
+
+    rule_allowed = await build_rule_allowed_bank_account_ids(session, household_id, [rule])
+    allowed = rule_allowed.get(rule.id)
+    if allowed is not None:
+        account_ids = [x for x in account_ids if x in allowed]
+        if not account_ids:
+            return 0
+
+    tx_r = await session.execute(
+        select(Transaction).where(
+            Transaction.bank_account_id.in_(account_ids),
+            Transaction.category_id.isnot(None),
+        ),
+    )
+    txs = list(tx_r.scalars().all())
+
+    updated = 0
+    for tx in txs:
+        if transaction_matches_rule(tx, rule):
+            tx.category_id = None
+            updated += 1
+
+    await refresh_salary_cache_for_household(session, household_id)
+    return updated

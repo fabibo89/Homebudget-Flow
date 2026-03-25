@@ -11,6 +11,7 @@ def get_connector(
     fints_credentials: FintsCredentials | None = None,
     tx_tan_channel: TransactionTanChannel | None = None,
 ) -> BankConnector:
-    if provider == "comdirect":
+    # Gleiche FinTS-Implementierung (python-fints); BLZ/Endpoint kommen aus dem Zugang.
+    if provider in ("comdirect", "dkb"):
         return ComdirectConnector(fints_credentials=fints_credentials, tx_tan_channel=tx_tan_channel)
     raise ValueError(f"Unbekannter Provider: {provider}")

@@ -91,6 +91,16 @@ async def sync_bank_account(
         return
 
     st = await ensure_sync_state(session, bank_account_id)
+
+    if not getattr(acc.credential, "fints_verified_ok", True):
+        st.status = SyncStatus.error.value
+        st.last_error = (
+            "FinTS-Zugang nicht verifiziert (letzte Prüfung fehlgeschlagen). "
+            "Bitte unter Bankzugang (FinTS) Daten prüfen und erneut speichern."
+        )
+        await session.commit()
+        return
+
     st.status = SyncStatus.running.value
     st.last_error = None
     await session.flush()

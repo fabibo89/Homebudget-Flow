@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from app.db.models import AccountSyncState, BankAccount
+from app.db.models import AccountSyncState, BankAccount, Household
 
 
 class HouseholdCreate(BaseModel):
@@ -16,8 +16,37 @@ class HouseholdOut(BaseModel):
     id: int
     name: str
     created_at: datetime
+    my_role: str = Field(description="owner oder member — Rolle des angemeldeten Nutzers in diesem Haushalt")
 
-    model_config = {"from_attributes": True}
+
+def household_to_out(h: Household, my_role: str) -> HouseholdOut:
+    return HouseholdOut(
+        id=h.id,
+        name=h.name,
+        created_at=h.created_at,
+        my_role=my_role,
+    )
+
+
+class HouseholdInvitationCreate(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+
+
+class HouseholdInvitationOut(BaseModel):
+    id: int
+    household_id: int
+    household_name: str
+    inviter_email: str
+    invitee_email: str
+    created_at: datetime
+    expires_at: datetime
+
+
+class HouseholdInvitationOutgoingOut(BaseModel):
+    id: int
+    invitee_email: str
+    created_at: datetime
+    expires_at: datetime
 
 
 class HouseholdUpdate(BaseModel):

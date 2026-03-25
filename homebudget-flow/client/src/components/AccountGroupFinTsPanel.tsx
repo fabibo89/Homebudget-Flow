@@ -28,6 +28,7 @@ import {
   Typography,
 } from '@mui/material';
 import { Delete as DeleteIcon, Add as AddIcon, Edit as EditIcon } from '@mui/icons-material';
+import axios from 'axios';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   apiErrorMessage,
@@ -86,6 +87,11 @@ type Props = {
   provisionGroupOptions: ProvisionGroupOption[];
   /** Unter „Bankzugang (FinTS)“: flache Liste ohne innere Einrückung/Trennlinie wie in der Einrichtung */
   variant?: 'default' | 'flat';
+  /**
+   * false: keine Tabelle (Zugänge sind nutzerweit — Liste z. B. einmal oben in den Einstellungen).
+   * true: volle Tabelle mit Bearbeiten/Löschen.
+   */
+  showCredentialsTable?: boolean;
 };
 
 export default function AccountGroupFinTsPanel({
@@ -93,6 +99,7 @@ export default function AccountGroupFinTsPanel({
   groupLabel,
   provisionGroupOptions,
   variant = 'default',
+  showCredentialsTable = true,
 }: Props) {
   const qc = useQueryClient();
   const provisionSelectLabelId = useId();
@@ -129,6 +136,7 @@ export default function AccountGroupFinTsPanel({
   const q = useQuery({
     queryKey: qKey,
     queryFn: () => fetchBankCredentials(),
+    refetchOnWindowFocus: true,
   });
 
   function applyCredentialSuccess(c: BankCredential) {
@@ -190,7 +198,14 @@ export default function AccountGroupFinTsPanel({
       }
       applyCredentialSuccess(r as BankCredential);
     } catch (e) {
-      setFormError(apiErrorMessage(e));
+      if (axios.isAxiosError(e) && e.response?.status === 409) {
+        await qc.refetchQueries({ queryKey: qKey });
+        setFormError(
+          `${apiErrorMessage(e)} — Liste wurde neu geladen. Der Zugang existiert vermutlich schon (z. B. nach abgebrochenem Dialog oder früherem Speichern); bitte in der Tabelle oben prüfen oder dort bearbeiten.`,
+        );
+      } else {
+        setFormError(apiErrorMessage(e));
+      }
     } finally {
       setSaving(false);
     }
@@ -307,91 +322,97 @@ export default function AccountGroupFinTsPanel({
         FinTS-Zugang anlegen
       </Button>
 
-      {q.isError ? (
+      {showCredentialsTable && q.isError ? (
         <Alert severity="error" sx={{ mt: 1 }}>
           {apiErrorMessage(q.error)}
         </Alert>
       ) : null}
 
-      {q.isLoading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-          <CircularProgress size={24} />
-        </Box>
-      ) : (
-        <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', mt: 1.5 }}>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Provider</TableCell>
-                <TableCell>BLZ</TableCell>
-                <TableCell>User</TableCell>
-                <TableCell>PIN</TableCell>
-                <TableCell>FinTS</TableCell>
-                <TableCell align="right">Aktion</TableCell>
-              </TableRow>
-            </TableHead>
-            <TableBody>
-              {rows.length === 0 ? (
+      {showCredentialsTable ? (
+        q.isLoading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+            <CircularProgress size={24} />
+          </Box>
+        ) : (
+          <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', mt: 1.5 }}>
+            <Table size="small">
+              <TableHead>
                 <TableRow>
-                  <TableCell colSpan={6}>
-                    <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
-                      Noch kein FinTS-Zugang für diesen Nutzer.
-                    </Typography>
-                  </TableCell>
+                  <TableCell>Provider</TableCell>
+                  <TableCell>BLZ</TableCell>
+                  <TableCell>User</TableCell>
+                  <TableCell>PIN</TableCell>
+                  <TableCell>FinTS</TableCell>
+                  <TableCell align="right">Aktion</TableCell>
                 </TableRow>
-              ) : (
-                rows.map((c) => (
-                  <TableRow key={c.id} hover>
-                    <TableCell>{c.provider}</TableCell>
-                    <TableCell>{c.fints_blz}</TableCell>
-                    <TableCell>{c.fints_user}</TableCell>
-                    <TableCell>{c.has_pin ? 'ja' : 'nein'}</TableCell>
-                    <TableCell>
-                      {c.fints_verified_ok === false ? (
-                        <Typography component="span" variant="body2" color="error">
-                          fehlerhaft
-                        </Typography>
-                      ) : (
-                        <Typography component="span" variant="body2" color="text.secondary">
-                          ok
-                        </Typography>
-                      )}
-                    </TableCell>
-                    <TableCell align="right">
-                      <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center" flexWrap="wrap">
-                        <IconButton
-                          size="small"
-                          color="primary"
-                          aria-label="Bearbeiten"
-                          disabled={deleteMut.isPending || saving}
-                          onClick={() => openEdit(c)}
-                        >
-                          <EditIcon fontSize="small" />
-                        </IconButton>
-                        <IconButton
-                          size="small"
-                          color="error"
-                          aria-label="Löschen"
-                          disabled={deleteMut.isPending}
-                          onClick={() => {
-                            if (
-                              window.confirm(
-                                `FinTS-Zugang „${c.provider}“ (BLZ ${c.fints_blz}) löschen? Verknüpfte Bankkonten behalten ggf. die Zuordnung.`,
-                              )
-                            )
-                              deleteMut.mutate(c.id);
-                          }}
-                        >
-                          <DeleteIcon fontSize="small" />
-                        </IconButton>
-                      </Stack>
+              </TableHead>
+              <TableBody>
+                {rows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6}>
+                      <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
+                        Noch kein FinTS-Zugang für diesen Nutzer.
+                      </Typography>
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </TableContainer>
+                ) : (
+                  rows.map((c) => (
+                    <TableRow key={c.id} hover>
+                      <TableCell>{c.provider}</TableCell>
+                      <TableCell>{c.fints_blz}</TableCell>
+                      <TableCell>{c.fints_user}</TableCell>
+                      <TableCell>{c.has_pin ? 'ja' : 'nein'}</TableCell>
+                      <TableCell>
+                        {c.fints_verified_ok === false ? (
+                          <Typography component="span" variant="body2" color="error">
+                            fehlerhaft
+                          </Typography>
+                        ) : (
+                          <Typography component="span" variant="body2" color="text.secondary">
+                            ok
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={0.5} justifyContent="flex-end" alignItems="center" flexWrap="wrap">
+                          <IconButton
+                            size="small"
+                            color="primary"
+                            aria-label="Bearbeiten"
+                            disabled={deleteMut.isPending || saving}
+                            onClick={() => openEdit(c)}
+                          >
+                            <EditIcon fontSize="small" />
+                          </IconButton>
+                          <IconButton
+                            size="small"
+                            color="error"
+                            aria-label="Löschen"
+                            disabled={deleteMut.isPending}
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `FinTS-Zugang „${c.provider}“ (BLZ ${c.fints_blz}) löschen? Verknüpfte Bankkonten behalten ggf. die Zuordnung.`,
+                                )
+                              )
+                                deleteMut.mutate(c.id);
+                            }}
+                          >
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )
+      ) : (
+        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
+          Zugangsliste siehe oben unter „Alle FinTS-Zugänge“.
+        </Typography>
       )}
 
       <Dialog open={fintsTanOpen} onClose={() => (!fintsTanBusy ? setFintsTanOpen(false) : undefined)} maxWidth="sm" fullWidth>

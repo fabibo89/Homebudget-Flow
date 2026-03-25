@@ -20,16 +20,20 @@ from app.schemas.category_rule import (
     CategoryRulesListOut,
     CategoryRuleSuggestionDismissCreate,
     CategoryRuleSuggestionOut,
+  CategoryRuleSuggestionPreviewBody,
+  CategoryRuleSuggestionPreviewOut,
     CategoryRuleSuggestionRestoreBody,
     CategoryRuleSuggestionsBundle,
     CategoryRuleTypeSchema,
     CategoryRuleUpdate,
 )
+from app.schemas.transaction import transaction_to_out
 from app.schemas.category_rule_conditions import (
     conditions_for_api,
     conditions_from_legacy_api_type,
     conditions_to_json,
     derive_rule_type_and_pattern,
+  transaction_matches_conditions,
     validate_conditions_list,
 )
 from app.services.category_assignment import ensure_category_is_subcategory_for_assignment
@@ -42,6 +46,7 @@ from app.services.category_rule_suggestions import compute_category_rule_suggest
 from app.services.category_rules import (
     apply_category_rules_to_uncategorized,
     build_rule_allowed_bank_account_ids,
+  first_matching_rule_category_id,
     list_category_rule_overwrite_candidates,
     reverse_category_rule_assignments,
 )
@@ -206,6 +211,108 @@ async def list_category_rule_suggestions(
         active.append(CategoryRuleSuggestionOut(**row))
 
     return CategoryRuleSuggestionsBundle(active=active, ignored=ignored)
+
+
+@router.post(
+    "/{household_id}/category-rule-suggestions/preview",
+    response_model=CategoryRuleSuggestionPreviewOut,
+)
+async def preview_category_rule_suggestion(
+    household_id: int,
+    body: CategoryRuleSuggestionPreviewBody,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> CategoryRuleSuggestionPreviewOut:
+    """Zeigt Buchungen, die auf einen Vorschlag passen, gruppiert nach Beispiel-Labels."""
+    if not await user_has_household(session, user.id, household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+
+    rt = body.rule_type.value
+    if rt not in (
+        CategoryRuleTypeSchema.counterparty_contains.value,
+        CategoryRuleTypeSchema.description_contains.value,
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Nur Vorschläge vom Typ „enthält“ können als Vorschau angezeigt werden.",
+        )
+
+    account_ids = await bank_account_ids_visible_for_user_in_household(session, user, household_id)
+    if not account_ids:
+        return CategoryRuleSuggestionPreviewOut(rule_type=body.rule_type, pattern=body.pattern, truncated=False, groups=[])
+
+    rules_r = await session.execute(
+        select(CategoryRule)
+        .where(CategoryRule.household_id == household_id)
+        .order_by(CategoryRule.id.desc()),
+    )
+    rules = list(rules_r.scalars().all())
+    rule_allowed = await build_rule_allowed_bank_account_ids(session, household_id, rules)
+
+    conds = conditions_from_legacy_api_type(rt, body.pattern)
+
+    tx_r = await session.execute(
+        select(Transaction)
+        .where(
+            Transaction.bank_account_id.in_(account_ids),
+            Transaction.category_id.is_(None),
+        )
+        .order_by(Transaction.booking_date.desc(), Transaction.id.desc())
+        .limit(body.limit_total * 3),
+    )
+    txs = list(tx_r.scalars().all())
+
+    sample_set = {str(x).strip() for x in (body.sample_labels or []) if str(x).strip()}
+
+    groups: dict[str, list] = {lab: [] for lab in sample_set}
+    other: list = []
+    total = 0
+    truncated = False
+
+    for tx in txs:
+        # nur Buchungen, die nicht schon durch bestehende Regeln getroffen würden
+        if first_matching_rule_category_id(tx, rules, rule_allowed) is not None:
+            continue
+        if not transaction_matches_conditions(tx, conds):
+            continue
+
+        label = (tx.counterparty or "").strip() if rt == CategoryRuleTypeSchema.counterparty_contains.value else (tx.description or "").strip()
+        out_tx = transaction_to_out(tx)
+
+        if sample_set and label in groups:
+            if len(groups[label]) < body.limit_per_label and total < body.limit_total:
+                groups[label].append(out_tx)
+                total += 1
+            else:
+                truncated = True
+        else:
+            if total < body.limit_total:
+                other.append(out_tx)
+                total += 1
+            else:
+                truncated = True
+
+        if total >= body.limit_total:
+            truncated = True
+            break
+
+    out_groups = []
+    for lab in (body.sample_labels or []):
+        l = str(lab).strip()
+        if not l:
+            continue
+        tx_list = groups.get(l) or []
+        if tx_list:
+            out_groups.append({"label": l, "transactions": tx_list})
+    if other:
+        out_groups.append({"label": "Weitere Treffer", "transactions": other})
+
+    return CategoryRuleSuggestionPreviewOut(
+        rule_type=body.rule_type,
+        pattern=body.pattern,
+        truncated=truncated,
+        groups=out_groups,
+    )
 
 
 @router.post(

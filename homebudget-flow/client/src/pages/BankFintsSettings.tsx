@@ -29,6 +29,17 @@ export default function BankFintsSettings() {
     [households, groupQueries],
   );
 
+  /** Stabile Reihenfolge: die erste Gruppe zeigt die nutzerweite Zugangs-Tabelle genau einmal. */
+  const sortedFlatGroups = useMemo(
+    () =>
+      [...flatGroups].sort((a, b) => {
+        const h = a.householdName.localeCompare(b.householdName, 'de');
+        if (h !== 0) return h;
+        return a.group.name.localeCompare(b.group.name, 'de');
+      }),
+    [flatGroups],
+  );
+
   const provisionGroupOptions = useMemo(
     () =>
       flatGroups.map(({ householdName, group: g }) => ({
@@ -91,13 +102,26 @@ export default function BankFintsSettings() {
         </Alert>
       ) : (
         <Stack spacing={0}>
-          {flatGroups.map(({ householdName, group: g }) => (
+          {sortedFlatGroups[0] ? (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              FinTS-Zugänge sind <strong>nutzerweit</strong> (nicht pro Kontogruppe). Die Übersicht steht{' '}
+              <strong>nur einmal</strong> unter dem ersten Block:{' '}
+              <strong>
+                {sortedFlatGroups[0].householdName} · {sortedFlatGroups[0].group.name}
+              </strong>
+              . In den weiteren Blöcken kannst du ebenfalls einen Zugang anlegen; die Tabelle dort ist ausgeblendet.
+              Wenn die Meldung kommt, der Zugang existiere bereits, die Liste wurde neu geladen — dann den Eintrag dort
+              bearbeiten oder löschen.
+            </Alert>
+          ) : null}
+          {sortedFlatGroups.map(({ householdName, group: g }, idx) => (
             <AccountGroupFinTsPanel
               key={g.id}
               accountGroupId={g.id}
               groupLabel={`${householdName} · ${g.name}`}
               provisionGroupOptions={provisionGroupOptions}
               variant="flat"
+              showCredentialsTable={idx === 0}
             />
           ))}
         </Stack>

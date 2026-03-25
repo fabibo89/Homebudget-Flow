@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Button,
   Card,
@@ -37,6 +40,7 @@ import {
   Add as AddIcon,
   DeleteOutline as DeleteOutlineIcon,
   EditOutlined as EditOutlinedIcon,
+  ExpandMore as ExpandMoreIcon,
 } from '@mui/icons-material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -47,6 +51,7 @@ import {
   fetchCategoryRules,
   dismissCategoryRuleSuggestion,
   fetchCategoryRuleSuggestions,
+  fetchCategoryRuleSuggestionPreview,
   fetchHouseholds,
   restoreCategoryRuleSuggestion,
   updateCategory,
@@ -54,6 +59,7 @@ import {
   type CategoryRuleOut,
   type CategoryRuleOverwriteCandidate,
   type CategoryRuleSuggestion,
+  type CategoryRuleSuggestionPreviewOut,
   type CategoryRuleType,
 } from '../api/client';
 import CategoryRuleOverwriteDialog from '../components/CategoryRuleOverwriteDialog';
@@ -62,7 +68,9 @@ import { CategorySymbolDisplay, CategorySymbolPicker } from '../components/Categ
 import {
   categoryRuleBookingsTab,
   describeCategoryRuleCondition,
+  formatDate,
   formatDateTime,
+  formatMoney,
   type CategoryRulesBookingsTab,
 } from '../lib/transactionUi';
 
@@ -115,6 +123,7 @@ export default function CategoriesSettings() {
   const [formSubAutoColor, setFormSubAutoColor] = useState(true);
   const [formEmoji, setFormEmoji] = useState('');
   const [suggestionDialog, setSuggestionDialog] = useState<CategoryRuleSuggestion | null>(null);
+  const [suggestionPreviewDialog, setSuggestionPreviewDialog] = useState<CategoryRuleSuggestion | null>(null);
   const [ruleEditDialog, setRuleEditDialog] = useState<CategoryRuleOut | null>(null);
   const [newRuleDialogOpen, setNewRuleDialogOpen] = useState(false);
   const [ruleSavedSnack, setRuleSavedSnack] = useState<string | null>(null);
@@ -142,6 +151,27 @@ export default function CategoriesSettings() {
     queryKey: ['category-rule-suggestions', householdId],
     queryFn: () => fetchCategoryRuleSuggestions(Number(householdId)),
     enabled: householdId !== '',
+  });
+
+  const suggestionPreviewQuery = useQuery({
+    queryKey: [
+      'category-rule-suggestion-preview',
+      householdId,
+      suggestionPreviewDialog?.rule_type,
+      suggestionPreviewDialog?.pattern,
+    ],
+    queryFn: (): Promise<CategoryRuleSuggestionPreviewOut> => {
+      if (suggestionPreviewDialog == null) throw new Error('no suggestion');
+      return fetchCategoryRuleSuggestionPreview({
+        householdId: Number(householdId),
+        rule_type: suggestionPreviewDialog.rule_type,
+        pattern: suggestionPreviewDialog.pattern,
+        sample_labels: suggestionPreviewDialog.sample_labels,
+        limit_per_label: 25,
+        limit_total: 200,
+      });
+    },
+    enabled: householdId !== '' && suggestionPreviewDialog != null,
   });
 
   const households = hhQuery.data ?? [];
@@ -583,7 +613,12 @@ export default function CategoriesSettings() {
                         </TableHead>
                         <TableBody>
                           {suggestionActiveList.map((s) => (
-                            <TableRow key={`active:${s.rule_type}:${s.pattern}`} hover>
+                            <TableRow
+                              key={`active:${s.rule_type}:${s.pattern}`}
+                              hover
+                              sx={{ cursor: 'pointer' }}
+                              onClick={() => setSuggestionPreviewDialog(s)}
+                            >
                               <TableCell>{categoryRuleTypeDescription(s.rule_type)}</TableCell>
                               <TableCell>
                                 <Typography
@@ -614,7 +649,8 @@ export default function CategoriesSettings() {
                                   <Button
                                     size="small"
                                     variant="outlined"
-                                    onClick={() => {
+                                    onClick={(e) => {
+                                      e.stopPropagation();
                                       setRuleEditDialog(null);
                                       setNewRuleDialogOpen(false);
                                       setSuggestionDialog(s);
@@ -626,7 +662,10 @@ export default function CategoriesSettings() {
                                   <Button
                                     size="small"
                                     color="inherit"
-                                    onClick={() => dismissSuggestionMut.mutate(s)}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      dismissSuggestionMut.mutate(s);
+                                    }}
                                     disabled={suggestionMutating}
                                   >
                                     Ignorieren
@@ -673,7 +712,12 @@ export default function CategoriesSettings() {
                           </TableHead>
                           <TableBody>
                             {suggestionIgnoredList.map((s) => (
-                              <TableRow key={`ignored:${s.rule_type}:${s.pattern}`} hover>
+                              <TableRow
+                                key={`ignored:${s.rule_type}:${s.pattern}`}
+                                hover
+                                sx={{ cursor: 'pointer' }}
+                                onClick={() => setSuggestionPreviewDialog(s)}
+                              >
                                 <TableCell>{categoryRuleTypeDescription(s.rule_type)}</TableCell>
                                 <TableCell>
                                   <Typography
@@ -704,7 +748,10 @@ export default function CategoriesSettings() {
                                     <Button
                                       size="small"
                                       variant="outlined"
-                                      onClick={() => restoreSuggestionMut.mutate(s)}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        restoreSuggestionMut.mutate(s);
+                                      }}
                                       disabled={suggestionMutating}
                                     >
                                       Wiederherstellen
@@ -712,7 +759,8 @@ export default function CategoriesSettings() {
                                     <Button
                                       size="small"
                                       variant="outlined"
-                                      onClick={() => {
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         setRuleEditDialog(null);
                                         setNewRuleDialogOpen(false);
                                         setSuggestionDialog(s);
@@ -949,6 +997,116 @@ export default function CategoriesSettings() {
           setRuleSavedSnack(parts.join(' '));
         }}
       />
+
+      <Dialog
+        open={suggestionPreviewDialog != null}
+        onClose={() => setSuggestionPreviewDialog(null)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          Vorschlag:{' '}
+          {suggestionPreviewDialog ? categoryRuleTypeDescription(suggestionPreviewDialog.rule_type) : ''}
+        </DialogTitle>
+        <DialogContent dividers>
+          {suggestionPreviewDialog ? (
+            <Stack spacing={2}>
+              <Typography variant="body2" color="text.secondary" sx={{ fontFamily: 'ui-monospace, monospace' }}>
+                „{suggestionPreviewDialog.pattern}“
+              </Typography>
+
+              {suggestionPreviewQuery.isError ? (
+                <Alert severity="error">{apiErrorMessage(suggestionPreviewQuery.error)}</Alert>
+              ) : suggestionPreviewQuery.isLoading ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+                  <CircularProgress size={32} />
+                </Box>
+              ) : (
+                <>
+                  {suggestionPreviewQuery.data?.truncated ? (
+                    <Alert severity="info">
+                      Trefferliste gekürzt (max. 25 pro Gruppe, max. 200 insgesamt). Bitte Regel anlegen und ggf. weiter
+                      einschränken.
+                    </Alert>
+                  ) : null}
+
+                  {(suggestionPreviewQuery.data?.groups ?? []).length === 0 ? (
+                    <Typography variant="body2" color="text.secondary">
+                      Keine passenden unkategorisierten Buchungen gefunden (oder bereits durch andere Regeln abgedeckt).
+                    </Typography>
+                  ) : (
+                    <Stack spacing={2.5}>
+                      {(suggestionPreviewQuery.data?.groups ?? []).map((g) => (
+                        <Accordion
+                          key={g.label}
+                          variant="outlined"
+                          defaultExpanded
+                          disableGutters
+                          sx={{ '&:before': { display: 'none' } }}
+                        >
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                              <Chip size="small" label={g.label} />
+                              <Typography variant="caption" color="text.secondary">
+                                {g.transactions.length} Buchungen
+                              </Typography>
+                            </Stack>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell sx={{ width: 120 }}>Datum</TableCell>
+                                  <TableCell sx={{ width: 140 }}>Betrag</TableCell>
+                                  <TableCell>Text</TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
+                                {g.transactions.map((t) => (
+                                  <TableRow key={t.id} hover>
+                                    <TableCell>{formatDate(t.booking_date)}</TableCell>
+                                    <TableCell sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                                      {formatMoney(t.amount, t.currency)}
+                                    </TableCell>
+                                    <TableCell sx={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                      {(t.counterparty ?? '').trim() ? (
+                                        <>
+                                          <strong>{t.counterparty}</strong>
+                                          {' — '}
+                                        </>
+                                      ) : null}
+                                      {t.description || '—'}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </AccordionDetails>
+                        </Accordion>
+                      ))}
+                    </Stack>
+                  )}
+                </>
+              )}
+            </Stack>
+          ) : null}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSuggestionPreviewDialog(null)}>Schließen</Button>
+          {suggestionPreviewDialog ? (
+            <Button
+              variant="contained"
+              onClick={() => {
+                setRuleEditDialog(null);
+                setNewRuleDialogOpen(false);
+                setSuggestionDialog(suggestionPreviewDialog);
+              }}
+            >
+              Regel anlegen
+            </Button>
+          ) : null}
+        </DialogActions>
+      </Dialog>
 
       <CategoryRuleOverwriteDialog
         open={ruleOverwriteDialog != null}

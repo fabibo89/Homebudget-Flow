@@ -21,6 +21,20 @@ from .const import DOMAIN
 from .coordinator import HomeBudgetFlowCoordinator
 
 
+def _account_device_info(coordinator: HomeBudgetFlowCoordinator, bank_account_id: int, account_name: str | None) -> dict[str, Any]:
+    """DeviceInfo pro Bankkonto, gruppiert mehrere Sensoren unter einem Device."""
+    entry_id = coordinator.entry.entry_id
+    label = (account_name or f"Konto {bank_account_id}").strip()
+    return {
+        "identifiers": {(DOMAIN, f"{entry_id}:{bank_account_id}")},
+        "name": f"{label}",
+        "manufacturer": "HomeBudget Flow",
+        "model": "Bankkonto",
+        # Parent-Device = Integration/ConfigEntry
+        "via_device": (DOMAIN, entry_id),
+    }
+
+
 def _parse_balance(raw: Any) -> float | None:
     if raw is None:
         return None
@@ -132,7 +146,6 @@ class HomeBudgetBalanceSensor(
 ):
     """Kontostand als Zahl (monetär, für Verlauf & Automatisierungen)."""
 
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = False
     _attr_device_class = SensorDeviceClass.MONETARY
     _attr_state_class = SensorStateClass.TOTAL
@@ -182,12 +195,12 @@ class HomeBudgetBalanceSensor(
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "HomeBudget Flow",
-            "manufacturer": "HomeBudget Flow",
-            "model": "API",
-        }
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
 
 
 class HomeBudgetSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity):
@@ -231,12 +244,12 @@ class HomeBudgetSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], SensorE
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "HomeBudget Flow",
-            "manufacturer": "HomeBudget Flow",
-            "model": "API",
-        }
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
 
 
 class HomeBudgetPartImportSensor(
@@ -299,12 +312,12 @@ class HomeBudgetPartImportSensor(
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "HomeBudget Flow",
-            "manufacturer": "HomeBudget Flow",
-            "model": "API",
-        }
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
 
 
 class HomeBudgetLastSalaryDateSensor(
@@ -349,12 +362,12 @@ class HomeBudgetLastSalaryDateSensor(
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "HomeBudget Flow",
-            "manufacturer": "HomeBudget Flow",
-            "model": "API",
-        }
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
 
 
 class HomeBudgetLastSalaryAmountSensor(
@@ -411,9 +424,9 @@ class HomeBudgetLastSalaryAmountSensor(
 
     @property
     def device_info(self) -> dict[str, Any]:
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "HomeBudget Flow",
-            "manufacturer": "HomeBudget Flow",
-            "model": "API",
-        }
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )

@@ -96,6 +96,26 @@ class CategoryRuleSuggestionsBundle(BaseModel):
     ignored: list[CategoryRuleSuggestionOut]
 
 
+class CategoryRuleSuggestionPreviewBody(BaseModel):
+    rule_type: CategoryRuleTypeSchema
+    pattern: str = Field(..., min_length=1, max_length=512)
+    sample_labels: list[str] = Field(default_factory=list, max_length=24)
+    limit_per_label: int = Field(default=25, ge=1, le=100)
+    limit_total: int = Field(default=200, ge=1, le=1000)
+
+
+class CategoryRuleSuggestionPreviewGroup(BaseModel):
+    label: str
+    transactions: list["TransactionOut"]
+
+
+class CategoryRuleSuggestionPreviewOut(BaseModel):
+    rule_type: CategoryRuleTypeSchema
+    pattern: str
+    truncated: bool = False
+    groups: list[CategoryRuleSuggestionPreviewGroup] = Field(default_factory=list)
+
+
 class CategoryRuleSuggestionDismissCreate(BaseModel):
     """Snapshot eines Vorschlags beim Ignorieren (Anzeige unter „Ignoriert“)."""
 
@@ -118,3 +138,10 @@ class CategoryRuleCreatedOut(CategoryRuleOut):
     """Nur wenn apply_to_uncategorized: bereits kategorisierte Buchungen, die eine andere Regelkategorie hätten."""
     category_overwrite_truncated: bool = False
     """True, wenn mehr Treffer als category_overwrite_candidates zurückgegeben wurden."""
+
+
+# Forward-ref resolution
+from app.schemas.transaction import TransactionOut  # noqa: E402
+
+CategoryRuleSuggestionPreviewGroup.model_rebuild()
+CategoryRuleSuggestionPreviewOut.model_rebuild()

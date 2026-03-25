@@ -40,6 +40,24 @@ from app.services.credential_crypto import decrypt_secret, encrypt_secret
 logger = logging.getLogger(__name__)
 
 
+def _integrity_chain_text(exc: IntegrityError) -> str:
+    """Für Logs/Fehlermeldungen: Kette von orig/__cause__ (asyncpg, sqlite3, …)."""
+    parts: list[str] = []
+    cur: BaseException | None = exc
+    for _ in range(10):
+        if cur is None:
+            break
+        parts.append(str(cur))
+        nxt = getattr(cur, "__cause__", None) or getattr(cur, "__context__", None)
+        cur = nxt
+    return " | ".join(parts)
+
+
+def _integrity_has_constraint(exc: IntegrityError, *substrings: str) -> bool:
+    blob = _integrity_chain_text(exc).lower()
+    return any(s.lower() in blob for s in substrings)
+
+
 def _log_fints_task_exc(exc: BaseException, msg: str) -> None:
     """Volle Traceback zu Background-Task-Fehlern (``logger.exception`` außerhalb ``except`` ist nutzlos)."""
     logger.error("%s: %s", msg, exc, exc_info=exc)
@@ -301,6 +319,29 @@ async def _persist_bank_credential_create(
     session.add(row)
     try:
         await session.flush()
+    except IntegrityError as e:
+        await session.rollback()
+        chain = _integrity_chain_text(e)
+        logger.warning(
+            "bank_credentials create flush IntegrityError user_id=%s provider=%s blz=%s fints_user=%s: %s",
+            user_id,
+            body.provider,
+            body.fints_blz,
+            body.fints_user,
+            chain,
+        )
+        if _integrity_has_constraint(e, "uq_cred_user_fints_login", "user_fints_login"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Es gibt bereits einen FinTS-Zugang mit dieser Kombination aus Provider, BLZ und Benutzer. "
+                "Bitte den bestehenden Eintrag bearbeiten oder löschen.",
+            ) from e
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Speichern des FinTS-Zugangs fehlgeschlagen (Datenbank). Technische Info: {chain[:800]}",
+        ) from e
+
+    try:
         if verified_ok and accounts:
             await ensure_bank_accounts_from_sepa_accounts(
                 session, row, accounts, body.provision_account_group_id
@@ -316,17 +357,22 @@ async def _persist_bank_credential_create(
         )
     except IntegrityError as e:
         await session.rollback()
-        logger.info(
-            "bank_credentials duplicate user_id=%s provider=%s blz=%s fints_user=%s",
+        chain = _integrity_chain_text(e)
+        logger.warning(
+            "bank_credentials create commit/accounts IntegrityError user_id=%s credential_id=%s: %s",
             user_id,
-            body.provider,
-            body.fints_blz,
-            body.fints_user,
+            getattr(row, "id", None),
+            chain,
         )
+        if _integrity_has_constraint(e, "uq_bank_provider_iban", "bank_provider_iban"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Es gibt bereits ein Bankkonto mit derselben Kombination aus Provider und IBAN. "
+                "Bitte bestehendes Konto nutzen oder in den Bankkonten-Einstellungen prüfen.",
+            ) from e
         raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Es gibt bereits einen FinTS-Zugang mit dieser Kombination aus Provider, BLZ und Benutzer. "
-            "Bitte den bestehenden Eintrag bearbeiten oder löschen.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Speichern fehlgeschlagen (Datenbank). Technische Info: {chain[:800]}",
         ) from e
     await session.refresh(row)
     return row, fints_log
@@ -382,6 +428,21 @@ async def _persist_bank_credential_update(
 
     try:
         await session.flush()
+    except IntegrityError as e:
+        await session.rollback()
+        chain = _integrity_chain_text(e)
+        logger.warning("bank_credentials update flush IntegrityError id=%s user_id=%s: %s", row.id, user.id, chain)
+        if _integrity_has_constraint(e, "uq_cred_user_fints_login", "user_fints_login"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Konflikt: Es gibt bereits einen anderen FinTS-Zugang mit dieser Kombination aus Provider, BLZ und Benutzer.",
+            ) from e
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Aktualisieren des FinTS-Zugangs fehlgeschlagen (Datenbank). Technische Info: {chain[:800]}",
+        ) from e
+
+    try:
         if verified_ok and accounts:
             provision_gid = await _provision_group_for_credential(
                 session,
@@ -395,9 +456,21 @@ async def _persist_bank_credential_update(
         logger.info("bank_credentials updated id=%s user_id=%s verified_ok=%s", row.id, user.id, verified_ok)
     except IntegrityError as e:
         await session.rollback()
+        chain = _integrity_chain_text(e)
+        logger.warning("bank_credentials update commit/accounts IntegrityError id=%s: %s", row.id, chain)
+        if _integrity_has_constraint(e, "uq_cred_user_fints_login", "user_fints_login"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Konflikt: Es gibt bereits einen anderen FinTS-Zugang mit dieser Kombination aus Provider, BLZ und Benutzer.",
+            ) from e
+        if _integrity_has_constraint(e, "uq_bank_provider_iban", "bank_provider_iban"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Es gibt bereits ein Bankkonto mit derselben Kombination aus Provider und IBAN.",
+            ) from e
         raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "Konflikt: Es gibt bereits einen anderen FinTS-Zugang mit dieser Kombination aus Provider, BLZ und Benutzer.",
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Speichern fehlgeschlagen (Datenbank). Technische Info: {chain[:800]}",
         ) from e
 
     return row, fints_log

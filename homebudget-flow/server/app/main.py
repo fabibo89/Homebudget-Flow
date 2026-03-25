@@ -1,5 +1,7 @@
 import logging
 import os
+import mimetypes
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 
@@ -51,6 +53,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="HomeBudget Flow", version="0.1.0", lifespan=lifespan)
 
+_ui = os.path.join(os.path.dirname(__file__), "static", "ui")
+_ui_index = os.path.join(_ui, "index.html")
+_ui_assets = os.path.join(_ui, "assets")
+
+# Zuerst Mounts registrieren: sonst kann ``GET /{full_path:path}`` (SPA-Fallback) /assets/*.js
+# abfangen und index.html (text/html) ausliefern — Safari meldet dann keinen gültigen JS-MIME-Type.
+if os.path.isdir(_ui_assets):
+    app.mount("/assets", StaticFiles(directory=_ui_assets), name="ui_assets")
+    # Alte index.html mit base /ui/ — gleiche Dateien unter /ui/assets/…
+    app.mount("/ui/assets", StaticFiles(directory=_ui_assets), name="ui_assets_legacy")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -70,14 +83,29 @@ app.include_router(accounts.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.include_router(ha.router, prefix="/api")
 
-_ui = os.path.join(os.path.dirname(__file__), "static", "ui")
-_ui_index = os.path.join(_ui, "index.html")
-_ui_assets = os.path.join(_ui, "assets")
 
-if os.path.isdir(_ui_assets):
-    app.mount("/assets", StaticFiles(directory=_ui_assets), name="ui_assets")
-    # Alte index.html mit base /ui/ — gleiche Dateien unter /ui/assets/…
-    app.mount("/ui/assets", StaticFiles(directory=_ui_assets), name="ui_assets_legacy")
+@app.get("/assets/{asset_path:path}")
+async def ui_asset(asset_path: str):
+    """
+    Robuster Asset-Handler: verhindert, dass SPA-Fallback versehentlich HTML für JS/CSS ausliefert
+    (Browser-Fehler: "'text/html' is not a valid JavaScript MIME type").
+
+    Wenn StaticFiles-Mounts aktiv sind, matchen sie typischerweise vorher; dieser Handler ist ein Fallback.
+    """
+    base = Path(_ui_assets)
+    candidate = (base / asset_path).resolve()
+    try:
+        base_resolved = base.resolve()
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="UI-Assets nicht vorhanden")
+
+    if not str(candidate).startswith(str(base_resolved) + os.sep):
+        raise HTTPException(status_code=404, detail="Asset nicht gefunden")
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Asset nicht gefunden")
+
+    media_type, _ = mimetypes.guess_type(str(candidate))
+    return FileResponse(str(candidate), media_type=media_type or "application/octet-stream")
 
 
 @app.get("/")

@@ -17,7 +17,6 @@ from typing import Any, Callable, Optional, TypeVar
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
 from fints.exceptions import FinTSClientPINError, FinTSConnectionError
-from fints.formals import CUSTOMER_ID_ANONYMOUS
 from fints.models import SEPAAccount
 from fints.utils import minimal_interactive_cli_bootstrap
 from mt940.models import Balance as Mt940Balance
@@ -212,6 +211,8 @@ def _resolve_init_tan(
     cred: FintsCredentials | None,
     tx_tan_channel: TransactionTanChannel | None = None,
 ) -> None:
+    # python-fints setzt init_tan_response nur bei dialog.init(); nach erfolgreichem send_tan
+    # wird es nicht geleert — sonst dieselbe Challenge erneut → zweite App-Runde / 9800.
     for _ in range(20):
         r = client.init_tan_response
         if not r:
@@ -227,10 +228,20 @@ def _resolve_init_tan(
                 )
             logger.info("FinTS decoupled: warte %s s", wait)
             time.sleep(wait)
-            client.send_tan(r, "")
+            cur: Any = client.send_tan(r, "")
         else:
             tan = _prompt_tan_for_response(r, cred, tx_tan_channel)
-            client.send_tan(r, tan)
+            cur = client.send_tan(r, tan)
+
+        while isinstance(cur, NeedTANResponse) and not cur.decoupled:
+            tan = _prompt_tan_for_response(cur, cred, tx_tan_channel)
+            cur = client.send_tan(cur, tan)
+
+        if not isinstance(cur, NeedTANResponse):
+            client.init_tan_response = None
+            return
+
+        client.init_tan_response = cur
 
 
 def _balance_to_decimal(bal: Mt940Balance) -> tuple[Decimal, str]:
@@ -362,19 +373,21 @@ def _build_client(cred: FintsCredentials | None) -> FinTS3PinTanClient:
         len(product_id),
         "Bank-Zugangsdaten" if from_cred else "FINTS_PRODUCT_ID (Umgebung) oder settings.fints_product_id (.env)",
     )
-    # DKB: „Kunden-ID bitte frei lassen“ — python-fints setzt sonst customer_id = user_id (falsch für DKB).
-    # Siehe https://www.dkb.de/fragen-antworten/kann-ich-eine-finanzsoftware-fuers-banking-benutzen
+    # DKB (neuer FinTS-Server ab ~25.11.2024): Kunden-ID = FinTS-Benutzerkennung (Anmeldename).
+    # Entwicklerhinweis u. a. https://homebanking-hilfe.de/forum/topic.php?t=26871 (Zitat subsembly).
+    # Die DKB-FAQ „Kunden-ID frei lassen“ ist damit für den neuen Server fachlich überholt.
     customer_id: str | None = None
+    user = _resolve_fints_field("user", cred)
     if _endpoint_is_dkb_fints(endpoint) or _blz_is_dkb(blz):
-        customer_id = CUSTOMER_ID_ANONYMOUS
+        customer_id = user
         logger.info(
-            "FinTS DKB: Kunden-ID anonym (HKIDN), Benutzerkennung = FinTS-User; Endpoint=%s BLZ=%s",
+            "FinTS DKB: HKIDN Kunden-ID = Benutzerkennung; Endpoint=%s BLZ=%s",
             endpoint,
             blz,
         )
     return FinTS3PinTanClient(
         blz,
-        _resolve_fints_field("user", cred),
+        user,
         _resolve_fints_field("pin", cred),
         endpoint,
         customer_id,

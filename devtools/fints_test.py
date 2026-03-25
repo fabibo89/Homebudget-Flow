@@ -16,14 +16,15 @@ Comdirect (laut HBCI/FinTS-Hilfe): Benutzerkennung = Zugangsnummer (wie Online-B
 
 Credentials (optional, empfohlen: chmod 600 für .env):
   Standard: zuerst Repository-Root ``.env`` (wie vom Server), dann optional ``devtools/.env``.
-  Vorlage: ``devtools/.env.example`` → nach Root als ``.env`` kopieren.
-  Alternativ: ``FINTS_ENV_FILE=/absoluter/pfad`` setzen.
+  Bank-Vorlagen: ``devtools/comdirekt/.env.example`` bzw. ``devtools/dkb/.env.example``
+  → als ``devtools/<bank>/.env`` kopieren; mit ``FINTS_BANK=comdirekt`` oder ``FINTS_BANK=dkb``
+  wird die passende Datei geladen (oder ``FINTS_ENV_FILE=devtools/comdirekt/.env``).
   Shell-Exports überschreiben die Datei nicht (override=False).
 
 Beispiel (Arbeitsverzeichnis = Repository-Root):
   pip install -r devtools/requirements.txt
-  cp devtools/.env.example .env   # dann .env bearbeiten
-  python3 devtools/fints_test.py
+  cp devtools/comdirekt/.env.example devtools/comdirekt/.env   # bearbeiten
+  FINTS_BANK=comdirekt python3 devtools/fints_test.py
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
-from fints.exceptions import FinTSClientPINError
+from fints.exceptions import FinTSClientPINError, FinTSConnectionError
 from fints.utils import minimal_interactive_cli_bootstrap
 
 # Comdirect Bank AG, Quickborn
@@ -48,6 +49,14 @@ DEFAULT_ENDPOINT = "https://fints.comdirect.de/fints"
 
 _DEVTOOLS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _DEVTOOLS_DIR.parent
+
+
+def _endpoint_is_dkb(endpoint: str) -> bool:
+    return "fints.dkb.de" in (endpoint or "").strip().lower()
+
+
+def _blz_is_dkb(blz: str) -> bool:
+    return "".join((blz or "").split()) == "12030000"
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -139,6 +148,11 @@ def _load_env_files() -> None:
         return
     load_dotenv(_REPO_ROOT / ".env", override=False)
     load_dotenv(_DEVTOOLS_DIR / ".env", override=False)
+    bank = (os.environ.get("FINTS_BANK") or "").strip().lower()
+    if bank in ("comdirekt", "comdirect"):
+        load_dotenv(_DEVTOOLS_DIR / "comdirekt" / ".env", override=False)
+    elif bank == "dkb":
+        load_dotenv(_DEVTOOLS_DIR / "dkb" / ".env", override=False)
 
 
 def main() -> int:
@@ -161,11 +175,17 @@ def main() -> int:
     if not pin:
         pin = getpass.getpass("PIN: ")
 
+    customer_id = None
+    if _endpoint_is_dkb(args.endpoint) or _blz_is_dkb(args.blz):
+        # DKB neuer Server: Kunden-ID = Benutzerkennung (s. homebanking-hilfe Forum t=26871).
+        customer_id = args.user
+
     client = FinTS3PinTanClient(
         args.blz,
         args.user,
         pin,
         args.endpoint,
+        customer_id,
         product_id=args.product_id,
     )
 
@@ -175,6 +195,16 @@ def main() -> int:
         with client:
             _resolve_init_tan(client)
             accounts = client.get_sepa_accounts()
+    except FinTSConnectionError as e:
+        print(
+            "\nFinTS-HTTP-Verbindung fehlgeschlagen:\n",
+            e,
+            "\n\nDKB: HTTP 400 ist oft eine abgelehnte oder unbekannte ZKA-Produkt-ID — "
+            "FINTS_PRODUCT_ID prüfen (https://www.fints.org/de/hersteller/produktregistrierung).\n"
+            "Für DKB: python3 devtools/dkb/dkb_fints_test.py (Kunden-ID = Benutzerkennung).",
+            file=sys.stderr,
+        )
+        return 1
     except FinTSClientPINError as e:
         print(
             "\nFinTS meldet einen Authentifizierungsfehler (python-fints: \"PIN wrong?\").\n"

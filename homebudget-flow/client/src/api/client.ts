@@ -273,9 +273,42 @@ export type CategoryRuleSuggestionsBundle = {
   ignored: CategoryRuleSuggestion[];
 };
 
+export type CategoryRuleSuggestionPreviewGroup = {
+  label: string;
+  transactions: Transaction[];
+};
+
+export type CategoryRuleSuggestionPreviewOut = {
+  rule_type: CategoryRuleType;
+  pattern: string;
+  truncated: boolean;
+  groups: CategoryRuleSuggestionPreviewGroup[];
+};
+
 export async function fetchCategoryRuleSuggestions(householdId: number): Promise<CategoryRuleSuggestionsBundle> {
   const { data } = await api.get<CategoryRuleSuggestionsBundle>(
     `/api/households/${householdId}/category-rule-suggestions`,
+  );
+  return data;
+}
+
+export async function fetchCategoryRuleSuggestionPreview(args: {
+  householdId: number;
+  rule_type: CategoryRuleType;
+  pattern: string;
+  sample_labels: string[];
+  limit_per_label?: number;
+  limit_total?: number;
+}): Promise<CategoryRuleSuggestionPreviewOut> {
+  const { data } = await api.post<CategoryRuleSuggestionPreviewOut>(
+    `/api/households/${args.householdId}/category-rule-suggestions/preview`,
+    {
+      rule_type: args.rule_type,
+      pattern: args.pattern,
+      sample_labels: args.sample_labels,
+      limit_per_label: args.limit_per_label ?? 25,
+      limit_total: args.limit_total ?? 200,
+    },
   );
   return data;
 }

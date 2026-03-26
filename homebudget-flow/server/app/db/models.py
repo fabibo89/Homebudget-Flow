@@ -49,7 +49,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(255), default="")
     # True: Buchungen aller Kontogruppen im Haushalt; False: nur Kontogruppen mit direkter Mitgliedschaft.
-    all_household_transactions: Mapped[bool] = mapped_column(Boolean, default=True)
+    all_household_transactions: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     household_links: Mapped[list[HouseholdMember]] = relationship(back_populates="user")

@@ -24,7 +24,7 @@ async def _ensure_users_all_household_column(conn) -> None:
         if cols and "all_household_transactions" not in cols:
             await conn.execute(
                 text(
-                    "ALTER TABLE users ADD COLUMN all_household_transactions BOOLEAN NOT NULL DEFAULT 1",
+                    "ALTER TABLE users ADD COLUMN all_household_transactions BOOLEAN NOT NULL DEFAULT 0",
                 ),
             )
         return
@@ -32,7 +32,7 @@ async def _ensure_users_all_household_column(conn) -> None:
         await conn.execute(
             text(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS all_household_transactions "
-                "BOOLEAN NOT NULL DEFAULT TRUE",
+                "BOOLEAN NOT NULL DEFAULT FALSE",
             ),
         )
 

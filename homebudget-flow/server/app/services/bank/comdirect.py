@@ -12,8 +12,14 @@ import asyncio
 from datetime import date
 from decimal import Decimal
 
-from app.services.bank.base import BankConnector, FetchedTransaction
-from app.services.bank.fints_runner import FintsCredentials, fetch_balance_sync, fetch_transactions_sync
+from app.services.bank.base import BankConnector, FetchedAccountSnapshot, FetchedTransaction
+from app.services.bank.fints_runner import (
+    FintsCredentials,
+    SkipTransactionsForAutomationTan,
+    fetch_balance_sync,
+    fetch_snapshot_sync,
+    fetch_transactions_sync,
+)
 from app.services.bank.transaction_tan_channel import TransactionTanChannel
 
 
@@ -49,3 +55,26 @@ class ComdirectConnector(BankConnector):
             self.fints_credentials,
             self.tx_tan_channel,
         )
+
+    async def fetch_snapshot(
+        self,
+        external_account_id: str,
+        from_date: date | None,
+        to_date: date | None,
+    ) -> FetchedAccountSnapshot:
+        def _run() -> FetchedAccountSnapshot:
+            balance, currency, txs, txs_skipped = fetch_snapshot_sync(
+                external_account_id.strip(),
+                from_date,
+                to_date,
+                self.fints_credentials,
+                self.tx_tan_channel,
+            )
+            return FetchedAccountSnapshot(
+                balance=balance,
+                currency=currency,
+                transactions=txs,
+                transactions_skipped=txs_skipped,
+            )
+
+        return await asyncio.to_thread(_run)

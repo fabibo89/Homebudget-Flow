@@ -19,6 +19,14 @@ class FetchedTransaction:
     raw: dict[str, Any] | None = None
 
 
+@dataclass
+class FetchedAccountSnapshot:
+    balance: Decimal
+    currency: str
+    transactions: list[FetchedTransaction]
+    transactions_skipped: bool = False
+
+
 class BankConnector(ABC):
     provider: str
 
@@ -34,3 +42,19 @@ class BankConnector(ABC):
         to_date: date | None,
     ) -> list[FetchedTransaction]:
         """Buchungen im Zeitraum; None-Daten = maximale Bank-/Implementierungslogik."""
+
+    async def fetch_snapshot(
+        self,
+        external_account_id: str,
+        from_date: date | None,
+        to_date: date | None,
+    ) -> FetchedAccountSnapshot:
+        """Saldo + Umsätze. Default: getrennte Calls (kann von Implementierungen überschrieben werden)."""
+        balance, currency = await self.fetch_balance(external_account_id)
+        txs = await self.fetch_transactions(external_account_id, from_date, to_date)
+        return FetchedAccountSnapshot(
+            balance=balance,
+            currency=currency,
+            transactions=txs,
+            transactions_skipped=False,
+        )

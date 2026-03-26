@@ -579,3 +579,84 @@ def fetch_transactions_sync(
         return out
 
     return run_with_fints_session(inner, cred, tx_tan_channel)
+
+
+def fetch_snapshot_sync(
+    iban: str,
+    from_date: Optional[date],
+    to_date: Optional[date],
+    cred: FintsCredentials | None = None,
+    tx_tan_channel: TransactionTanChannel | None = None,
+) -> tuple[Decimal, str, list[FetchedTransaction], bool]:
+    """Saldo + Umsätze innerhalb EINER FinTS-Session (reduziert decoupled Freigaben bei DKB)."""
+
+    def inner(client: FinTS3PinTanClient) -> tuple[Decimal, str, list[FetchedTransaction], bool]:
+        acc = _find_sepa_account(client, iban, cred, tx_tan_channel)
+
+        # Balance (wie fetch_balance_sync, aber ohne zweite Session)
+        rounds = 0
+        bal: Any = None
+        while rounds < 12:
+            bal = client.get_balance(acc)
+            if not isinstance(bal, NeedTANResponse):
+                break
+            rounds += 1
+            r = bal
+            if r.decoupled:
+                resolved = _resolve_decoupled_then_chip_tan(client, r, cred, tx_tan_channel)
+                if resolved is None:
+                    raise RuntimeError(
+                        "FinTS Saldo (decoupled): FINTS_DECOUPLED_TIMEOUT_SEC (>0) setzen "
+                        "oder Abruf über die App mit TAN-Dialog."
+                    )
+                continue
+            tan = _prompt_tan_for_response(r, cred, tx_tan_channel)
+            client.send_tan(r, tan)
+        else:
+            raise RuntimeError("FinTS: zu viele TAN-Runden beim Saldoabruf")
+        if bal is None:
+            raise RuntimeError("FinTS: kein Saldo in der Antwort")
+        balance, currency = _balance_to_decimal(bal)
+
+        # Transactions (wie fetch_transactions_sync, aber ohne zweite Session)
+        rounds = 0
+        txs_raw: Any = None
+        while rounds < 8:
+            txs_raw = client.get_transactions(acc, start_date=from_date, end_date=to_date, include_pending=False)
+            if not isinstance(txs_raw, NeedTANResponse):
+                break
+            rounds += 1
+            r = txs_raw
+            if r.decoupled:
+                resolved = _resolve_decoupled_then_chip_tan(client, r, cred, tx_tan_channel)
+                if resolved is None:
+                    # Balance ist bereits da; Umsätze im Hintergrund überspringen.
+                    return balance, currency, [], True
+                continue
+
+            if tx_tan_channel is None:
+                _save_matrix_challenge(r)
+                return balance, currency, [], True
+
+            if not r.challenge_matrix:
+                _save_matrix_challenge(r)
+            mime, data = ("application/octet-stream", b"")
+            if r.challenge_matrix:
+                mime, data = r.challenge_matrix
+            hint = _need_tan_challenge_hint(r)
+            tx_tan_channel.publish_challenge(mime, data, hint=hint)
+            tan = tx_tan_channel.wait_for_tan(600.0)
+            tx_tan_channel.reset_tan_wait()
+            client.send_tan(r, tan)
+        else:
+            raise RuntimeError("FinTS: zu viele TAN-Runden beim Umsatzabruf")
+
+        out: list[FetchedTransaction] = []
+        for tx in txs_raw or []:
+            try:
+                out.append(_normalize_one_tx(tx, iban))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Überspringe eine Buchung (Parse): %s", e)
+        return balance, currency, out, False
+
+    return run_with_fints_session(inner, cred, tx_tan_channel)

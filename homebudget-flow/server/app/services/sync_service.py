@@ -28,7 +28,7 @@ from app.db.models import (
     SyncStatus,
     Transaction,
 )
-from app.services.bank.fints_runner import FintsCredentials, SkipTransactionsForAutomationTan
+from app.services.bank.fints_runner import FintsCredentials
 from app.services.bank.registry import get_connector
 from app.services.bank.transaction_tan_channel import TransactionTanChannel
 from app.services.bank_account_provision import normalize_iban
@@ -76,6 +76,16 @@ def _iban_for_fints(acc: BankAccount) -> str:
     return normalize_iban(raw)
 
 
+def _mask_iban(iban: str) -> str:
+    """Datenschutzfreundlich: nur Land+***+letzte 4 Zeichen loggen."""
+    s = normalize_iban(iban or "")
+    if not s:
+        return ""
+    if len(s) <= 6:
+        return s
+    return f"{s[:2]}***{s[-4:]}"
+
+
 async def sync_bank_account(
     session: AsyncSession,
     bank_account_id: int,
@@ -106,6 +116,13 @@ async def sync_bank_account(
     await session.flush()
 
     try:
+        iban_norm = _iban_for_fints(acc)
+        logger.info(
+            "Sync[%s] start provider=%s iban=%s",
+            acc.id,
+            acc.provider,
+            _mask_iban(iban_norm),
+        )
         fints_cred = _fints_credentials_from_row(acc.credential)
         connector = get_connector(
             acc.provider,
@@ -117,12 +134,21 @@ async def sync_bank_account(
         await session.flush()
 
         try:
-            balance, currency = await connector.fetch_balance(_iban_for_fints(acc))
+            prior_tx_ok = st.transactions_success_at
+            if prior_tx_ok is None:
+                from_d: date | None = None
+            else:
+                from_d = prior_tx_ok.date() - timedelta(days=1)
+
+            st.transactions_attempt_at = _utc_now_naive()
+            await session.flush()
+
+            snap = await connector.fetch_snapshot(iban_norm, from_d, date.today())
+            balance, currency = snap.balance, snap.currency
         except Exception as e:  # noqa: BLE001
             # Wichtig: auch bei Balance-Fehlschlag Umsätze-Versuch-Zeitstempel speichern,
             # damit die UI/DB konsistent signalisiert: Umsätze wurden zumindest versucht
             # (und nicht erst nach erfolgreichem Balance-Abruf).
-            st.transactions_attempt_at = _utc_now_naive()
             raise
         acc.balance = balance
         acc.currency = currency
@@ -138,24 +164,14 @@ async def sync_bank_account(
             )
         )
 
-        prior_tx_ok = st.transactions_success_at
-        if prior_tx_ok is None:
-            from_d: date | None = None
-        else:
-            from_d = prior_tx_ok.date() - timedelta(days=1)
-
-        st.transactions_attempt_at = _utc_now_naive()
-        await session.flush()
-
-        try:
-            txs = await connector.fetch_transactions(_iban_for_fints(acc), from_d, date.today())
-        except SkipTransactionsForAutomationTan:
+        if snap.transactions_skipped:
             st.last_error = (
                 "Umsätze: zusätzliche TAN (z. B. PhotoTAN). "
                 "Automatischer Sync holt nur den Saldo — Umsätze bitte in der App synchronisieren."
             )
             st.status = SyncStatus.ok.value
         else:
+            txs = snap.transactions
             logger.info(
                 "Sync[%s] received %d transactions (from=%s to=%s)",
                 acc.id,
@@ -240,11 +256,21 @@ async def sync_bank_account(
             st.transactions_success_at = _utc_now_naive()
             st.status = SyncStatus.ok.value
     except NotImplementedError as e:
-        logger.exception("Sync[%s] failed (NotImplementedError)", acc.id)
+        logger.exception(
+            "Sync[%s] failed (NotImplementedError) provider=%s iban=%s",
+            acc.id,
+            acc.provider,
+            _mask_iban(acc.iban or ""),
+        )
         st.last_error = str(e)
         st.status = SyncStatus.error.value
     except Exception as e:  # noqa: BLE001
-        logger.exception("Sync[%s] failed", acc.id)
+        logger.exception(
+            "Sync[%s] failed provider=%s iban=%s",
+            acc.id,
+            acc.provider,
+            _mask_iban(acc.iban or ""),
+        )
         st.last_error = repr(e)
         st.status = SyncStatus.error.value
 

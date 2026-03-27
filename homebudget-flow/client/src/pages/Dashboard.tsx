@@ -32,7 +32,9 @@ import {
   Tabs,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import {
   ExpandMore as ExpandMoreIcon,
   Sync as SyncIcon,
@@ -98,6 +100,8 @@ function lastFullSyncLabel(a: BankAccount): { line: string; hint?: string } {
 
 export default function Dashboard() {
   const qc = useQueryClient();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [accountFilter, setAccountFilter] = useState<number | 'all'>('all');
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const monthAgo = useMemo(() => {
@@ -110,7 +114,7 @@ export default function Dashboard() {
   const [to, setTo] = useState(today);
   const [searchDescription, setSearchDescription] = useState('');
   const [searchCounterparty, setSearchCounterparty] = useState('');
-  const [pageSize, setPageSize] = useState(200);
+  const [pageSize, setPageSize] = useState(isXs ? 50 : 200);
   const [offset, setOffset] = useState(0);
   const [syncBusyAccountId, setSyncBusyAccountId] = useState<number | null>(null);
   const [accountSyncError, setAccountSyncError] = useState<string | null>(null);
@@ -133,6 +137,10 @@ export default function Dashboard() {
   const [saldoEditRecordedAt, setSaldoEditRecordedAt] = useState('');
   /** Ein Klappzustand für alle Konto-Karten („Zuletzt Saldo & Umsätze“). */
   const [accountSyncDetailsExpanded, setAccountSyncDetailsExpanded] = useState(false);
+
+  useEffect(() => {
+    setPageSize((cur) => (cur === 50 || cur === 200 ? (isXs ? 50 : 200) : cur));
+  }, [isXs]);
 
   useEffect(() => {
     setOffset(0);

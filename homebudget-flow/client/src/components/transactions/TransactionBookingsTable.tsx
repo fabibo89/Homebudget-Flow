@@ -4,6 +4,8 @@ import {
   Autocomplete,
   Box,
   Button,
+  Card,
+  CardContent,
   Chip,
   CircularProgress,
   Dialog,
@@ -22,7 +24,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiErrorMessage, fetchCategories, patchTransactionCategory, type BankAccount, type Transaction } from '../../api/client';
 import CategoryRuleOverwriteDialog from '../CategoryRuleOverwriteDialog';
@@ -70,6 +74,8 @@ export default function TransactionBookingsTable({
   categoryColumnAdvanced = true,
 }: Props) {
   const qc = useQueryClient();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [txDetail, setTxDetail] = useState<Transaction | null>(null);
   const [categoryDialogMode, setCategoryDialogMode] = useState<'default' | 'manual'>('default');
   const [categoryDialogTx, setCategoryDialogTx] = useState<Transaction | null>(null);
@@ -208,6 +214,7 @@ export default function TransactionBookingsTable({
       <Dialog
         open={txDetail !== null}
         onClose={() => setTxDetail(null)}
+        fullScreen={isXs}
         maxWidth="sm"
         fullWidth
         scroll="paper"
@@ -246,6 +253,7 @@ export default function TransactionBookingsTable({
           patchCategoryMut.reset();
           setCategoryDialogTx(null);
         }}
+        fullScreen={isXs}
         maxWidth="sm"
         fullWidth
         scroll="paper"
@@ -339,96 +347,177 @@ export default function TransactionBookingsTable({
           setCategoryRuleSavedSnack((s) => `${s ?? ''}${s ? ' ' : ''}${msg}`)
         }
       />
-      <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Datum</TableCell>
-              <TableCell>Konto</TableCell>
-              <TableCell align="right">Betrag</TableCell>
-              <TableCell>
-                {categoryColumnAdvanced ? (
-                  <Tooltip title={CATEGORY_COLUMN_HINT} enterDelay={400}>
-                    <span>Kategorie</span>
-                  </Tooltip>
-                ) : (
-                  'Kategorie'
-                )}
-              </TableCell>
-              <TableCell>Verwendungszweck</TableCell>
-              <TableCell>Gegenpartei</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {rows.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6}>
-                  <Typography color="text.secondary" sx={{ py: 2 }}>
-                    {emptyMessage}
-                  </Typography>
-                </TableCell>
-              </TableRow>
-            ) : (
-              rows.map((t) => (
-                <TableRow key={t.id} hover onClick={() => setTxDetail(t)} sx={{ cursor: 'pointer' }}>
-                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(t.booking_date)}</TableCell>
-                  <TableCell>
+      {isXs ? (
+        rows.length === 0 ? (
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Typography color="text.secondary">{emptyMessage}</Typography>
+          </Paper>
+        ) : (
+          <Stack spacing={1.25}>
+            {rows.map((t) => (
+              <Card
+                key={t.id}
+                variant="outlined"
+                onClick={() => setTxDetail(t)}
+                sx={{ cursor: 'pointer' }}
+              >
+                <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                  <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1}>
+                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                      {formatDate(t.booking_date)}
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontVariantNumeric: 'tabular-nums',
+                        fontWeight: 700,
+                        color: amountSxColorFromTransaction(t),
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {formatMoney(t.amount, t.currency)}
+                    </Typography>
+                  </Stack>
+
+                  <Stack
+                    direction="row"
+                    spacing={1}
+                    alignItems="center"
+                    flexWrap="wrap"
+                    useFlexGap
+                    sx={{ mt: 1 }}
+                  >
                     <Chip
                       size="small"
                       label={accountNameById.get(t.bank_account_id) ?? `#${t.bank_account_id}`}
                       variant="outlined"
                     />
+                    <Chip
+                      size="small"
+                      label={t.category_name ?? '—'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCategoryDialog(t, 'default');
+                      }}
+                      onContextMenu={
+                        categoryColumnAdvanced
+                          ? (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openCategoryDialog(t, 'manual');
+                            }
+                          : undefined
+                      }
+                      variant="outlined"
+                      sx={{
+                        cursor: 'pointer',
+                        '&:hover': { borderColor: 'primary.main' },
+                      }}
+                    />
+                  </Stack>
+
+                  <Typography variant="body2" sx={{ mt: 1 }}>
+                    {clipText(t.description, 140)}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {t.counterparty ? clipText(t.counterparty, 80) : '—'}
+                  </Typography>
+                </CardContent>
+              </Card>
+            ))}
+          </Stack>
+        )
+      ) : (
+        <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Datum</TableCell>
+                <TableCell>Konto</TableCell>
+                <TableCell align="right">Betrag</TableCell>
+                <TableCell>
+                  {categoryColumnAdvanced ? (
+                    <Tooltip title={CATEGORY_COLUMN_HINT} enterDelay={400}>
+                      <span>Kategorie</span>
+                    </Tooltip>
+                  ) : (
+                    'Kategorie'
+                  )}
+                </TableCell>
+                <TableCell>Verwendungszweck</TableCell>
+                <TableCell>Gegenpartei</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6}>
+                    <Typography color="text.secondary" sx={{ py: 2 }}>
+                      {emptyMessage}
+                    </Typography>
                   </TableCell>
-                  <TableCell
-                    align="right"
-                    sx={{
-                      fontVariantNumeric: 'tabular-nums',
-                      fontWeight: 600,
-                            color: amountSxColorFromTransaction(t),
-                    }}
-                  >
-                    {formatMoney(t.amount, t.currency)}
-                  </TableCell>
-                  <TableCell
-                    sx={{
-                      maxWidth: 200,
-                      cursor: 'pointer',
-                      '&:hover': { color: 'primary.main' },
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openCategoryDialog(t, 'default');
-                    }}
-                    onContextMenu={
-                      categoryColumnAdvanced
-                        ? (e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            openCategoryDialog(t, 'manual');
-                          }
-                        : undefined
-                    }
-                  >
-                    {categoryColumnAdvanced ? (
-                      <Tooltip title={CATEGORY_COLUMN_HINT} enterDelay={500}>
-                        <Typography variant="body2" noWrap component="span">
+                </TableRow>
+              ) : (
+                rows.map((t) => (
+                  <TableRow key={t.id} hover onClick={() => setTxDetail(t)} sx={{ cursor: 'pointer' }}>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(t.booking_date)}</TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={accountNameById.get(t.bank_account_id) ?? `#${t.bank_account_id}`}
+                        variant="outlined"
+                      />
+                    </TableCell>
+                    <TableCell
+                      align="right"
+                      sx={{
+                        fontVariantNumeric: 'tabular-nums',
+                        fontWeight: 600,
+                        color: amountSxColorFromTransaction(t),
+                      }}
+                    >
+                      {formatMoney(t.amount, t.currency)}
+                    </TableCell>
+                    <TableCell
+                      sx={{
+                        maxWidth: 200,
+                        cursor: 'pointer',
+                        '&:hover': { color: 'primary.main' },
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openCategoryDialog(t, 'default');
+                      }}
+                      onContextMenu={
+                        categoryColumnAdvanced
+                          ? (e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openCategoryDialog(t, 'manual');
+                            }
+                          : undefined
+                      }
+                    >
+                      {categoryColumnAdvanced ? (
+                        <Tooltip title={CATEGORY_COLUMN_HINT} enterDelay={500}>
+                          <Typography variant="body2" noWrap component="span">
+                            {t.category_name ?? '—'}
+                          </Typography>
+                        </Tooltip>
+                      ) : (
+                        <Typography variant="body2" noWrap title={t.category_name ?? undefined}>
                           {t.category_name ?? '—'}
                         </Typography>
-                      </Tooltip>
-                    ) : (
-                      <Typography variant="body2" noWrap title={t.category_name ?? undefined}>
-                        {t.category_name ?? '—'}
-                      </Typography>
-                    )}
-                  </TableCell>
-                  <TableCell>{t.description}</TableCell>
-                  <TableCell>{t.counterparty ?? '—'}</TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </TableContainer>
+                      )}
+                    </TableCell>
+                    <TableCell>{t.description}</TableCell>
+                    <TableCell>{t.counterparty ?? '—'}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      )}
     </>
   );
 }

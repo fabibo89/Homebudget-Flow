@@ -371,6 +371,10 @@ export async function updateCategoryRule(
   return data;
 }
 
+export async function deleteCategoryRule(householdId: number, ruleId: number): Promise<void> {
+  await api.delete(`/api/households/${householdId}/category-rules/${ruleId}`);
+}
+
 export async function reverseCategoryRule(
   householdId: number,
   ruleId: number,

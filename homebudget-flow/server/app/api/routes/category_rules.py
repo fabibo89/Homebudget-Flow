@@ -586,6 +586,27 @@ async def update_category_rule(
     )
 
 
+@router.delete(
+    "/{household_id}/category-rules/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_category_rule(
+    household_id: int,
+    rule_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    if not await user_has_household(session, user.id, household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+
+    row = await session.get(CategoryRule, rule_id)
+    if row is None or row.household_id != household_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Regel nicht gefunden.")
+
+    await session.delete(row)
+    await session.commit()
+
+
 @router.post(
     "/{household_id}/category-rules/{rule_id}/reverse",
     response_model=CategoryRuleCreatedOut,

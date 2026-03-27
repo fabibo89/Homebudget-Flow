@@ -47,6 +47,7 @@ import {
   apiErrorMessage,
   createCategory,
   deleteCategory,
+  deleteCategoryRule,
   fetchCategories,
   fetchCategoryRules,
   dismissCategoryRuleSuggestion,
@@ -223,6 +224,16 @@ export default function CategoriesSettings() {
     mutationFn: (s: CategoryRuleSuggestion) =>
       restoreCategoryRuleSuggestion(Number(householdId), { rule_type: s.rule_type, pattern: s.pattern }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['category-rule-suggestions', householdId] }),
+  });
+
+  const deleteRuleMut = useMutation({
+    mutationFn: (ruleId: number) => deleteCategoryRule(Number(householdId), ruleId),
+    onSuccess: () => {
+      setRuleEditDialog(null);
+      void qc.invalidateQueries({ queryKey: ['category-rules', householdId] });
+      void qc.invalidateQueries({ queryKey: ['category-rule-suggestions', householdId] });
+      setRuleSavedSnack('Regel gelöscht.');
+    },
   });
 
   function openNewRoot() {
@@ -854,19 +865,40 @@ export default function CategoriesSettings() {
                               </TableCell>
                               <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDateTime(rule.created_at)}</TableCell>
                               <TableCell align="right">
-                                <Tooltip title="Regel bearbeiten">
-                                  <IconButton
-                                    size="small"
-                                    aria-label="Regel bearbeiten"
-                                    onClick={() => {
-                                      setSuggestionDialog(null);
-                                      setNewRuleDialogOpen(false);
-                                      setRuleEditDialog(rule);
-                                    }}
-                                  >
-                                    <EditOutlinedIcon fontSize="small" />
-                                  </IconButton>
-                                </Tooltip>
+                                <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                                  <Tooltip title="Regel bearbeiten">
+                                    <IconButton
+                                      size="small"
+                                      aria-label="Regel bearbeiten"
+                                      onClick={() => {
+                                        setSuggestionDialog(null);
+                                        setNewRuleDialogOpen(false);
+                                        setRuleEditDialog(rule);
+                                      }}
+                                    >
+                                      <EditOutlinedIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                  <Tooltip title="Regel löschen">
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      aria-label="Regel löschen"
+                                      disabled={deleteRuleMut.isPending}
+                                      onClick={() => {
+                                        if (
+                                          !window.confirm(
+                                            `Regel wirklich löschen?\n\n${categoryRuleTypeDescription(rule.rule_type)}: "${rule.pattern}"`,
+                                          )
+                                        )
+                                          return;
+                                        deleteRuleMut.mutate(rule.id);
+                                      }}
+                                    >
+                                      <DeleteOutlineIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Stack>
                               </TableCell>
                             </TableRow>
                           ))}

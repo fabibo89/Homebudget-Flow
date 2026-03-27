@@ -19,6 +19,7 @@ import {
   Tabs,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import type { Theme } from '@mui/material/styles';
@@ -540,6 +541,7 @@ function createCategoryDonutConfig(
 
 export default function Analyses() {
   const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [tab, setTab] = useState<AnalysisTab>('tagesbilanz');
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const defaultFrom = useMemo(() => addDays(today, -30), [today]);
@@ -1104,7 +1106,14 @@ export default function Analyses() {
         </Typography>
       </Box>
 
-      <Tabs value={tab} onChange={handleTabChange} sx={{ borderBottom: 1, borderColor: 'divider' }}>
+      <Tabs
+        value={tab}
+        onChange={handleTabChange}
+        sx={{ borderBottom: 1, borderColor: 'divider' }}
+        variant={isXs ? 'scrollable' : 'standard'}
+        scrollButtons="auto"
+        allowScrollButtonsMobile
+      >
         <Tab value="tagesbilanz" label="Tagesbilanz" />
         <Tab value="kategorien" label="Kategorien" />
         <Tab value="kategorieverlauf" label="Kategorieverlauf" />
@@ -1208,8 +1217,8 @@ export default function Analyses() {
                 Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
                 <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
               </Typography>
-              <Box sx={{ width: '100%', minHeight: 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                <Chart options={chartOptions} series={series} type="rangeBar" height={420} width="100%" />
+              <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
               </Box>
             </Paper>
           )}
@@ -1258,12 +1267,12 @@ export default function Analyses() {
                       Keine Einnahmen im Zeitraum.
                     </Alert>
                   ) : (
-                    <Box sx={{ width: '100%', minHeight: 400 }}>
+                    <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
                       <Chart
                         options={incomeDonut.options}
                         series={incomeDonut.series}
                         type="donut"
-                        height={420}
+                        height={isXs ? 320 : 420}
                         width="100%"
                       />
                     </Box>
@@ -1278,12 +1287,12 @@ export default function Analyses() {
                       Keine Ausgaben im Zeitraum.
                     </Alert>
                   ) : (
-                    <Box sx={{ width: '100%', minHeight: 400 }}>
+                    <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
                       <Chart
                         options={expenseDonut.options}
                         series={expenseDonut.series}
                         type="donut"
-                        height={420}
+                        height={isXs ? 320 : 420}
                         width="100%"
                       />
                     </Box>
@@ -1516,12 +1525,12 @@ export default function Analyses() {
               {verlaufSelectedKeys.length === 0 ? (
                 <Alert severity="info">Bitte mindestens eine Kategorie auswählen.</Alert>
               ) : (
-                <Box sx={{ width: '100%', minHeight: 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
                   <Chart
                     options={verlaufChart.options}
                     series={verlaufChart.series}
                     type="area"
-                    height={440}
+                    height={isXs ? 340 : 440}
                     width="100%"
                   />
                 </Box>

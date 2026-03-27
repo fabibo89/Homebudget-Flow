@@ -26,7 +26,9 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import { Delete as DeleteIcon, Add as AddIcon, Edit as EditIcon } from '@mui/icons-material';
 import axios from 'axios';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -101,6 +103,8 @@ export default function AccountGroupFinTsPanel({
   variant = 'default',
   showCredentialsTable = true,
 }: Props) {
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const qc = useQueryClient();
   const provisionSelectLabelId = useId();
   const bankPresetLabelId = useId();
@@ -334,8 +338,8 @@ export default function AccountGroupFinTsPanel({
             <CircularProgress size={24} />
           </Box>
         ) : (
-          <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', mt: 1.5 }}>
-            <Table size="small">
+          <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', mt: 1.5, overflowX: 'auto' }}>
+            <Table size="small" sx={{ minWidth: 700 }}>
               <TableHead>
                 <TableRow>
                   <TableCell>Provider</TableCell>
@@ -425,7 +429,13 @@ export default function AccountGroupFinTsPanel({
         </Typography>
       )}
 
-      <Dialog open={fintsTanOpen} onClose={() => (!fintsTanBusy ? setFintsTanOpen(false) : undefined)} maxWidth="sm" fullWidth>
+      <Dialog
+        open={fintsTanOpen}
+        onClose={() => (!fintsTanBusy ? setFintsTanOpen(false) : undefined)}
+        maxWidth="sm"
+        fullWidth
+        fullScreen={isXs}
+      >
         <DialogTitle>PhotoTAN (FinTS-Zugang)</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
@@ -466,7 +476,7 @@ export default function AccountGroupFinTsPanel({
         </DialogActions>
       </Dialog>
 
-      <Dialog open={open} onClose={() => !busy && closeDialog()} fullWidth maxWidth="md">
+      <Dialog open={open} onClose={() => !busy && closeDialog()} fullWidth maxWidth="md" fullScreen={isXs}>
         <DialogTitle>{isEdit ? 'FinTS-Zugang bearbeiten' : 'FinTS-Zugang anlegen'}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

@@ -23,7 +23,9 @@ import {
   ToggleButtonGroup,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import { RuleOutlined as RuleOutlinedIcon } from '@mui/icons-material';
 import { Link as RouterLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -154,6 +156,8 @@ export default function CreateCategoryRuleDialog({
   onRuleApplied,
 }: CreateCategoryRuleDialogProps) {
   const qc = useQueryClient();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [pickCategoryId, setPickCategoryId] = useState<number | null>(null);
   const [ruleField, setRuleField] = useState<RuleTargetField>('description');
   const [ruleMode, setRuleMode] = useState<RuleMatchMode>('contains');
@@ -302,7 +306,7 @@ export default function CreateCategoryRuleDialog({
   }
 
   return (
-    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth scroll="paper">
+    <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth fullScreen={isXs} scroll="paper">
       <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
         <RuleOutlinedIcon color="primary" fontSize="medium" aria-hidden />
         {isEditing ? 'Zuordnungsregel bearbeiten' : 'Kategorie-Regel anlegen'}
@@ -622,7 +626,7 @@ export default function CreateCategoryRuleDialog({
           </Stack>
         )}
       </DialogContent>
-      <DialogActions sx={{ flexWrap: 'wrap', gap: 1 }}>
+      <DialogActions sx={{ flexWrap: 'wrap', gap: 1, justifyContent: isXs ? 'stretch' : 'flex-end' }}>
         <Button onClick={handleClose} disabled={busy}>
           Abbrechen
         </Button>

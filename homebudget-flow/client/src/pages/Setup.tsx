@@ -27,7 +27,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import {
   Add as AddIcon,
   DeleteOutline as DeleteOutlineIcon,
@@ -70,6 +72,8 @@ function GroupBankAccountsBlock({
   accountsLoading,
   accountsError,
 }: GroupBankAccountsBlockProps) {
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const rows = accounts.filter((a) => a.account_group_id === groupId);
   return (
     <Box sx={{ mt: 2 }}>
@@ -91,8 +95,8 @@ function GroupBankAccountsBlock({
           erscheinen neue Konten hier.
         </Typography>
       ) : (
-        <TableContainer component={Paper} variant="outlined" sx={{ mt: 1 }}>
-          <Table size="small">
+        <TableContainer component={Paper} variant="outlined" sx={{ mt: 1, overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: isXs ? 520 : 640 }}>
             <TableHead>
               <TableRow>
                 <TableCell>Name</TableCell>
@@ -118,6 +122,8 @@ function GroupBankAccountsBlock({
 
 export default function Setup() {
   const qc = useQueryClient();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
 
   const householdsQuery = useQuery({ queryKey: ['households'], queryFn: fetchHouseholds });
 
@@ -676,6 +682,7 @@ export default function Setup() {
         onClose={() => !saveHhMut.isPending && setHhDialogOpen(false)}
         fullWidth
         maxWidth="xs"
+        fullScreen={isXs}
       >
         <DialogTitle>{editingHouseholdId != null ? 'Haushalt bearbeiten' : 'Haushalt anlegen'}</DialogTitle>
         <DialogContent>
@@ -719,6 +726,7 @@ export default function Setup() {
         onClose={() => !saveGroupMut.isPending && setGroupDialogOpen(false)}
         fullWidth
         maxWidth="sm"
+        fullScreen={isXs}
       >
         <DialogTitle>{editingGroupId != null ? 'Kontogruppe bearbeiten' : 'Kontogruppe anlegen'}</DialogTitle>
         <DialogContent>
@@ -783,7 +791,13 @@ export default function Setup() {
       </Dialog>
 
       {/* Bankkonto */}
-      <Dialog open={bankDialog.open} onClose={() => !createBankMut.isPending && setBankDialog({ open: false, accountGroupId: null })} fullWidth maxWidth="sm">
+      <Dialog
+        open={bankDialog.open}
+        onClose={() => !createBankMut.isPending && setBankDialog({ open: false, accountGroupId: null })}
+        fullWidth
+        maxWidth="sm"
+        fullScreen={isXs}
+      >
         <DialogTitle>Bankkonto anlegen</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

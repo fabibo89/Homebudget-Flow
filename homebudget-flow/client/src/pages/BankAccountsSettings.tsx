@@ -24,7 +24,9 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import { Edit as EditIcon } from '@mui/icons-material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
@@ -60,6 +62,8 @@ function formatDate(iso: string | null): string {
 
 export default function BankAccountsSettings() {
   const qc = useQueryClient();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const { groupLabelById, loading: groupsLoading } = useAccountGroupLabelMap();
 
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
@@ -147,8 +151,8 @@ export default function BankAccountsSettings() {
       ) : rows.length === 0 ? (
         <Alert severity="info">Noch keine Bankkonten – zuerst FinTS-Zugang speichern oder unter Einrichtung anlegen.</Alert>
       ) : (
-        <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
-          <Table size="small">
+        <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 760 }}>
             <TableHead>
               <TableRow>
                 <TableCell>Name</TableCell>
@@ -192,7 +196,13 @@ export default function BankAccountsSettings() {
         </TableContainer>
       )}
 
-      <Dialog open={editOpen} onClose={() => !updateMut.isPending && setEditOpen(false)} fullWidth maxWidth="sm">
+      <Dialog
+        open={editOpen}
+        onClose={() => !updateMut.isPending && setEditOpen(false)}
+        fullWidth
+        maxWidth="sm"
+        fullScreen={isXs}
+      >
         <DialogTitle>Bankkonto bearbeiten</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

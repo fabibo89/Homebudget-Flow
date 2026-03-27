@@ -35,7 +35,9 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import {
   Add as AddIcon,
   DeleteOutline as DeleteOutlineIcon,
@@ -117,6 +119,8 @@ const defaultRootColor = '#6366f1';
 
 export default function CategoriesSettings() {
   const qc = useQueryClient();
+  const theme = useTheme();
+  const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [householdId, setHouseholdId] = useState<number | ''>('');
   const [edit, setEdit] = useState<EditMode | null>(null);
   const [formName, setFormName] = useState('');
@@ -338,6 +342,9 @@ export default function CategoriesSettings() {
         onChange={(_, v: 'kategorien' | 'regeln') => setSettingsMainTab(v)}
         sx={{ borderBottom: 1, borderColor: 'divider', mb: 0 }}
         aria-label="Kategorien oder Regeln bearbeiten"
+        variant={isXs ? 'scrollable' : 'standard'}
+        scrollButtons="auto"
+        allowScrollButtonsMobile
       >
         <Tab value="kategorien" label="Kategorien" />
         <Tab value="regeln" label="Regeln" />
@@ -554,6 +561,9 @@ export default function CategoriesSettings() {
                 onChange={(_, v: CategoryRulesBookingsTab) => setRulesBookingsTab(v)}
                 sx={{ borderBottom: 1, borderColor: 'divider', mb: 2, minHeight: 0 }}
                 aria-label="Regeln und Vorschläge"
+                variant={isXs ? 'scrollable' : 'standard'}
+                scrollButtons="auto"
+                allowScrollButtonsMobile
               >
                 <Tab value="ausgabe" label="Ausgaben" />
                 <Tab value="einnahme" label="Einnahmen" />
@@ -604,8 +614,8 @@ export default function CategoriesSettings() {
                     </Typography>
                   ) : null}
                   {suggestionActiveList.length > 0 ? (
-                    <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100 }}>
-                      <Table size="small">
+                    <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                      <Table size="small" sx={{ minWidth: 860 }}>
                         <TableHead>
                           <TableRow>
                             <TableCell>Bedingung</TableCell>
@@ -703,8 +713,8 @@ export default function CategoriesSettings() {
                         Keine ignorierten Vorschläge.
                       </Typography>
                     ) : (
-                      <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100 }}>
-                        <Table size="small">
+                      <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                        <Table size="small" sx={{ minWidth: 860 }}>
                           <TableHead>
                             <TableRow>
                               <TableCell>Bedingung</TableCell>
@@ -816,8 +826,8 @@ export default function CategoriesSettings() {
                       passender Buchungsrichtung anlegen.
                     </Typography>
                   ) : (
-                    <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100 }}>
-                      <Table size="small">
+                    <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                      <Table size="small" sx={{ minWidth: 880 }}>
                         <TableHead>
                           <TableRow>
                             <TableCell width={72}>Priorität</TableCell>
@@ -914,7 +924,7 @@ export default function CategoriesSettings() {
         </Stack>
       )}
 
-      <Dialog open={edit !== null} onClose={() => !busy && setEdit(null)} maxWidth="sm" fullWidth>
+      <Dialog open={edit !== null} onClose={() => !busy && setEdit(null)} maxWidth="sm" fullWidth fullScreen={isXs}>
         <DialogTitle>
           {edit?.kind === 'new_root'
             ? 'Hauptkategorie'
@@ -1035,6 +1045,7 @@ export default function CategoriesSettings() {
         onClose={() => setSuggestionPreviewDialog(null)}
         maxWidth="md"
         fullWidth
+        fullScreen={isXs}
       >
         <DialogTitle>
           Vorschlag:{' '}
@@ -1085,7 +1096,7 @@ export default function CategoriesSettings() {
                             </Stack>
                           </AccordionSummary>
                           <AccordionDetails>
-                            <Table size="small">
+                            <Table size="small" sx={{ minWidth: 540 }}>
                               <TableHead>
                                 <TableRow>
                                   <TableCell sx={{ width: 120 }}>Datum</TableCell>

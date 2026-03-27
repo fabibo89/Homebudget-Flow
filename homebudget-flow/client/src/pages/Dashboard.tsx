@@ -367,7 +367,13 @@ export default function Dashboard() {
                 {accountSyncError}
               </Alert>
             ) : null}
-            <Dialog open={tanOpen} onClose={() => (tanBusy || syncBusyAccountId !== null ? undefined : setTanOpen(false))} maxWidth="sm" fullWidth>
+            <Dialog
+              open={tanOpen}
+              onClose={() => (tanBusy || syncBusyAccountId !== null ? undefined : setTanOpen(false))}
+              maxWidth="sm"
+              fullWidth
+              fullScreen={isXs}
+            >
               <DialogTitle>PhotoTAN (Umsätze)</DialogTitle>
               <DialogContent>
                 <Stack spacing={2} sx={{ pt: 1 }}>
@@ -407,7 +413,7 @@ export default function Dashboard() {
                 </Button>
               </DialogActions>
             </Dialog>
-            <Dialog open={saldoEditOpen} onClose={() => setSaldoEditOpen(false)} maxWidth="sm" fullWidth>
+            <Dialog open={saldoEditOpen} onClose={() => setSaldoEditOpen(false)} maxWidth="sm" fullWidth fullScreen={isXs}>
               <DialogTitle>Saldo-Snapshot bearbeiten</DialogTitle>
               <DialogContent>
                 <Stack spacing={2} sx={{ pt: 1 }}>
@@ -589,6 +595,9 @@ export default function Dashboard() {
           value={overviewTab}
           onChange={(_, v) => setOverviewTab(v)}
           sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
+          variant={isXs ? 'scrollable' : 'standard'}
+          scrollButtons="auto"
+          allowScrollButtonsMobile
         >
           <Tab value="buchungen" label="Buchungen" />
           <Tab value="saldo" label="Saldo" />
@@ -816,8 +825,8 @@ export default function Dashboard() {
                 <CircularProgress />
               </Box>
             ) : (
-              <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
-                <Table size="small">
+              <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', overflowX: 'auto' }}>
+                <Table size="small" sx={{ minWidth: 620 }}>
                   <TableHead>
                     <TableRow>
                       <TableCell>Zeitpunkt (Sync)</TableCell>

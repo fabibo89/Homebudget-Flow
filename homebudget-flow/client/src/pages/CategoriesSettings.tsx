@@ -696,7 +696,7 @@ export default function CategoriesSettings() {
                         ))}
                       </Stack>
                     ) : (
-                      <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                      <TableContainer component={Paper} variant="outlined" sx={{ width: '100%', overflowX: 'auto' }}>
                         <Table size="small" sx={{ minWidth: 860 }}>
                           <TableHead>
                             <TableRow>
@@ -864,7 +864,7 @@ export default function CategoriesSettings() {
                         ))}
                       </Stack>
                     ) : (
-                      <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                      <TableContainer component={Paper} variant="outlined" sx={{ width: '100%', overflowX: 'auto' }}>
                         <Table size="small" sx={{ minWidth: 860 }}>
                           <TableHead>
                             <TableRow>
@@ -1067,7 +1067,7 @@ export default function CategoriesSettings() {
                       ))}
                     </Stack>
                   ) : (
-                    <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                    <TableContainer component={Paper} variant="outlined" sx={{ width: '100%', overflowX: 'auto' }}>
                       <Table size="small" sx={{ minWidth: 880 }}>
                         <TableHead>
                           <TableRow>

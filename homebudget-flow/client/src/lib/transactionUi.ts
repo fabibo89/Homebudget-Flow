@@ -136,12 +136,14 @@ export type CategoryPickOption = {
 };
 
 export type RuleTargetField = 'description' | 'counterparty';
-export type RuleMatchMode = 'contains' | 'equals';
+export type RuleMatchMode = 'contains' | 'whole_word' | 'equals';
 
 export function categoryRuleApiType(field: RuleTargetField, mode: RuleMatchMode): CategoryRuleType {
   if (field === 'description') {
+    if (mode === 'whole_word') return 'description_contains_word';
     return mode === 'contains' ? 'description_contains' : 'description_equals';
   }
+  if (mode === 'whole_word') return 'counterparty_contains_word';
   return mode === 'contains' ? 'counterparty_contains' : 'counterparty_equals';
 }
 
@@ -172,14 +174,20 @@ export function categoryRuleConditionsToFormState(conditions: CategoryRuleCondit
     if (
       !textSet &&
       (c.type === 'description_contains' ||
+        c.type === 'description_contains_word' ||
         c.type === 'description_equals' ||
         c.type === 'counterparty_contains' ||
+        c.type === 'counterparty_contains_word' ||
         c.type === 'counterparty_equals')
     ) {
       textSet = true;
       if (c.type === 'description_contains') {
         field = 'description';
         mode = 'contains';
+        pattern = c.pattern;
+      } else if (c.type === 'description_contains_word') {
+        field = 'description';
+        mode = 'whole_word';
         pattern = c.pattern;
       } else if (c.type === 'description_equals') {
         field = 'description';
@@ -188,6 +196,10 @@ export function categoryRuleConditionsToFormState(conditions: CategoryRuleCondit
       } else if (c.type === 'counterparty_contains') {
         field = 'counterparty';
         mode = 'contains';
+        pattern = c.pattern;
+      } else if (c.type === 'counterparty_contains_word') {
+        field = 'counterparty';
+        mode = 'whole_word';
         pattern = c.pattern;
       } else {
         field = 'counterparty';
@@ -228,10 +240,14 @@ export function describeCategoryRuleCondition(c: CategoryRuleCondition): string 
       return 'Alle Buchungsrichtungen';
     case 'description_contains':
       return `Verwendungszweck enthält „${c.pattern}“`;
+    case 'description_contains_word':
+      return `Verwendungszweck enthält „${c.pattern}“ (ganze Wörter)`;
     case 'description_equals':
       return `Verwendungszweck ist exakt „${c.pattern}“`;
     case 'counterparty_contains':
       return `Gegenpartei enthält „${c.pattern}“`;
+    case 'counterparty_contains_word':
+      return `Gegenpartei enthält „${c.pattern}“ (ganze Wörter)`;
     case 'counterparty_equals':
       return `Gegenpartei ist exakt „${c.pattern}“`;
     case 'amount_gte':

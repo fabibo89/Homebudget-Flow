@@ -216,16 +216,20 @@ export async function deleteCategory(householdId: number, categoryId: number): P
 
 export type CategoryRuleType =
   | 'description_contains'
+  | 'description_contains_word'
   | 'description_equals'
   | 'counterparty_contains'
+  | 'counterparty_contains_word'
   | 'counterparty_equals'
   | 'conditions';
 
 export type CategoryRuleCondition =
   | { type: 'direction'; value: 'credit' | 'debit' | 'all' }
   | { type: 'description_contains'; pattern: string }
+  | { type: 'description_contains_word'; pattern: string }
   | { type: 'description_equals'; pattern: string }
   | { type: 'counterparty_contains'; pattern: string }
+  | { type: 'counterparty_contains_word'; pattern: string }
   | { type: 'counterparty_equals'; pattern: string }
   | { type: 'amount_gte'; amount: string }
   | { type: 'amount_lte'; amount: string }

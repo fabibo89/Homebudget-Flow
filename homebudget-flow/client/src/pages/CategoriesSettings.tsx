@@ -82,10 +82,14 @@ function categoryRuleTypeDescription(t: CategoryRuleType | string): string {
   switch (t) {
     case 'description_contains':
       return 'Verwendungszweck enthält';
+    case 'description_contains_word':
+      return 'Verwendungszweck enthält (ganzes Wort)';
     case 'description_equals':
       return 'Verwendungszweck ist (exakt)';
     case 'counterparty_contains':
       return 'Gegenpartei enthält';
+    case 'counterparty_contains_word':
+      return 'Gegenpartei enthält (ganzes Wort)';
     case 'counterparty_equals':
       return 'Gegenpartei ist (exakt)';
     case 'conditions':

@@ -42,8 +42,10 @@ class CategoryRuleType(str, enum.Enum):
     """Zuordnungsregel: Verwendungszweck oder Gegenpartei, enthält oder exakt (ohne Groß-/Kleinschreibung)."""
 
     description_contains = "description_contains"
+    description_contains_word = "description_contains_word"
     description_equals = "description_equals"
     counterparty_contains = "counterparty_contains"
+    counterparty_contains_word = "counterparty_contains_word"
     counterparty_equals = "counterparty_equals"
 
 

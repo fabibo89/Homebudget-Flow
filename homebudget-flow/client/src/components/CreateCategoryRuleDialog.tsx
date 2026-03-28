@@ -94,8 +94,10 @@ function buildConditionsForSubmit(args: {
   if (p) {
     const tt = args.textType;
     if (tt === 'description_contains') out.push({ type: 'description_contains', pattern: p });
+    else if (tt === 'description_contains_word') out.push({ type: 'description_contains_word', pattern: p });
     else if (tt === 'description_equals') out.push({ type: 'description_equals', pattern: p });
     else if (tt === 'counterparty_contains') out.push({ type: 'counterparty_contains', pattern: p });
+    else if (tt === 'counterparty_contains_word') out.push({ type: 'counterparty_contains_word', pattern: p });
     else if (tt === 'counterparty_equals') out.push({ type: 'counterparty_equals', pattern: p });
   }
   const minA = normalizeAmountInput(args.amountMin);
@@ -119,10 +121,14 @@ function ruleTypeToFieldMode(rt: CategoryRuleType): { field: RuleTargetField; mo
   switch (rt) {
     case 'description_contains':
       return { field: 'description', mode: 'contains' };
+    case 'description_contains_word':
+      return { field: 'description', mode: 'whole_word' };
     case 'description_equals':
       return { field: 'description', mode: 'equals' };
     case 'counterparty_contains':
       return { field: 'counterparty', mode: 'contains' };
+    case 'counterparty_contains_word':
+      return { field: 'counterparty', mode: 'whole_word' };
     case 'counterparty_equals':
       return { field: 'counterparty', mode: 'equals' };
     default:
@@ -479,7 +485,8 @@ export default function CreateCategoryRuleDialog({
                       value={ruleMode}
                       onChange={(e) => setRuleMode(e.target.value as RuleMatchMode)}
                     >
-                      <MenuItem value="contains">enthält</MenuItem>
+                      <MenuItem value="contains">enthält (Teilstring)</MenuItem>
+                      <MenuItem value="whole_word">enthält (ganzes Wort)</MenuItem>
                       <MenuItem value="equals">ist (exakt)</MenuItem>
                     </Select>
                   </FormControl>
@@ -492,7 +499,9 @@ export default function CreateCategoryRuleDialog({
                   helperText={
                     ruleMode === 'contains'
                       ? 'Groß-/Kleinschreibung wird ignoriert; es wird ein Teilstring gesucht.'
-                      : 'Groß-/Kleinschreibung wird ignoriert; der gesamte Text muss exakt übereinstimmen (nach Trimmen).'
+                      : ruleMode === 'whole_word'
+                        ? 'Groß-/Kleinschreibung wird ignoriert; jedes durch Leerzeichen getrennte Wort muss als eigenes Wort vorkommen (nicht z. B. „obi“ in „Mobility“).'
+                        : 'Groß-/Kleinschreibung wird ignoriert; der gesamte Text muss exakt übereinstimmen (nach Trimmen).'
                   }
                 />
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>

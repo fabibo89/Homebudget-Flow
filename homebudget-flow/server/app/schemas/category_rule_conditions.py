@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal
 from typing import Annotated, Any, List, Literal, Optional, Union
 
@@ -21,6 +22,13 @@ class DescriptionContainsCondition(BaseModel):
     pattern: str = Field(..., min_length=1, max_length=512)
 
 
+class DescriptionContainsWordCondition(BaseModel):
+    """Wie „enthält“, aber nur ganze Wörter (Wortgrenzen); mehrere durch Leerzeichen = alle müssen vorkommen."""
+
+    type: Literal["description_contains_word"] = "description_contains_word"
+    pattern: str = Field(..., min_length=1, max_length=512)
+
+
 class DescriptionEqualsCondition(BaseModel):
     type: Literal["description_equals"] = "description_equals"
     pattern: str = Field(..., min_length=1, max_length=512)
@@ -28,6 +36,11 @@ class DescriptionEqualsCondition(BaseModel):
 
 class CounterpartyContainsCondition(BaseModel):
     type: Literal["counterparty_contains"] = "counterparty_contains"
+    pattern: str = Field(..., min_length=1, max_length=512)
+
+
+class CounterpartyContainsWordCondition(BaseModel):
+    type: Literal["counterparty_contains_word"] = "counterparty_contains_word"
     pattern: str = Field(..., min_length=1, max_length=512)
 
 
@@ -62,8 +75,10 @@ CategoryRuleCondition = Annotated[
     Union[
         DirectionCondition,
         DescriptionContainsCondition,
+        DescriptionContainsWordCondition,
         DescriptionEqualsCondition,
         CounterpartyContainsCondition,
+        CounterpartyContainsWordCondition,
         CounterpartyEqualsCondition,
         AmountGteCondition,
         AmountLteCondition,
@@ -100,16 +115,33 @@ def conditions_to_json(conditions: List[CategoryRuleCondition]) -> str:
     return json.dumps([c.model_dump(mode="json") for c in conditions], ensure_ascii=False)
 
 
+def _text_matches_whole_words(hay: str, pattern: str) -> bool:
+    """Groß-/Kleinschreibung ignorieren; jeder durch Leerzeichen getrennte Token als ganzes Wort (\\b)."""
+    hay_l = (hay or "").lower()
+    terms = [t.strip().lower() for t in pattern.split() if t.strip()]
+    if not terms:
+        return False
+    for t in terms:
+        esc = re.escape(t)
+        if not re.search(rf"\b{esc}\b", hay_l):
+            return False
+    return True
+
+
 def conditions_from_legacy_api_type(rule_type: str, pattern: str) -> List[CategoryRuleCondition]:
     pat = pattern.strip()
     if not pat:
         raise ValueError("Muster darf nicht leer sein.")
     if rule_type == CategoryRuleType.description_contains.value:
         return [DescriptionContainsCondition(pattern=pat)]
+    if rule_type == CategoryRuleType.description_contains_word.value:
+        return [DescriptionContainsWordCondition(pattern=pat)]
     if rule_type == CategoryRuleType.description_equals.value:
         return [DescriptionEqualsCondition(pattern=pat)]
     if rule_type == CategoryRuleType.counterparty_contains.value:
         return [CounterpartyContainsCondition(pattern=pat)]
+    if rule_type == CategoryRuleType.counterparty_contains_word.value:
+        return [CounterpartyContainsWordCondition(pattern=pat)]
     if rule_type == CategoryRuleType.counterparty_equals.value:
         return [CounterpartyEqualsCondition(pattern=pat)]
     raise ValueError(f"Unbekannter Regeltyp: {rule_type}")
@@ -122,10 +154,14 @@ def legacy_rule_to_conditions(rule: CategoryRule) -> List[CategoryRuleCondition]
     pat = (rule.pattern or "").strip()
     if rt == CategoryRuleType.description_contains.value and pat:
         return [DescriptionContainsCondition(pattern=pat)]
+    if rt == CategoryRuleType.description_contains_word.value and pat:
+        return [DescriptionContainsWordCondition(pattern=pat)]
     if rt == CategoryRuleType.description_equals.value and pat:
         return [DescriptionEqualsCondition(pattern=pat)]
     if rt == CategoryRuleType.counterparty_contains.value and pat:
         return [CounterpartyContainsCondition(pattern=pat)]
+    if rt == CategoryRuleType.counterparty_contains_word.value and pat:
+        return [CounterpartyContainsWordCondition(pattern=pat)]
     if rt == CategoryRuleType.counterparty_equals.value and pat:
         return [CounterpartyEqualsCondition(pattern=pat)]
     return []
@@ -163,6 +199,10 @@ def transaction_matches_conditions(tx: Transaction, conditions: List[CategoryRul
             if not needle or needle not in hay:
                 return False
             continue
+        if isinstance(c, DescriptionContainsWordCondition):
+            if not _text_matches_whole_words(tx.description or "", c.pattern):
+                return False
+            continue
         if isinstance(c, DescriptionEqualsCondition):
             d = (tx.description or "").strip().lower()
             pat = c.pattern.strip().lower()
@@ -173,6 +213,10 @@ def transaction_matches_conditions(tx: Transaction, conditions: List[CategoryRul
             needle = c.pattern.lower()
             hay = (tx.counterparty or "").lower()
             if not needle or needle not in hay:
+                return False
+            continue
+        if isinstance(c, CounterpartyContainsWordCondition):
+            if not _text_matches_whole_words(tx.counterparty or "", c.pattern):
                 return False
             continue
         if isinstance(c, CounterpartyEqualsCondition):
@@ -205,10 +249,14 @@ def derive_rule_type_and_pattern(conditions: List[CategoryRuleCondition]) -> tup
         c0 = conditions[0]
         if isinstance(c0, DescriptionContainsCondition):
             return CategoryRuleType.description_contains.value, c0.pattern
+        if isinstance(c0, DescriptionContainsWordCondition):
+            return CategoryRuleType.description_contains_word.value, c0.pattern
         if isinstance(c0, DescriptionEqualsCondition):
             return CategoryRuleType.description_equals.value, c0.pattern
         if isinstance(c0, CounterpartyContainsCondition):
             return CategoryRuleType.counterparty_contains.value, c0.pattern
+        if isinstance(c0, CounterpartyContainsWordCondition):
+            return CategoryRuleType.counterparty_contains_word.value, c0.pattern
         if isinstance(c0, CounterpartyEqualsCondition):
             return CategoryRuleType.counterparty_equals.value, c0.pattern
     return "conditions", ""

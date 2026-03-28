@@ -293,7 +293,15 @@ async def preview_category_rule_suggestion(
         if not transaction_matches_conditions(tx, conds):
             continue
 
-        label = (tx.counterparty or "").strip() if rt == CategoryRuleTypeSchema.counterparty_contains.value else (tx.description or "").strip()
+        label = (
+            (tx.counterparty or "").strip()
+            if rt
+            in (
+                CategoryRuleTypeSchema.counterparty_contains.value,
+                CategoryRuleTypeSchema.counterparty_contains_word.value,
+            )
+            else (tx.description or "").strip()
+        )
         out_tx = transaction_to_out(tx)
 
         if sample_set and label in groups:

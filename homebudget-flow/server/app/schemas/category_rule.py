@@ -10,8 +10,10 @@ from pydantic import BaseModel, Field
 
 class CategoryRuleTypeSchema(str, Enum):
     description_contains = "description_contains"
+    description_contains_word = "description_contains_word"
     description_equals = "description_equals"
     counterparty_contains = "counterparty_contains"
+    counterparty_contains_word = "counterparty_contains_word"
     counterparty_equals = "counterparty_equals"
 
 

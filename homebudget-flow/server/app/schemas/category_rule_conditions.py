@@ -115,6 +115,38 @@ def conditions_to_json(conditions: List[CategoryRuleCondition]) -> str:
     return json.dumps([c.model_dump(mode="json") for c in conditions], ensure_ascii=False)
 
 
+def default_rule_display_name_from_pattern(pattern: str, conditions: List[CategoryRuleCondition]) -> str:
+    """Vorgabe-Anzeigename: Filter-/Mustertext in Großbuchstaben (max. 512 Zeichen)."""
+    pat = (pattern or "").strip()
+    if pat:
+        return pat.upper()[:512]
+    for c in conditions:
+        if isinstance(
+            c,
+            (
+                DescriptionContainsCondition,
+                DescriptionContainsWordCondition,
+                DescriptionEqualsCondition,
+                CounterpartyContainsCondition,
+                CounterpartyContainsWordCondition,
+                CounterpartyEqualsCondition,
+            ),
+        ):
+            p = (c.pattern or "").strip()
+            if p:
+                return p.upper()[:512]
+    return "REGEL"
+
+
+def resolved_rule_display_name(rule: CategoryRule) -> str:
+    """Effektiver Anzeigename: Override oder Vorgabe aus Muster."""
+    o = (getattr(rule, "display_name_override", None) or "").strip()
+    if o:
+        return o[:512]
+    conds = rule_effective_conditions(rule)
+    return default_rule_display_name_from_pattern(rule.pattern or "", conds)
+
+
 def _text_matches_whole_words(hay: str, pattern: str) -> bool:
     """Groß-/Kleinschreibung ignorieren; jeder durch Leerzeichen getrennte Token als ganzes Wort (\\b)."""
     hay_l = (hay or "").lower()

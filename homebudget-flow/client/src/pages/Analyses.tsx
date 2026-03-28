@@ -36,17 +36,24 @@ import {
   fetchAccounts,
   fetchAllTransactions,
   fetchCategories,
+  fetchCategoryRules,
   type CategoryOut,
+  type CategoryRuleOut,
   type Transaction,
 } from '../api/client';
+import { displayNameClusterForTransaction } from '../lib/categoryRuleMatching';
 import { CategorySymbolDisplay } from '../components/CategorySymbol';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
 import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import {
   addMonthsToIsoDate,
+  collectDescendantCategoryIds,
+  findCategoryById,
   flattenCategoriesWithMeta,
+  flattenSubcategoryPickOptionsWithMeta,
   formatDate,
+  type CategoryFlatOptionWithMeta,
 } from '../lib/transactionUi';
 
 function parseIsoDate(s: string): Date {
@@ -211,6 +218,67 @@ function buildDailyExpenseMatrix(transactions: Transaction[], from: string, to: 
     ensure(key)[di] += Math.abs(Number(t.amount));
   }
   return { days, byKey };
+}
+
+/** Ausgaben nach beliebigem Schlüssel (z. B. Anzeigename-Cluster) pro Kalendertag aggregieren. */
+function buildDailyExpenseMatrixClustered(
+  transactions: Transaction[],
+  from: string,
+  to: string,
+  clusterKeyFor: (t: Transaction) => string | null,
+): DailyExpenseMatrix {
+  const expenses = transactions.filter((t) => Number(t.amount) < 0);
+  const start = parseIsoDate(from);
+  const end = parseIsoDate(to);
+  const days: string[] = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    days.push(d.toISOString().slice(0, 10));
+  }
+  const byKey = new Map<string, number[]>();
+  const ensure = (key: string) => {
+    if (!byKey.has(key)) {
+      byKey.set(key, new Array(days.length).fill(0));
+    }
+    return byKey.get(key)!;
+  };
+  for (const t of expenses) {
+    const ck = clusterKeyFor(t);
+    if (ck == null) continue;
+    const dayStr = t.booking_date.slice(0, 10);
+    const di = days.indexOf(dayStr);
+    if (di < 0) continue;
+    ensure(ck)[di] += Math.abs(Number(t.amount));
+  }
+  return { days, byKey };
+}
+
+function regelClusterLabelForKey(clusterKey: string): string {
+  if (clusterKey === '__no_rule__') return 'Ohne passende Regel';
+  if (clusterKey === '__none__') return 'Ohne Kategorie';
+  if (clusterKey.startsWith('dn:')) return clusterKey.slice(3);
+  return clusterKey;
+}
+
+function RegelClusterSubcategoryRow({ o }: { o: CategoryFlatOptionWithMeta }) {
+  return (
+    <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0, py: 0.25 }}>
+      <Box
+        sx={{
+          width: 10,
+          height: 10,
+          borderRadius: '50%',
+          bgcolor: o.effective_color_hex,
+          flexShrink: 0,
+          border: 1,
+          borderColor: 'divider',
+        }}
+      />
+      <CategorySymbolDisplay value={o.icon_emoji} fontSize="1.1rem" />
+      <Typography variant="body2" noWrap sx={{ minWidth: 0 }}>
+        {o.label}
+      </Typography>
+    </Stack>
+  );
 }
 
 type VerlaufBucket = 'day' | 'week' | 'month';
@@ -443,7 +511,7 @@ function buildVerlaufPickOptions(roots: CategoryOut[], noneOption: VerlaufCatego
   return rows;
 }
 
-type AnalysisTab = 'tagesbilanz' | 'kategorien' | 'kategorieverlauf';
+type AnalysisTab = 'tagesbilanz' | 'kategorien' | 'kategorieverlauf' | 'regelcluster';
 
 type CategorySliceSelection = { flow: 'income' | 'expense'; categoryKey: string };
 
@@ -574,6 +642,11 @@ export default function Analyses() {
   const [verlaufSelectedKeys, setVerlaufSelectedKeys] = useState<string[]>([]);
   const [verlaufBucket, setVerlaufBucket] = useState<VerlaufBucket>('week');
   const [verlaufSelectedPeriodIndex, setVerlaufSelectedPeriodIndex] = useState<number | null>(null);
+  const [regelClusterSubcategoryId, setRegelClusterSubcategoryId] = useState<number | null>(null);
+  const [regelClusterBucket, setRegelClusterBucket] = useState<VerlaufBucket>('week');
+  const [regelClusterPeriodIndex, setRegelClusterPeriodIndex] = useState<number | null>(null);
+  /** Klick auf Balkendiagramm: Cluster-Schlüssel (`dn:…` / `__no_rule__` …) für Buchungsliste. */
+  const [regelClusterBarClusterKey, setRegelClusterBarClusterKey] = useState<string | null>(null);
 
   const accountsQuery = useQuery({
     queryKey: ['accounts'],
@@ -596,7 +669,10 @@ export default function Analyses() {
       }),
     enabled:
       rangeOk &&
-      (tab === 'tagesbilanz' || tab === 'kategorien' || tab === 'kategorieverlauf') &&
+      (tab === 'tagesbilanz' ||
+        tab === 'kategorien' ||
+        tab === 'kategorieverlauf' ||
+        tab === 'regelcluster') &&
       (includedAccountIds === null || includedAccountIds.length > 0),
   });
 
@@ -604,13 +680,22 @@ export default function Analyses() {
     setSelectedBarDay(null);
     setSelectedCategorySlice(null);
     setVerlaufSelectedPeriodIndex(null);
-  }, [from, to, includedAccountsQueryKey, verlaufBucket]);
+    setRegelClusterPeriodIndex(null);
+    setRegelClusterBarClusterKey(null);
+  }, [from, to, includedAccountsQueryKey, verlaufBucket, regelClusterBucket]);
+
+  useEffect(() => {
+    setRegelClusterBarClusterKey(null);
+    setRegelClusterPeriodIndex(null);
+  }, [regelClusterSubcategoryId]);
 
   function handleTabChange(_: unknown, v: AnalysisTab) {
     setTab(v);
     setSelectedBarDay(null);
     setSelectedCategorySlice(null);
     setVerlaufSelectedPeriodIndex(null);
+    setRegelClusterPeriodIndex(null);
+    setRegelClusterBarClusterKey(null);
   }
 
   const accounts = useMemo(
@@ -713,7 +798,18 @@ export default function Analyses() {
     queries: householdIdsForCategories.map((hid) => ({
       queryKey: ['categories', hid],
       queryFn: () => fetchCategories(hid),
-      enabled: rangeOk && tab === 'kategorieverlauf' && householdIdsForCategories.length > 0,
+      enabled:
+        rangeOk &&
+        (tab === 'kategorieverlauf' || tab === 'regelcluster') &&
+        householdIdsForCategories.length > 0,
+    })),
+  });
+
+  const rulesQueries = useQueries({
+    queries: householdIdsForCategories.map((hid) => ({
+      queryKey: ['category-rules', hid],
+      queryFn: () => fetchCategoryRules(hid),
+      enabled: rangeOk && tab === 'regelcluster' && householdIdsForCategories.length > 0,
     })),
   });
 
@@ -1037,8 +1133,7 @@ export default function Analyses() {
         piePalette,
         si,
       );
-      const icon = opt.iconEmoji?.trim();
-      const name = icon ? `${icon} ${opt.label}` : opt.label;
+      const name = opt.label;
       return {
         name,
         data: Array.from({ length: n }, (_, i) => {
@@ -1159,8 +1254,271 @@ export default function Analyses() {
     !sharedError &&
     (noAccountsSelected || txQuery.data !== undefined);
   const categoryQueriesLoading =
-    tab === 'kategorieverlauf' && categoryQueries.some((q) => q.isLoading);
+    (tab === 'kategorieverlauf' || tab === 'regelcluster') && categoryQueries.some((q) => q.isLoading);
   const firstCategoryQueryError = categoryQueries.find((q) => q.isError)?.error;
+  const rulesQueriesLoading = tab === 'regelcluster' && rulesQueries.some((q) => q.isLoading);
+  const firstRulesQueryError = rulesQueries.find((q) => q.isError)?.error;
+
+  const mergedCategoryRoots = useMemo(() => {
+    const out: CategoryOut[] = [];
+    for (const q of categoryQueries) {
+      for (const r of q.data ?? []) out.push(r);
+    }
+    return out;
+  }, [categoryQueries]);
+
+  const allRulesSorted = useMemo(() => {
+    const out: CategoryRuleOut[] = [];
+    for (const q of rulesQueries) {
+      for (const r of q.data?.rules ?? []) out.push(r);
+    }
+    out.sort((a, b) => b.id - a.id);
+    return out;
+  }, [rulesQueries]);
+
+  const subcategoryPickOptions = useMemo(
+    () => flattenSubcategoryPickOptionsWithMeta(mergedCategoryRoots),
+    [mergedCategoryRoots],
+  );
+
+  const regelClusterSubtreeIds = useMemo(() => {
+    if (regelClusterSubcategoryId == null) return null;
+    const node = findCategoryById(mergedCategoryRoots, regelClusterSubcategoryId);
+    if (!node) return null;
+    return new Set(collectDescendantCategoryIds(node));
+  }, [mergedCategoryRoots, regelClusterSubcategoryId]);
+
+  const regelClusterDailyMatrix = useMemo(() => {
+    if (!regelClusterSubtreeIds) {
+      return { days: [] as string[], byKey: new Map<string, number[]>() };
+    }
+    const rules = allRulesSorted;
+    return buildDailyExpenseMatrixClustered(scopedTransactions, from, to, (t) => {
+      if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return null;
+      if (Number(t.amount) >= 0) return null;
+      return displayNameClusterForTransaction(t, rules).clusterKey;
+    });
+  }, [scopedTransactions, from, to, regelClusterSubtreeIds, allRulesSorted]);
+
+  const regelClusterPeriodMatrix = useMemo(
+    () => rollupVerlaufFromDaily(regelClusterDailyMatrix, regelClusterBucket),
+    [regelClusterDailyMatrix, regelClusterBucket],
+  );
+
+  const regelClusterSortedKeys = useMemo(() => {
+    const keys = [...regelClusterDailyMatrix.byKey.keys()];
+    keys.sort(
+      (a, b) => totalSpendForKey(regelClusterDailyMatrix, b) - totalSpendForKey(regelClusterDailyMatrix, a),
+    );
+    return keys;
+  }, [regelClusterDailyMatrix]);
+
+  const regelClusterXAxisTitle =
+    regelClusterBucket === 'day'
+      ? 'Tag'
+      : regelClusterBucket === 'week'
+        ? 'Kalenderwoche (Mo–So im Filter)'
+        : 'Monat';
+
+  const transactionsForSelectedRegelClusterPeriod = useMemo(() => {
+    if (regelClusterPeriodIndex == null || !regelClusterSubtreeIds) return [];
+    const daysIn = regelClusterPeriodMatrix.periodDays[regelClusterPeriodIndex];
+    if (!daysIn?.length) return [];
+    const daySet = new Set(daysIn);
+    return scopedTransactions
+      .filter((t) => {
+        if (Number(t.amount) >= 0) return false;
+        if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return false;
+        return daySet.has(t.booking_date.slice(0, 10));
+      })
+      .slice()
+      .sort((a, b) => b.id - a.id);
+  }, [scopedTransactions, regelClusterPeriodIndex, regelClusterPeriodMatrix.periodDays, regelClusterSubtreeIds]);
+
+  const transactionsForRegelClusterBarSelection = useMemo(() => {
+    if (regelClusterBarClusterKey == null || !regelClusterSubtreeIds) return [];
+    const rules = allRulesSorted;
+    return scopedTransactions
+      .filter((t) => {
+        if (Number(t.amount) >= 0) return false;
+        if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return false;
+        return displayNameClusterForTransaction(t, rules).clusterKey === regelClusterBarClusterKey;
+      })
+      .slice()
+      .sort((a, b) => b.id - a.id);
+  }, [scopedTransactions, regelClusterBarClusterKey, regelClusterSubtreeIds, allRulesSorted]);
+
+  const regelClusterBarSelectionTitle = useMemo(() => {
+    if (regelClusterBarClusterKey == null) return '';
+    return regelClusterLabelForKey(regelClusterBarClusterKey);
+  }, [regelClusterBarClusterKey]);
+
+  const regelClusterSelectedPeriodTitle = useMemo(() => {
+    if (regelClusterPeriodIndex == null) return '';
+    const label = regelClusterPeriodMatrix.periodLabels[regelClusterPeriodIndex] ?? '';
+    const raster =
+      regelClusterBucket === 'day' ? 'Tag' : regelClusterBucket === 'week' ? 'Woche' : 'Monat';
+    return `${raster} · ${label}`;
+  }, [regelClusterPeriodIndex, regelClusterPeriodMatrix.periodLabels, regelClusterBucket]);
+
+  const regelClusterBarChart = useMemo(() => {
+    const keys = regelClusterSortedKeys;
+    const labels = keys.map((k) => regelClusterLabelForKey(k));
+    const data = keys.map((k) => totalSpendForKey(regelClusterDailyMatrix, k));
+    const colors = keys.map((_, si) => piePalette[si % piePalette.length]);
+    const options: ApexOptions = {
+      chart: {
+        type: 'bar',
+        toolbar: { show: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+        events: {
+          dataPointSelection: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= keys.length) return;
+            setRegelClusterBarClusterKey(keys[i]);
+            setRegelClusterPeriodIndex(null);
+          },
+          click: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= keys.length) return;
+            setRegelClusterBarClusterKey(keys[i]);
+            setRegelClusterPeriodIndex(null);
+          },
+        },
+      },
+      plotOptions: {
+        bar: {
+          horizontal: true,
+          borderRadius: 2,
+          distributed: true,
+          dataLabels: { position: 'right' },
+        },
+      },
+      dataLabels: {
+        enabled: true,
+        formatter: (val: string | number) => formatMoneyShort(Number(val), defaultCurrency),
+        style: { fontSize: '11px' },
+      },
+      /**
+       * Horizontal: Apex legt `categories` auf die eine Achse, Zahlen auf die andere.
+       * Nur Zahlen als Währung formatieren — sonst Anzeigenamen (Strings) durchreichen (vermeidet „NaN €“).
+       */
+      xaxis: {
+        categories: labels,
+        labels: {
+          formatter: (val: string | number) => {
+            const n = typeof val === 'number' ? val : Number(val);
+            if (Number.isFinite(n)) return formatMoneyShort(n, defaultCurrency);
+            return String(val);
+          },
+          style: { fontSize: '11px' },
+        },
+      },
+      yaxis: {
+        labels: {
+          maxWidth: 240,
+          style: { fontSize: '11px' },
+          formatter: (val: string | number) => {
+            const n = typeof val === 'number' ? val : Number(val);
+            if (Number.isFinite(n)) return formatMoneyShort(n, defaultCurrency);
+            return String(val);
+          },
+        },
+      },
+      colors,
+      grid: { borderColor: theme.palette.divider, strokeDashArray: 4 },
+      tooltip: {
+        theme: theme.palette.mode,
+        y: { formatter: (val: number) => formatMoneyFull(val, defaultCurrency) },
+      },
+      legend: { show: false },
+    };
+    return { options, series: [{ name: 'Ausgaben', data }] };
+  }, [regelClusterSortedKeys, regelClusterDailyMatrix, theme, defaultCurrency, piePalette]);
+
+  const regelClusterTimeChart = useMemo(() => {
+    const { periodLabels, byKey } = regelClusterPeriodMatrix;
+    const n = periodLabels.length;
+    const keys = regelClusterSortedKeys;
+    const series = keys.map((key, si) => ({
+      name: regelClusterLabelForKey(key),
+      data: Array.from({ length: n }, (_, i) => {
+        const arr = byKey.get(key);
+        return arr ? (arr[i] ?? 0) : 0;
+      }),
+    }));
+    const colors = keys.map((_, si) => piePalette[si % piePalette.length]);
+    const options: ApexOptions = {
+      chart: {
+        type: 'area',
+        stacked: true,
+        toolbar: { show: true },
+        zoom: { enabled: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+        events: {
+          dataPointSelection: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= n) return;
+            setRegelClusterBarClusterKey(null);
+            setRegelClusterPeriodIndex(i);
+          },
+          click: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= n) return;
+            setRegelClusterBarClusterKey(null);
+            setRegelClusterPeriodIndex(i);
+          },
+        },
+      },
+      colors,
+      stroke: { curve: 'smooth', width: 2 },
+      fill: { type: 'solid', opacity: 0.55 },
+      xaxis: {
+        categories: periodLabels,
+        title: { text: regelClusterXAxisTitle },
+        labels: {
+          rotate: n > 14 ? -45 : 0,
+          rotateAlways: n > 14,
+          style: { fontSize: '11px' },
+        },
+      },
+      yaxis: {
+        labels: {
+          formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
+        },
+      },
+      dataLabels: { enabled: false },
+      legend: {
+        position: 'bottom',
+        fontSize: '12px',
+        markers: { width: 12, height: 12, radius: 2 },
+      },
+      tooltip: {
+        theme: theme.palette.mode,
+        shared: true,
+        intersect: false,
+        y: {
+          formatter: (val) => formatMoneyFull(Number(val), defaultCurrency),
+        },
+      },
+      grid: {
+        borderColor: theme.palette.divider,
+        strokeDashArray: 4,
+      },
+    };
+    return { options, series };
+  }, [
+    regelClusterPeriodMatrix,
+    regelClusterSortedKeys,
+    regelClusterXAxisTitle,
+    theme,
+    defaultCurrency,
+    piePalette,
+  ]);
 
   return (
     <Stack spacing={3}>
@@ -1170,8 +1528,8 @@ export default function Analyses() {
         </Typography>
         <Typography color="text.secondary" variant="body2">
           Diagramme zu Buchungen und Kategorien. Tagesbilanz: kumulierter Verlauf. Kategorien: Torten für Einnahmen
-          und Ausgaben. Kategorieverlauf: gestapelte Flächen – Ausgaben (Absolutbeträge) je Kategorie, wahlweise nach
-          Tag, Woche oder Monat aggregiert.
+          und Ausgaben. Kategorieverlauf: gestapelte Flächen je Kategorie. Anzeigeregeln: Ausgaben einer Unterkategorie
+          nach Zuordnungsregel-Anzeigenamen gruppiert (Balken + Zeitverlauf).
         </Typography>
       </Box>
 
@@ -1186,6 +1544,7 @@ export default function Analyses() {
         <Tab value="tagesbilanz" label="Tagesbilanz" />
         <Tab value="kategorien" label="Kategorien" />
         <Tab value="kategorieverlauf" label="Kategorieverlauf" />
+        <Tab value="regelcluster" label="Anzeigeregeln" />
       </Tabs>
 
       <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
@@ -1488,7 +1847,7 @@ export default function Analyses() {
             </Paper>
           ) : null}
         </>
-      ) : (
+      ) : tab === 'kategorieverlauf' ? (
         <>
           {firstCategoryQueryError ? (
             <Alert severity="warning" sx={{ mb: 1 }}>
@@ -1717,6 +2076,184 @@ export default function Analyses() {
               </Stack>
               <TransactionBookingsTable
                 rows={transactionsForSelectedVerlaufPeriod}
+                accounts={accounts}
+                emptyMessage="Keine Ausgaben in dieser Periode (im gewählten Filter)."
+                hideInlineHint
+              />
+            </Paper>
+          ) : null}
+        </>
+      ) : (
+        <>
+          {firstCategoryQueryError ? (
+            <Alert severity="warning" sx={{ mb: 1 }}>
+              Kategorien konnten nicht vollständig geladen werden: {apiErrorMessage(firstCategoryQueryError)}. Namen
+              fehlen ggf. in der Auswahl.
+            </Alert>
+          ) : null}
+          {firstRulesQueryError ? (
+            <Alert severity="warning" sx={{ mb: 1 }}>
+              Zuordnungsregeln konnten nicht geladen werden: {apiErrorMessage(firstRulesQueryError)}.
+            </Alert>
+          ) : null}
+          {!scopedTransactions.length ? (
+            <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
+          ) : (
+            <Stack spacing={2}>
+              <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  Ausgaben unter der gewählten Unterkategorie (inkl. tieferer Unterkategorien), gruppiert nach dem
+                  effektiven <strong>Anzeigenamen</strong> der ersten passenden Zuordnungsregel pro Buchung (gleiche
+                  Reihenfolge wie bei der automatischen Zuweisung). Aggregierung wie beim Kategorieverlauf.{' '}
+                  <strong>Zeitdiagramm anklicken</strong>, um die Buchungen der Periode zu sehen.
+                </Typography>
+                <Stack
+                  direction={{ xs: 'column', md: 'row' }}
+                  spacing={2}
+                  alignItems={{ xs: 'stretch', md: 'center' }}
+                  sx={{ mt: 1 }}
+                  flexWrap="wrap"
+                  useFlexGap
+                >
+                  <FormControl size="small" sx={{ minWidth: 280, flex: { md: '1 1 280px' } }}>
+                    <InputLabel id="analyses-regel-cluster-sub">Unterkategorie</InputLabel>
+                    <Select
+                      labelId="analyses-regel-cluster-sub"
+                      label="Unterkategorie"
+                      value={regelClusterSubcategoryId ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setRegelClusterSubcategoryId(v === '' ? null : Number(v));
+                      }}
+                      renderValue={(selected) => {
+                        if (selected === '' || selected === undefined) {
+                          return (
+                            <Typography component="span" color="text.secondary" fontStyle="italic" variant="body2">
+                              Bitte wählen…
+                            </Typography>
+                          );
+                        }
+                        const id = typeof selected === 'number' ? selected : Number(selected);
+                        const o = subcategoryPickOptions.find((x) => x.id === id);
+                        if (!o) return String(selected);
+                        return <RegelClusterSubcategoryRow o={o} />;
+                      }}
+                    >
+                      <MenuItem value="">
+                        <Typography component="span" color="text.secondary" fontStyle="italic" variant="body2">
+                          Bitte wählen…
+                        </Typography>
+                      </MenuItem>
+                      {subcategoryPickOptions.map((o) => (
+                        <MenuItem key={o.id} value={o.id}>
+                          <RegelClusterSubcategoryRow o={o} />
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  <FormControl size="small" sx={{ minWidth: 200 }}>
+                    <InputLabel id="analyses-regel-cluster-bucket">Aggregierung</InputLabel>
+                    <Select
+                      labelId="analyses-regel-cluster-bucket"
+                      label="Aggregierung"
+                      value={regelClusterBucket}
+                      onChange={(e) => setRegelClusterBucket(e.target.value as VerlaufBucket)}
+                    >
+                      <MenuItem value="day">Tag</MenuItem>
+                      <MenuItem value="week">Woche</MenuItem>
+                      <MenuItem value="month">Monat</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Stack>
+                {categoryQueriesLoading || rulesQueriesLoading ? (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1.5 }}>
+                    Kategorien und Regeln werden geladen…
+                  </Typography>
+                ) : null}
+                {!categoryQueriesLoading && subcategoryPickOptions.length === 0 ? (
+                  <Alert severity="info" sx={{ mt: 2 }}>
+                    Es sind keine <strong>Unterkategorien</strong> angelegt (unter einer Hauptkategorie). Lege zuerst
+                    Unterkategorien in den Kategorieeinstellungen an.
+                  </Alert>
+                ) : null}
+              </Paper>
+              {regelClusterSubcategoryId == null ? (
+                <Alert severity="info">
+                  Wähle oben eine <strong>Unterkategorie</strong>. Es werden alle Ausgaben in diesem Teilbaum
+                  ausgewertet und nach dem <strong>Anzeigenamen</strong> der passenden Zuordnungsregel gruppiert
+                  (neueste passende Regel zuerst). Buchungen ohne passende Regel erscheinen unter „Ohne passende
+                  Regel“.
+                </Alert>
+              ) : regelClusterSubtreeIds == null ? (
+                <Alert severity="warning">Die gewählte Kategorie wurde nicht gefunden (Kategoriebaum neu laden).</Alert>
+              ) : regelClusterSortedKeys.length === 0 ? (
+                <Alert severity="info">Keine Ausgaben in dieser Unterkategorie im gewählten Zeitraum.</Alert>
+              ) : (
+                <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                  <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1 }}>
+                    Summen je Anzeigename
+                  </Typography>
+                  <Box sx={{ width: '100%', minHeight: isXs ? 260 : 320, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                    <Chart
+                      options={regelClusterBarChart.options}
+                      series={regelClusterBarChart.series}
+                      type="bar"
+                      height={isXs ? 280 : Math.min(120 + regelClusterSortedKeys.length * 36, 520)}
+                      width="100%"
+                    />
+                  </Box>
+                  <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1, mt: 2 }}>
+                    Verlauf über die Zeit
+                  </Typography>
+                  <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                    <Chart
+                      options={regelClusterTimeChart.options}
+                      series={regelClusterTimeChart.series}
+                      type="area"
+                      height={isXs ? 340 : 440}
+                      width="100%"
+                    />
+                  </Box>
+                </Paper>
+              )}
+            </Stack>
+          )}
+          {regelClusterBarClusterKey != null &&
+          sharedDataReady &&
+          scopedTransactions.length > 0 &&
+          regelClusterSubcategoryId != null ? (
+            <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
+                <Typography variant="subtitle1" fontWeight={600}>
+                  Buchungen: Ausgaben · Anzeigename „{regelClusterBarSelectionTitle}“ · {from}–{to}
+                </Typography>
+                <Button size="small" variant="outlined" onClick={() => setRegelClusterBarClusterKey(null)}>
+                  Auswahl aufheben
+                </Button>
+              </Stack>
+              <TransactionBookingsTable
+                rows={transactionsForRegelClusterBarSelection}
+                accounts={accounts}
+                emptyMessage="Keine Buchungen für diesen Anzeigenamen (im gewählten Filter)."
+                hideInlineHint
+              />
+            </Paper>
+          ) : regelClusterBarClusterKey == null &&
+            regelClusterPeriodIndex != null &&
+            sharedDataReady &&
+            scopedTransactions.length > 0 &&
+            regelClusterSubcategoryId != null ? (
+            <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
+                <Typography variant="subtitle1" fontWeight={600}>
+                  Buchungen: Ausgaben · {regelClusterSelectedPeriodTitle}
+                </Typography>
+                <Button size="small" variant="outlined" onClick={() => setRegelClusterPeriodIndex(null)}>
+                  Auswahl aufheben
+                </Button>
+              </Stack>
+              <TransactionBookingsTable
+                rows={transactionsForSelectedRegelClusterPeriod}
                 accounts={accounts}
                 emptyMessage="Keine Ausgaben in dieser Periode (im gewählten Filter)."
                 hideInlineHint

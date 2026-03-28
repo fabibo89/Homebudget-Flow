@@ -71,6 +71,7 @@ import CreateCategoryRuleDialog from '../components/CreateCategoryRuleDialog';
 import { CategorySymbolDisplay, CategorySymbolPicker } from '../components/CategorySymbol';
 import {
   categoryRuleBookingsTab,
+  defaultCategoryRuleDisplayName,
   describeCategoryRuleCondition,
   formatDate,
   formatDateTime,
@@ -1036,7 +1037,12 @@ export default function CategoriesSettings() {
                         <Card key={rule.id} variant="outlined">
                           <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
                             <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
-                              <Chip size="small" label={`Priorität ${globalPriority}`} variant="outlined" />
+                              <Stack spacing={0.5} sx={{ minWidth: 0, flex: 1 }}>
+                                <Typography variant="subtitle1" fontWeight={700} sx={{ wordBreak: 'break-word' }}>
+                                  {rule.display_name ?? defaultCategoryRuleDisplayName(rule.pattern)}
+                                </Typography>
+                                <Chip size="small" label={`Priorität ${globalPriority}`} variant="outlined" sx={{ alignSelf: 'flex-start' }} />
+                              </Stack>
                               <Stack direction="row" spacing={0.25}>
                                 <Tooltip title="Regel bearbeiten">
                                   <IconButton
@@ -1060,7 +1066,7 @@ export default function CategoriesSettings() {
                                     onClick={() => {
                                       if (
                                         !window.confirm(
-                                          `Regel wirklich löschen?\n\n${categoryRuleTypeDescription(rule.rule_type)}: "${rule.pattern}"`,
+                                          `Regel wirklich löschen?\n\n${rule.display_name ?? defaultCategoryRuleDisplayName(rule.pattern)}\n${categoryRuleTypeDescription(rule.rule_type)}: „${rule.pattern}“`,
                                         )
                                       )
                                         return;
@@ -1126,6 +1132,7 @@ export default function CategoriesSettings() {
                         <TableHead>
                           <TableRow>
                             <TableCell width={72}>Priorität</TableCell>
+                            <TableCell sx={{ minWidth: 140 }}>Anzeigename</TableCell>
                             <TableCell>Kategorie</TableCell>
                             <TableCell width={140}>Geltung</TableCell>
                             <TableCell>Bedingungen (alle müssen zutreffen)</TableCell>
@@ -1137,6 +1144,9 @@ export default function CategoriesSettings() {
                           {rulesListFiltered.map(({ rule, globalPriority }) => (
                             <TableRow key={rule.id} hover>
                               <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>{globalPriority}</TableCell>
+                              <TableCell sx={{ fontWeight: 600, wordBreak: 'break-word' }}>
+                                {rule.display_name ?? defaultCategoryRuleDisplayName(rule.pattern)}
+                              </TableCell>
                               <TableCell>
                                 {rule.category_missing || rule.category_id == null ? (
                                   <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
@@ -1202,7 +1212,7 @@ export default function CategoriesSettings() {
                                       onClick={() => {
                                         if (
                                           !window.confirm(
-                                            `Regel wirklich löschen?\n\n${categoryRuleTypeDescription(rule.rule_type)}: "${rule.pattern}"`,
+                                            `Regel wirklich löschen?\n\n${rule.display_name ?? defaultCategoryRuleDisplayName(rule.pattern)}\n${categoryRuleTypeDescription(rule.rule_type)}: „${rule.pattern}“`,
                                           )
                                         )
                                           return;

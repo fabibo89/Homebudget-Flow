@@ -33,7 +33,8 @@ from app.schemas.category_rule_conditions import (
     conditions_from_legacy_api_type,
     conditions_to_json,
     derive_rule_type_and_pattern,
-  transaction_matches_conditions,
+    resolved_rule_display_name,
+    transaction_matches_conditions,
     validate_conditions_list,
 )
 from app.services.category_assignment import ensure_category_is_subcategory_for_assignment
@@ -86,6 +87,7 @@ def _rule_to_out(row: CategoryRule, user_map: dict[int, User]) -> CategoryRuleOu
     disp = None
     if uid is not None:
         disp = _creator_display(user_map.get(uid))
+    override_raw = (getattr(row, "display_name_override", None) or "").strip()
     return CategoryRuleOut(
         id=row.id,
         household_id=row.household_id,
@@ -94,6 +96,8 @@ def _rule_to_out(row: CategoryRule, user_map: dict[int, User]) -> CategoryRuleOu
         applies_to_household=row.applies_to_household,
         rule_type=row.rule_type,
         pattern=row.pattern,
+        display_name=resolved_rule_display_name(row),
+        display_name_override=override_raw if override_raw else None,
         conditions=conditions_for_api(row),
         created_at=row.created_at,
         created_by_user_id=uid,
@@ -459,12 +463,14 @@ async def create_category_rule(
     rt, pat = derive_rule_type_and_pattern(conds)
     cj = conditions_to_json(conds)
 
+    ovr = (body.display_name_override or "").strip()
     row = CategoryRule(
         household_id=household_id,
         category_id=body.category_id,
         category_missing=False,
         rule_type=rt,
         pattern=(pat or "")[:512],
+        display_name_override=ovr if ovr else None,
         conditions_json=cj,
         created_by_user_id=user.id,
         applies_to_household=body.applies_to_household,
@@ -573,6 +579,9 @@ async def update_category_rule(
     row.pattern = (pat or "")[:512]
     row.conditions_json = cj
     row.applies_to_household = body.applies_to_household
+    if "display_name_override" in body.model_fields_set:
+        ovr = (body.display_name_override or "").strip()
+        row.display_name_override = ovr if ovr else None
 
     n_updated = 0
     overwrite_candidates: list[CategoryRuleOverwriteCandidate] = []

@@ -411,6 +411,25 @@ async def _ensure_category_rules_missing_nullable_category(conn) -> None:
         return
 
 
+async def _ensure_category_rules_display_name_override(conn) -> None:
+    """Optionaler Anzeigename (Override); NULL = Vorgabe aus Mustertext."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(category_rules)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "display_name_override" not in cols:
+            await conn.execute(
+                text("ALTER TABLE category_rules ADD COLUMN display_name_override VARCHAR(512)"),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE category_rules ADD COLUMN IF NOT EXISTS display_name_override VARCHAR(512)",
+            ),
+        )
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -423,6 +442,7 @@ async def init_db() -> None:
         await _ensure_category_rules_created_by_user_id(conn)
         await _ensure_category_rules_applies_to_household(conn)
         await _ensure_category_rules_missing_nullable_category(conn)
+        await _ensure_category_rules_display_name_override(conn)
         await _ensure_bank_accounts_last_salary_cache(conn)
         await _ensure_bank_credentials_fints_verification(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)

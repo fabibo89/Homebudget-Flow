@@ -127,6 +127,22 @@ export function flattenCategoriesWithMeta(
   return out;
 }
 
+export function findCategoryById(roots: CategoryOut[], id: number): CategoryOut | null {
+  for (const n of roots) {
+    if (n.id === id) return n;
+    const d = findCategoryById(n.children ?? [], id);
+    if (d) return d;
+  }
+  return null;
+}
+
+/** Unterkategorie inkl. aller Kind-Kategorien (IDs). */
+export function collectDescendantCategoryIds(node: CategoryOut): number[] {
+  const ids = [node.id];
+  for (const ch of node.children ?? []) ids.push(...collectDescendantCategoryIds(ch));
+  return ids;
+}
+
 /** Option für Kategorie-Dropdowns (z. B. Buchung zuweisen); „Keine Kategorie“ ohne Farbe/Icon. */
 export type CategoryPickOption = {
   id: number | null;
@@ -137,6 +153,12 @@ export type CategoryPickOption = {
 
 export type RuleTargetField = 'description' | 'counterparty';
 export type RuleMatchMode = 'contains' | 'whole_word' | 'equals';
+
+/** Vorgabe-Anzeigename für eine Regel: Mustertext in Großbuchstaben. */
+export function defaultCategoryRuleDisplayName(pattern: string): string {
+  const t = pattern.trim();
+  return t ? t.toUpperCase().slice(0, 512) : '';
+}
 
 export function categoryRuleApiType(field: RuleTargetField, mode: RuleMatchMode): CategoryRuleType {
   if (field === 'description') {

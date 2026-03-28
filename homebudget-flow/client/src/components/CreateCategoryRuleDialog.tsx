@@ -48,6 +48,7 @@ import {
   amountSxColorFromTransaction,
   categoryRuleApiType,
   categoryRuleConditionsToFormState,
+  defaultCategoryRuleDisplayName,
   defaultRulePatternFromTx,
   describeCategoryRuleCondition,
   flattenSubcategoryPickOptionsWithMeta,
@@ -62,6 +63,7 @@ type CreateRuleBody = {
   category_id: number;
   applies_to_household: boolean;
   apply_to_uncategorized: boolean;
+  display_name_override: string | null;
   also_assign_transaction_id?: number | null;
 };
 
@@ -70,6 +72,7 @@ type UpdateRuleBody = {
   category_id: number;
   applies_to_household: boolean;
   apply_to_uncategorized: boolean;
+  display_name_override: string | null;
 };
 
 function normalizeAmountInput(raw: string): string | null {
@@ -173,6 +176,7 @@ export default function CreateCategoryRuleDialog({
   const [amountMax, setAmountMax] = useState('');
   const [applyRulesToUncategorized, setApplyRulesToUncategorized] = useState(true);
   const [appliesToHousehold, setAppliesToHousehold] = useState(true);
+  const [ruleDisplayNameOverride, setRuleDisplayNameOverride] = useState('');
 
   const fromSuggestion = Boolean(suggestionPreset && !transaction && !editingRule);
   const isEditing = Boolean(editingRule);
@@ -196,6 +200,7 @@ export default function CreateCategoryRuleDialog({
       setPickCategoryId(editingRule.category_id ?? null);
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(editingRule.applies_to_household !== false);
+      setRuleDisplayNameOverride(editingRule.display_name_override ?? '');
       return;
     }
     if (transaction) {
@@ -209,6 +214,7 @@ export default function CreateCategoryRuleDialog({
       setPickCategoryId(null);
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
+      setRuleDisplayNameOverride('');
     } else if (suggestionPreset) {
       const fm = ruleTypeToFieldMode(suggestionPreset.rule_type);
       setRuleField(fm.field);
@@ -220,6 +226,7 @@ export default function CreateCategoryRuleDialog({
       setPickCategoryId(null);
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
+      setRuleDisplayNameOverride('');
     } else {
       setRuleField('description');
       setRuleMode('contains');
@@ -230,12 +237,14 @@ export default function CreateCategoryRuleDialog({
       setPickCategoryId(null);
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
+      setRuleDisplayNameOverride('');
     }
   }, [
     open,
     editingRule?.id,
     editingRule?.category_id,
     editingRule?.category_missing,
+    editingRule?.display_name_override,
     transaction?.id,
     suggestionPreset?.rule_type,
     suggestionPreset?.pattern,
@@ -250,6 +259,8 @@ export default function CreateCategoryRuleDialog({
     if (pickCategoryId == null) return null;
     return categoryRulePickOptions.find((o) => o.id === pickCategoryId) ?? null;
   }, [categoryRulePickOptions, pickCategoryId]);
+
+  const defaultDisplayNamePreview = useMemo(() => defaultCategoryRuleDisplayName(rulePattern), [rulePattern]);
 
   const invalidateAfterRuleChange = (hid: number) => {
     void qc.invalidateQueries({ queryKey: ['category-rules', hid] });
@@ -504,6 +515,18 @@ export default function CreateCategoryRuleDialog({
                         : 'Groß-/Kleinschreibung wird ignoriert; der gesamte Text muss exakt übereinstimmen (nach Trimmen).'
                   }
                 />
+                <TextField
+                  label="Anzeigename (optional)"
+                  value={ruleDisplayNameOverride}
+                  onChange={(e) => setRuleDisplayNameOverride(e.target.value.slice(0, 512))}
+                  fullWidth
+                  size="small"
+                  helperText={
+                    ruleDisplayNameOverride.trim()
+                      ? 'Wird in der Regelliste statt der Vorgabe angezeigt.'
+                      : `Vorgabe: ${defaultDisplayNamePreview || '—'} (Mustertext in Großbuchstaben)`
+                  }
+                />
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                   <TextField
                     label="Betrag min (optional)"
@@ -676,6 +699,7 @@ export default function CreateCategoryRuleDialog({
                 amountMin,
                 amountMax,
               });
+              const dn = ruleDisplayNameOverride.trim();
               applyRuleMut.mutate({
                 householdId,
                 ruleId: editingRule.id,
@@ -684,6 +708,7 @@ export default function CreateCategoryRuleDialog({
                   category_id: pickCategoryId,
                   applies_to_household: appliesToHousehold,
                   apply_to_uncategorized: true,
+                  display_name_override: dn.length > 0 ? dn : null,
                 },
               });
             }}
@@ -732,6 +757,8 @@ export default function CreateCategoryRuleDialog({
               amountMin,
               amountMax,
             });
+            const dn = ruleDisplayNameOverride.trim();
+            const display_name_override = dn.length > 0 ? dn : null;
             if (editingRule) {
               updateRuleMut.mutate({
                 householdId,
@@ -741,6 +768,7 @@ export default function CreateCategoryRuleDialog({
                   category_id: pickCategoryId,
                   applies_to_household: appliesToHousehold,
                   apply_to_uncategorized: applyRulesToUncategorized,
+                  display_name_override,
                 },
               });
               return;
@@ -752,6 +780,7 @@ export default function CreateCategoryRuleDialog({
                 category_id: pickCategoryId,
                 applies_to_household: appliesToHousehold,
                 apply_to_uncategorized: applyRulesToUncategorized,
+                display_name_override,
                 also_assign_transaction_id: transaction?.id,
               },
             });

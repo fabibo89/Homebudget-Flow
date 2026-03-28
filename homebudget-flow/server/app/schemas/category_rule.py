@@ -20,6 +20,9 @@ class CategoryRuleTypeSchema(str, Enum):
 class CategoryRuleConditionsBody(BaseModel):
     """Gemeinsame Felder für Anlegen und Aktualisieren von Regelbedingungen."""
 
+    display_name_override: Optional[str] = Field(None, max_length=512)
+    """Eigener Anzeigename; leer/None = Vorgabe aus Mustertext (Großbuchstaben)."""
+
     conditions: Optional[list[dict[str, Any]]] = None
     """Komponierbare Bedingungen (UND). Mindestens ein Eintrag, wenn rule_type/pattern nicht gesetzt sind."""
     rule_type: Optional[CategoryRuleTypeSchema] = None
@@ -52,6 +55,10 @@ class CategoryRuleOut(BaseModel):
     applies_to_household: bool = True
     rule_type: str
     pattern: str
+    display_name: str
+    """Effektiver Anzeigename (Override oder Mustertext in Großbuchstaben)."""
+    display_name_override: Optional[str] = None
+    """Nur gesetzt, wenn vom Nutzer überschrieben; sonst None."""
     conditions: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
     created_by_user_id: Optional[int] = None

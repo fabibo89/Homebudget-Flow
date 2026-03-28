@@ -320,6 +320,7 @@ class CategoryRule(Base):
     category_missing: Mapped[bool] = mapped_column(Boolean, default=False)
     rule_type: Mapped[str] = mapped_column(String(32))
     pattern: Mapped[str] = mapped_column(String(512))
+    display_name_override: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     conditions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),

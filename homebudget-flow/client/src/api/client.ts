@@ -250,6 +250,10 @@ export type CategoryRuleOut = {
   applies_to_household?: boolean;
   rule_type: CategoryRuleType;
   pattern: string;
+  /** Effektiver Anzeigename (eigener Name oder Mustertext in Großbuchstaben). */
+  display_name: string;
+  /** Nur wenn vom Nutzer gesetzt; sonst null (Vorgabe aus Muster). */
+  display_name_override?: string | null;
   conditions: CategoryRuleCondition[];
   created_at: string;
   created_by_user_id?: number | null;
@@ -365,6 +369,7 @@ export async function createCategoryRule(
     conditions?: CategoryRuleCondition[];
     rule_type?: CategoryRuleType;
     pattern?: string;
+    display_name_override?: string | null;
     category_id: number;
     applies_to_household?: boolean;
     apply_to_uncategorized?: boolean;
@@ -385,6 +390,7 @@ export async function updateCategoryRule(
     conditions?: CategoryRuleCondition[];
     rule_type?: CategoryRuleType;
     pattern?: string;
+    display_name_override?: string | null;
     category_id: number;
     applies_to_household?: boolean;
     apply_to_uncategorized?: boolean;

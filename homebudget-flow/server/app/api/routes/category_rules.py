@@ -267,6 +267,7 @@ async def preview_category_rule_suggestion(
 
     conds = conditions_from_legacy_api_type(rt, body.pattern)
 
+    # Gleicher Suchbereich wie bei GET category-rule-suggestions (unkategorisiert, neueste zuerst)
     tx_r = await session.execute(
         select(Transaction)
         .where(
@@ -274,7 +275,7 @@ async def preview_category_rule_suggestion(
             Transaction.category_id.is_(None),
         )
         .order_by(Transaction.booking_date.desc(), Transaction.id.desc())
-        .limit(body.limit_total * 3),
+        .limit(_SUGGESTIONS_TX_CAP),
     )
     txs = list(tx_r.scalars().all())
 

@@ -62,6 +62,7 @@ import {
   type CategoryRuleOut,
   type CategoryRuleOverwriteCandidate,
   type CategoryRuleSuggestion,
+  type CategoryRuleSuggestionsBundle,
   type CategoryRuleSuggestionPreviewOut,
   type CategoryRuleType,
 } from '../api/client';
@@ -224,15 +225,40 @@ export default function CategoriesSettings() {
     },
   });
 
+  const sameSuggestion = (a: CategoryRuleSuggestion, b: CategoryRuleSuggestion) =>
+    a.rule_type === b.rule_type && a.pattern === b.pattern;
+
   const dismissSuggestionMut = useMutation({
     mutationFn: (s: CategoryRuleSuggestion) => dismissCategoryRuleSuggestion(Number(householdId), s),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['category-rule-suggestions', householdId] }),
+    onSuccess: (_, s) => {
+      qc.setQueryData<CategoryRuleSuggestionsBundle>(
+        ['category-rule-suggestions', householdId],
+        (prev) => {
+          if (!prev) return prev;
+          return {
+            active: prev.active.filter((x) => !sameSuggestion(x, s)),
+            ignored: [s, ...prev.ignored.filter((x) => !sameSuggestion(x, s))],
+          };
+        },
+      );
+    },
   });
 
   const restoreSuggestionMut = useMutation({
     mutationFn: (s: CategoryRuleSuggestion) =>
       restoreCategoryRuleSuggestion(Number(householdId), { rule_type: s.rule_type, pattern: s.pattern }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['category-rule-suggestions', householdId] }),
+    onSuccess: (_, s) => {
+      qc.setQueryData<CategoryRuleSuggestionsBundle>(
+        ['category-rule-suggestions', householdId],
+        (prev) => {
+          if (!prev) return prev;
+          return {
+            active: [s, ...prev.active.filter((x) => !sameSuggestion(x, s))],
+            ignored: prev.ignored.filter((x) => !sameSuggestion(x, s)),
+          };
+        },
+      );
+    },
   });
 
   const deleteRuleMut = useMutation({

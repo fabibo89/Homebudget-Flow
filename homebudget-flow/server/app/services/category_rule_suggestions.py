@@ -57,7 +57,17 @@ _MIN_TOKEN_LEN = 3
 _MIN_TX = 2
 _MIN_DISTINCT_LABELS = 2
 _MAX_SAMPLES = 5
-_MAX_SUGGESTIONS = 40
+_MAX_SUGGESTIONS = 40  # Default für max_suggestions; Pool wird per suggestion_pool_limit erhöht
+_MAX_SUGGESTIONS_HARD_CAP = 500
+
+
+def suggestion_pool_limit(dismissal_count: int) -> int:
+    """Kandidaten vor Ignorieren-Filter: ignorierte Muster + 20, mindestens wie bisher 40, oben gedeckelt.
+
+    So bleiben nach Filterung der ignorierten Schlüssel typischerweise noch Platz für neue aktive Vorschläge.
+    """
+    n = max(0, int(dismissal_count))
+    return min(max(_MAX_SUGGESTIONS, n + 20), _MAX_SUGGESTIONS_HARD_CAP)
 
 
 def suggestion_pattern_norm(pattern: str) -> str:
@@ -120,6 +130,8 @@ def compute_category_rule_suggestions(
     uncategorized: list[Transaction],
     existing_rules: list[CategoryRule],
     rule_allowed_accounts: dict[int, frozenset[int]],
+    *,
+    max_suggestions: int = _MAX_SUGGESTIONS,
 ) -> list[dict]:
     """
     Findet wiederkehrende Muster in Gegenpartei / Verwendungszweck (nur *contains*-Regeln).
@@ -231,4 +243,5 @@ def compute_category_rule_suggestions(
         )
 
     out.sort(key=lambda x: (-x["transaction_count"], -x["distinct_label_count"], x["pattern"]))
-    return out[:_MAX_SUGGESTIONS]
+    cap = max(1, min(int(max_suggestions), _MAX_SUGGESTIONS_HARD_CAP))
+    return out[:cap]

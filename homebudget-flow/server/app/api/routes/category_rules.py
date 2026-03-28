@@ -42,7 +42,11 @@ from app.services.access import (
     user_can_access_bank_account,
     user_has_household,
 )
-from app.services.category_rule_suggestions import compute_category_rule_suggestions, suggestion_pattern_norm
+from app.services.category_rule_suggestions import (
+    compute_category_rule_suggestions,
+    suggestion_pattern_norm,
+    suggestion_pool_limit,
+)
 from app.services.category_rules import (
     apply_category_rules_to_uncategorized,
     build_rule_allowed_bank_account_ids,
@@ -208,7 +212,12 @@ async def list_category_rule_suggestions(
     )
     txs = list(tx_r.scalars().all())
     rule_allowed = await build_rule_allowed_bank_account_ids(session, household_id, rules)
-    raw = compute_category_rule_suggestions(txs, rules, rule_allowed)
+    raw = compute_category_rule_suggestions(
+        txs,
+        rules,
+        rule_allowed,
+        max_suggestions=suggestion_pool_limit(len(dismissals)),
+    )
 
     active: list[CategoryRuleSuggestionOut] = []
     for row in raw:

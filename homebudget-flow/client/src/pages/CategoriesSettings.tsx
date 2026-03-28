@@ -216,7 +216,12 @@ export default function CategoriesSettings() {
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => deleteCategory(Number(householdId), id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['categories', householdId] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['categories', householdId] });
+      void qc.invalidateQueries({ queryKey: ['category-rules', householdId] });
+      void qc.invalidateQueries({ queryKey: ['category-rule-suggestions', householdId] });
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+    },
   });
 
   const dismissSuggestionMut = useMutation({
@@ -313,7 +318,7 @@ export default function CategoriesSettings() {
   const categoryLabels = useMemo(() => categoryNameByIdMap(roots), [roots]);
   const suggestionActiveList = suggestionsQuery.data?.active ?? [];
   const suggestionIgnoredList = suggestionsQuery.data?.ignored ?? [];
-  const busy = createMut.isPending || updateMut.isPending;
+  const busy = createMut.isPending || updateMut.isPending || deleteMut.isPending;
   const suggestionMutating = dismissSuggestionMut.isPending || restoreSuggestionMut.isPending;
   const categoryEditCreatorNote = edit?.kind === 'edit' ? categoryCreatorLine(edit.row) : null;
 
@@ -381,6 +386,12 @@ export default function CategoriesSettings() {
             </Button>
           </Box>
 
+          {deleteMut.isError ? (
+            <Alert severity="error" onClose={() => deleteMut.reset()}>
+              {apiErrorMessage(deleteMut.error)}
+            </Alert>
+          ) : null}
+
           <Stack spacing={2}>
             {roots.map((root) => (
               <Card
@@ -430,6 +441,7 @@ export default function CategoriesSettings() {
                       <IconButton
                         size="small"
                         color="error"
+                        disabled={deleteMut.isPending}
                         onClick={() => {
                           if (window.confirm(`„${root.name}“ und alle Unterkategorien löschen?`)) {
                             deleteMut.mutate(root.id);
@@ -477,6 +489,7 @@ export default function CategoriesSettings() {
                             <IconButton
                               size="small"
                               color="error"
+                              disabled={deleteMut.isPending}
                               onClick={() => {
                                 if (window.confirm(`„${sub.name}“ löschen?`)) deleteMut.mutate(sub.id);
                               }}
@@ -981,15 +994,41 @@ export default function CategoriesSettings() {
                 {apiErrorMessage(createMut.error ?? updateMut.error)}
               </Alert>
             )}
+            {deleteMut.isError && edit?.kind === 'edit' ? (
+              <Alert severity="error" onClose={() => deleteMut.reset()}>
+                {apiErrorMessage(deleteMut.error)}
+              </Alert>
+            ) : null}
           </Stack>
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setEdit(null)} disabled={busy}>
-            Abbrechen
-          </Button>
-          <Button variant="contained" onClick={submitForm} disabled={busy || !formName.trim()}>
-            {busy ? <CircularProgress size={22} /> : 'Speichern'}
-          </Button>
+        <DialogActions sx={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
+          {edit?.kind === 'edit' ? (
+            <Button
+              color="error"
+              disabled={busy}
+              onClick={() => {
+                const row = edit.row;
+                const isRoot = row.parent_id == null;
+                const msg = isRoot
+                  ? `„${row.name}“ und alle Unterkategorien wirklich löschen? Buchungen mit diesen Kategorien werden unkategorisiert; Zuordnungsregeln auf diese Kategorien werden entfernt.`
+                  : `„${row.name}“ wirklich löschen? Buchungen mit dieser Kategorie werden unkategorisiert; betroffene Regeln werden entfernt.`;
+                if (!window.confirm(msg)) return;
+                deleteMut.mutate(row.id, { onSuccess: () => setEdit(null) });
+              }}
+            >
+              Löschen
+            </Button>
+          ) : (
+            <span />
+          )}
+          <Stack direction="row" spacing={1}>
+            <Button onClick={() => setEdit(null)} disabled={busy}>
+              Abbrechen
+            </Button>
+            <Button variant="contained" onClick={submitForm} disabled={busy || !formName.trim()}>
+              {busy ? <CircularProgress size={22} /> : 'Speichern'}
+            </Button>
+          </Stack>
         </DialogActions>
       </Dialog>
 

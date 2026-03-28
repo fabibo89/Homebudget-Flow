@@ -669,6 +669,8 @@ export async function fetchTransactions(params: {
   bank_account_id?: number;
   description_contains?: string;
   counterparty_contains?: string;
+  /** Nur ganze Wörter (Wortgrenzen), gilt für Verwendungszweck- und Gegenpartei-Filter. */
+  whole_words?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<Transaction[]> {
@@ -679,6 +681,7 @@ export async function fetchTransactions(params: {
       bank_account_id: params.bank_account_id,
       description_contains: params.description_contains?.trim() || undefined,
       counterparty_contains: params.counterparty_contains?.trim() || undefined,
+      whole_words: params.whole_words === true ? true : undefined,
       limit: params.limit ?? 200,
       offset: params.offset ?? 0,
     },
@@ -695,6 +698,7 @@ export async function fetchAllTransactions(params: {
   bank_account_id?: number;
   description_contains?: string;
   counterparty_contains?: string;
+  whole_words?: boolean;
 }): Promise<Transaction[]> {
   const all: Transaction[] = [];
   let offset = 0;

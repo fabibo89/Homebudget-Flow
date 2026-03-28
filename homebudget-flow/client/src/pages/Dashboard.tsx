@@ -15,7 +15,9 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Checkbox,
   FormControl,
+  FormControlLabel,
   InputLabel,
   ListItemText,
   MenuItem,
@@ -114,6 +116,7 @@ export default function Dashboard() {
   const [to, setTo] = useState(today);
   const [searchDescription, setSearchDescription] = useState('');
   const [searchCounterparty, setSearchCounterparty] = useState('');
+  const [searchWholeWords, setSearchWholeWords] = useState(false);
   const [pageSize, setPageSize] = useState(isXs ? 50 : 200);
   const [offset, setOffset] = useState(0);
   const [syncBusyAccountId, setSyncBusyAccountId] = useState<number | null>(null);
@@ -144,7 +147,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setOffset(0);
-  }, [from, to, accountFilter, pageSize, searchDescription, searchCounterparty]);
+  }, [from, to, accountFilter, pageSize, searchDescription, searchCounterparty, searchWholeWords]);
 
   const accountsQuery = useQuery({
     queryKey: ['accounts'],
@@ -163,6 +166,7 @@ export default function Dashboard() {
       offset,
       searchDescription,
       searchCounterparty,
+      searchWholeWords,
     ],
     queryFn: () =>
       fetchTransactions({
@@ -171,6 +175,7 @@ export default function Dashboard() {
         bank_account_id: accountFilter === 'all' ? undefined : accountFilter,
         description_contains: searchDescription.trim() || undefined,
         counterparty_contains: searchCounterparty.trim() || undefined,
+        whole_words: searchWholeWords || undefined,
         limit: pageSize,
         offset,
       }),
@@ -733,7 +738,11 @@ export default function Dashboard() {
               label="Verwendungszweck enthält"
               value={searchDescription}
               onChange={(e) => setSearchDescription(e.target.value)}
-              placeholder="Teilstring, Groß-/Kleinschreibung egal"
+              placeholder={
+                searchWholeWords
+                  ? 'Wörter (Leerzeichen trennt); jedes als ganzes Wort'
+                  : 'Teilstring, Groß-/Kleinschreibung egal'
+              }
               fullWidth
               inputProps={{ maxLength: 500 }}
             />
@@ -742,9 +751,24 @@ export default function Dashboard() {
               label="Gegenpartei enthält"
               value={searchCounterparty}
               onChange={(e) => setSearchCounterparty(e.target.value)}
-              placeholder="Teilstring, Groß-/Kleinschreibung egal"
+              placeholder={
+                searchWholeWords
+                  ? 'Wörter (Leerzeichen trennt); jedes als ganzes Wort'
+                  : 'Teilstring, Groß-/Kleinschreibung egal'
+              }
               fullWidth
               inputProps={{ maxLength: 500 }}
+            />
+            <FormControlLabel
+              sx={{ alignSelf: { xs: 'flex-start', sm: 'center' }, ml: { xs: 0, sm: 0 }, mr: 0 }}
+              control={
+                <Checkbox
+                  checked={searchWholeWords}
+                  onChange={(_, c) => setSearchWholeWords(c)}
+                  size="small"
+                />
+              }
+              label="Nur ganze Wörter"
             />
           </Stack>
         </Paper>

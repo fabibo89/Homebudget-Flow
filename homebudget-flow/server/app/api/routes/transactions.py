@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from typing import Optional
 
@@ -60,6 +61,16 @@ def _ilike_pattern_fragment(raw: str) -> str:
     )
 
 
+def _pg_word_regex(term: str) -> str:
+    """Ein Suchbegriff als PostgreSQL-Regex mit Wortgrenzen (~*), Eingabe per re.escape geschützt."""
+    esc = re.escape(term.strip())
+    return rf"\y{esc}\y"
+
+
+def _search_terms(raw: str) -> list[str]:
+    return [t for t in raw.split() if t.strip()]
+
+
 def _transactions_base_query(user: User):
     if user.all_household_transactions:
         household_ids = select(HouseholdMember.household_id).where(HouseholdMember.user_id == user.id)
@@ -86,6 +97,7 @@ async def list_transactions(
     bank_account_id: Optional[int] = None,
     description_contains: Optional[str] = Query(None, max_length=_LIKE_MAX),
     counterparty_contains: Optional[str] = Query(None, max_length=_LIKE_MAX),
+    whole_words: bool = Query(False, description="Nur ganze Wörter (Wortgrenzen), statt Teilstring."),
     limit: int = Query(200, le=2000),
     offset: int = 0,
 ) -> list[TransactionOut]:
@@ -100,12 +112,20 @@ async def list_transactions(
         q = q.where(Transaction.booking_date <= to_date)
     desc_q = (description_contains or "").strip()
     if desc_q:
-        pat = f"%{_ilike_pattern_fragment(desc_q)}%"
-        q = q.where(Transaction.description.ilike(pat, escape="\\"))
+        if whole_words:
+            for term in _search_terms(desc_q):
+                q = q.where(Transaction.description.op("~*")(_pg_word_regex(term)))
+        else:
+            pat = f"%{_ilike_pattern_fragment(desc_q)}%"
+            q = q.where(Transaction.description.ilike(pat, escape="\\"))
     cp_q = (counterparty_contains or "").strip()
     if cp_q:
-        pat_cp = f"%{_ilike_pattern_fragment(cp_q)}%"
-        q = q.where(Transaction.counterparty.ilike(pat_cp, escape="\\"))
+        if whole_words:
+            for term in _search_terms(cp_q):
+                q = q.where(Transaction.counterparty.op("~*")(_pg_word_regex(term)))
+        else:
+            pat_cp = f"%{_ilike_pattern_fragment(cp_q)}%"
+            q = q.where(Transaction.counterparty.ilike(pat_cp, escape="\\"))
     q = (
         q.options(
             joinedload(Transaction.category)

@@ -33,6 +33,11 @@ class SyncStatus(str, enum.Enum):
     running = "running"
 
 
+class ExternalRecordSource(str, enum.Enum):
+    paypal = "paypal"
+    amazon = "amazon"
+
+
 class CategoryRuleType(str, enum.Enum):
     """Zuordnungsregel: Verwendungszweck oder Gegenpartei, enthält oder exakt (ohne Groß-/Kleinschreibung)."""
 
@@ -117,6 +122,10 @@ class Household(Base):
         cascade="all, delete-orphan",
     )
     invitations: Mapped[list["HouseholdInvitation"]] = relationship(
+        back_populates="household",
+        cascade="all, delete-orphan",
+    )
+    external_transaction_records: Mapped[list["ExternalTransactionRecord"]] = relationship(
         back_populates="household",
         cascade="all, delete-orphan",
     )
@@ -364,5 +373,60 @@ class Transaction(Base):
 
     bank_account: Mapped[BankAccount] = relationship(back_populates="transactions")
     category: Mapped[Optional["Category"]] = relationship(back_populates="tagged_transactions")
+    enrichments: Mapped[list["TransactionEnrichment"]] = relationship(
+        back_populates="transaction",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (UniqueConstraint("bank_account_id", "external_id", name="uq_tx_account_ext"),)
+
+
+class ExternalTransactionRecord(Base):
+    """Externe Handels-/Plattformdaten (PayPal/Amazon), unabhängig von Bankkonten."""
+
+    __tablename__ = "external_transaction_records"
+    __table_args__ = (
+        UniqueConstraint("source", "external_ref", name="uq_ext_record_source_ref"),
+        Index("ix_ext_record_household_source_date", "household_id", "source", "booking_date"),
+        Index("ix_ext_record_amount_currency", "amount", "currency"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    external_ref: Mapped[str] = mapped_column(String(255), default="")
+    booking_date: Mapped[date] = mapped_column(Date)
+    amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+    description: Mapped[str] = mapped_column(Text, default="")
+    counterparty: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    vendor: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    details_json: Mapped[str] = mapped_column(Text, default="{}")
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    household: Mapped[Household] = relationship(back_populates="external_transaction_records")
+    tx_links: Mapped[list["TransactionEnrichment"]] = relationship(
+        back_populates="external_record",
+        cascade="all, delete-orphan",
+    )
+
+
+class TransactionEnrichment(Base):
+    """Verknüpft eine Bankbuchung mit externer Zusatzinformation pro Quelle."""
+
+    __tablename__ = "transaction_enrichments"
+    __table_args__ = (
+        UniqueConstraint("external_record_id", "source", name="uq_tx_enrichment_record_source"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id", ondelete="CASCADE"))
+    external_record_id: Mapped[int] = mapped_column(
+        ForeignKey("external_transaction_records.id", ondelete="CASCADE")
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    matched_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    transaction: Mapped[Transaction] = relationship(back_populates="enrichments")
+    external_record: Mapped[ExternalTransactionRecord] = relationship(back_populates="tx_links")

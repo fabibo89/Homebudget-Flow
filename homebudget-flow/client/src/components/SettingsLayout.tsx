@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Box, Tab, Tabs } from '@mui/material';
 
-const TAB_PATHS = ['setup', 'fints', 'accounts', 'categories', 'integration'] as const;
+const TAB_PATHS = ['setup', 'fints', 'accounts', 'categories', 'integration', 'enrichments'] as const;
 
 export default function SettingsLayout() {
   const location = useLocation();
@@ -26,6 +26,7 @@ export default function SettingsLayout() {
         <Tab label="Bankkonten" id="settings-tab-accounts" aria-controls="settings-panel-accounts" />
         <Tab label="Kategorien" id="settings-tab-categories" aria-controls="settings-panel-categories" />
         <Tab label="Integration" id="settings-tab-integration" aria-controls="settings-panel-integration" />
+        <Tab label="Import" id="settings-tab-enrichments" aria-controls="settings-panel-enrichments" />
       </Tabs>
       <Outlet />
     </Box>

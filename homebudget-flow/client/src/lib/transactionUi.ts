@@ -127,7 +127,13 @@ export function flattenCategoriesWithMeta(
   return out;
 }
 
-export type CategoryPickOption = { id: number | null; label: string };
+/** Option für Kategorie-Dropdowns (z. B. Buchung zuweisen); „Keine Kategorie“ ohne Farbe/Icon. */
+export type CategoryPickOption = {
+  id: number | null;
+  label: string;
+  effective_color_hex?: string;
+  icon_emoji?: string | null;
+};
 
 export type RuleTargetField = 'description' | 'counterparty';
 export type RuleMatchMode = 'contains' | 'equals';

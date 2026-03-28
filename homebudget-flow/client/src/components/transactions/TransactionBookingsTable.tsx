@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -31,10 +31,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiErrorMessage, fetchCategories, patchTransactionCategory, type BankAccount, type Transaction } from '../../api/client';
 import CategoryRuleOverwriteDialog from '../CategoryRuleOverwriteDialog';
 import CreateCategoryRuleDialog from '../CreateCategoryRuleDialog';
+import { CategorySymbolDisplay } from '../CategorySymbol';
 import {
   CategoryPickOption,
   amountSxColorFromTransaction,
-  flattenSubcategoryPickOptions,
+  flattenSubcategoryPickOptionsWithMeta,
   formatDate,
   formatMoney,
 } from '../../lib/transactionUi';
@@ -48,6 +49,10 @@ function clipText(s: string, max = 64): string {
   if (t.length <= max) return t;
   return `${t.slice(0, max)}…`;
 }
+
+/** Eine Zeile pro externer Position (Tooltip = voller Text). */
+const ENRICHMENT_LINE_CLIP_MOBILE = 120;
+const ENRICHMENT_LINE_CLIP_DESKTOP = 100;
 
 type Props = {
   rows: Transaction[];
@@ -128,9 +133,17 @@ export default function TransactionBookingsTable({
   const categoryPickOptions: CategoryPickOption[] = useMemo(() => {
     const clear: CategoryPickOption = { id: null, label: 'Keine Kategorie' };
     const roots = categoriesDialogQuery.data ?? [];
-    const subs = flattenSubcategoryPickOptions(roots);
+    const subs = flattenSubcategoryPickOptionsWithMeta(roots);
     if (subs.length === 0) return [clear];
-    return [clear, ...subs.map((x) => ({ id: x.id, label: x.label }))];
+    return [
+      clear,
+      ...subs.map((x) => ({
+        id: x.id,
+        label: x.label,
+        effective_color_hex: x.effective_color_hex,
+        icon_emoji: x.icon_emoji,
+      })),
+    ];
   }, [categoriesDialogQuery.data]);
 
   const categoryPickValue: CategoryPickOption | null = useMemo(() => {
@@ -291,7 +304,71 @@ export default function TransactionBookingsTable({
                     isOptionEqualToValue={(a, b) => a.id === b.id}
                     value={categoryPickValue}
                     onChange={(_, v) => setPickCategoryId(v?.id ?? null)}
-                    renderInput={(params) => <TextField {...params} label="Kategorie" autoFocus />}
+                    renderOption={(props, option) => {
+                      const { key, ...liProps } = props;
+                      if (option.id === null) {
+                        return (
+                          <li key={key ?? 'none'} {...liProps}>
+                            <Typography variant="body2">{option.label}</Typography>
+                          </li>
+                        );
+                      }
+                      return (
+                        <li key={key ?? option.id} {...liProps}>
+                          <Stack direction="row" alignItems="center" spacing={1} sx={{ width: '100%', py: 0.25 }}>
+                            <Box
+                              sx={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: '50%',
+                                bgcolor: option.effective_color_hex,
+                                flexShrink: 0,
+                                border: 1,
+                                borderColor: 'divider',
+                              }}
+                            />
+                            <CategorySymbolDisplay value={option.icon_emoji} fontSize="1.15rem" />
+                            <Typography variant="body2">{option.label}</Typography>
+                          </Stack>
+                        </li>
+                      );
+                    }}
+                    renderInput={(params) => (
+                      <TextField
+                        {...params}
+                        label="Kategorie"
+                        autoFocus
+                        InputProps={{
+                          ...params.InputProps,
+                          startAdornment: (
+                            <Fragment>
+                              {categoryPickValue != null && categoryPickValue.id != null ? (
+                                <Stack
+                                  direction="row"
+                                  alignItems="center"
+                                  spacing={0.75}
+                                  sx={{ mr: 0.5, flexShrink: 0 }}
+                                >
+                                  <Box
+                                    sx={{
+                                      width: 10,
+                                      height: 10,
+                                      borderRadius: '50%',
+                                      bgcolor: categoryPickValue.effective_color_hex,
+                                      flexShrink: 0,
+                                      border: 1,
+                                      borderColor: 'divider',
+                                    }}
+                                  />
+                                  <CategorySymbolDisplay value={categoryPickValue.icon_emoji} fontSize="1.1rem" />
+                                </Stack>
+                              ) : null}
+                              {params.InputProps.startAdornment}
+                            </Fragment>
+                          ),
+                        }}
+                      />
+                    )}
                   />
                   {pickCategoryId != null && categoryPickValue == null ? (
                     <Typography variant="caption" color="text.secondary">
@@ -418,6 +495,22 @@ export default function TransactionBookingsTable({
                   <Typography variant="body2" sx={{ mt: 1 }}>
                     {clipText(t.description, 140)}
                   </Typography>
+                  {(t.enrichment_preview_lines?.length ?? 0) > 0 ? (
+                    <Stack spacing={0.25} sx={{ mt: 0.75 }}>
+                      {(t.enrichment_preview_lines ?? []).map((line, i) => (
+                        <Typography
+                          key={i}
+                          variant="caption"
+                          color="text.secondary"
+                          sx={{ display: 'block' }}
+                          noWrap
+                          title={line}
+                        >
+                          {clipText(line, ENRICHMENT_LINE_CLIP_MOBILE)}
+                        </Typography>
+                      ))}
+                    </Stack>
+                  ) : null}
                   <Typography variant="caption" color="text.secondary">
                     {t.counterparty ? clipText(t.counterparty, 80) : '—'}
                   </Typography>
@@ -509,7 +602,25 @@ export default function TransactionBookingsTable({
                         </Typography>
                       )}
                     </TableCell>
-                    <TableCell>{t.description}</TableCell>
+                    <TableCell sx={{ maxWidth: 360 }}>
+                      <Typography variant="body2">{t.description}</Typography>
+                      {(t.enrichment_preview_lines?.length ?? 0) > 0 ? (
+                        <Stack spacing={0.25} sx={{ mt: 0.75 }}>
+                          {(t.enrichment_preview_lines ?? []).map((line, i) => (
+                            <Typography
+                              key={i}
+                              variant="caption"
+                              color="text.secondary"
+                              sx={{ display: 'block', maxWidth: '100%' }}
+                              noWrap
+                              title={line}
+                            >
+                              {clipText(line, ENRICHMENT_LINE_CLIP_DESKTOP)}
+                            </Typography>
+                          ))}
+                        </Stack>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{t.counterparty ?? '—'}</TableCell>
                   </TableRow>
                 ))

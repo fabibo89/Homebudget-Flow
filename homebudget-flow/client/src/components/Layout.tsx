@@ -74,7 +74,7 @@ export default function Layout() {
   const openUserMenu = (e: React.MouseEvent<HTMLElement>) => setUserMenuAnchor(e.currentTarget);
   const closeUserMenu = () => setUserMenuAnchor(null);
 
-  const goSettings = (sub: 'setup' | 'fints' | 'accounts' | 'categories' | 'integration') => {
+  const goSettings = (sub: 'setup' | 'fints' | 'accounts' | 'categories' | 'integration' | 'enrichments') => {
     navigate(`/settings/${sub}`);
     closeUserMenu();
   };
@@ -211,6 +211,12 @@ export default function Layout() {
                 <HubIcon fontSize="small" />
               </ListItemIcon>
               Integration
+            </MenuItem>
+            <MenuItem onClick={() => goSettings('enrichments')}>
+              <ListItemIcon>
+                <DarkModeIcon fontSize="small" />
+              </ListItemIcon>
+              Import
             </MenuItem>
             <Divider />
             <MenuItem onClick={closeUserMenu} sx={{ pointerEvents: 'none', opacity: 0.85 }}>

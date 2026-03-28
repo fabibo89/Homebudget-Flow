@@ -550,7 +550,89 @@ export type Transaction = {
   category_color_hex?: string | null;
   /** Vom Server aus `amount` berechnet; optional für ältere gecachte Antworten. */
   booking_flow?: BookingFlow;
+  /** Externe Positionszeilen (z. B. Amazon-Produkte), für die Listenansicht */
+  enrichment_preview_lines?: string[];
 };
+
+export type TransactionEnrichment = {
+  id: number;
+  source: 'paypal' | 'amazon' | string;
+  external_ref: string;
+  booking_date: string;
+  amount: string;
+  currency: string;
+  description: string;
+  counterparty: string | null;
+  vendor: string | null;
+  details: Record<string, unknown>;
+  raw: Record<string, unknown>;
+  matched_at: string;
+};
+
+export type ExternalRecordMapping = {
+  record_id: number;
+  source: string;
+  external_ref: string;
+  order_id: string | null;
+  booking_date: string;
+  amount: string;
+  currency: string;
+  description: string;
+  counterparty: string | null;
+  vendor: string | null;
+  matched: boolean;
+  matched_transaction_id: number | null;
+  matched_bank_account_id: number | null;
+  matched_bank_account_name: string | null;
+  matched_booking_date: string | null;
+  matched_amount: string | null;
+  matched_currency: string | null;
+  matched_description: string | null;
+  matched_counterparty: string | null;
+  matched_at: string | null;
+};
+
+export async function fetchExternalRecordMappings(
+  householdId: number,
+  source: 'amazon' | 'paypal',
+  limit = 500,
+): Promise<ExternalRecordMapping[]> {
+  const { data } = await api.get<ExternalRecordMapping[]>('/api/transactions/enrichments/external-records', {
+    params: { household_id: householdId, source, limit },
+  });
+  return data;
+}
+
+export async function fetchTransactionEnrichments(transactionId: number): Promise<TransactionEnrichment[]> {
+  const { data } = await api.get<TransactionEnrichment[]>(`/api/transactions/${transactionId}/enrichments`);
+  return data;
+}
+
+export async function importTransactionEnrichments(body: {
+  household_id: number;
+  source: 'paypal' | 'amazon';
+  records: Array<{
+    external_ref?: string;
+    booking_date: string;
+    amount: string;
+    currency?: string;
+    description?: string;
+    counterparty?: string | null;
+    vendor?: string | null;
+    details?: Record<string, unknown>;
+    raw?: Record<string, unknown>;
+  }>;
+  auto_match?: boolean;
+}): Promise<{
+  imported: number;
+  matched: number;
+  unmatched: number;
+  skipped_low_confidence: number;
+  skipped_internal?: number;
+}> {
+  const { data } = await api.post('/api/transactions/enrichments/import', body);
+  return data;
+}
 
 export async function patchTransactionCategory(
   transactionId: number,

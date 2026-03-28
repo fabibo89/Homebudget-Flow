@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Optional
 
@@ -9,7 +10,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.api.deps import CurrentUser
-from app.db.models import AccountGroup, AccountGroupMember, BankAccount, Category, HouseholdMember, Transaction, User
+from app.db.models import (
+    AccountGroup,
+    AccountGroupMember,
+    BankAccount,
+    Category,
+    ExternalTransactionRecord,
+    ExternalRecordSource,
+    HouseholdMember,
+    Transaction,
+    TransactionEnrichment,
+    User,
+)
 from app.db.session import get_session
 from app.services.category_assignment import ensure_category_is_subcategory_for_assignment
 from app.services.salary_cache import refresh_salary_cache_for_bank_account, refresh_salary_cache_for_bank_accounts
@@ -20,7 +32,19 @@ from app.schemas.transaction import (
     TransactionOut,
     transaction_to_out,
 )
+from app.schemas.transaction_enrichment import (
+    ExternalRecordMappingOut,
+    ExternalRecordsImportBody,
+    ExternalRecordsImportResult,
+    TransactionEnrichmentOut,
+)
 from app.services.access import bank_account_visible_to_user
+from app.services.access import user_has_household
+from app.services.transaction_enrichment import (
+    enrichment_list_meta_for_transactions,
+    rematch_external_records,
+    upsert_external_record,
+)
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -94,7 +118,235 @@ async def list_transactions(
     )
     r = await session.execute(q)
     rows = r.unique().scalars().all()
-    return [transaction_to_out(x) for x in rows]
+    ids = [x.id for x in rows]
+    meta_map = await enrichment_list_meta_for_transactions(session, ids)
+    return [
+        transaction_to_out(
+            x,
+            enrichment_preview_lines=meta_map[x.id].preview_lines,
+        )
+        for x in rows
+    ]
+
+
+@router.get("/enrichments/external-records", response_model=list[ExternalRecordMappingOut])
+async def list_external_record_mappings(
+    household_id: int,
+    source: str,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+    limit: int = Query(500, ge=1, le=5000),
+) -> list[ExternalRecordMappingOut]:
+    src = (source or "").strip().lower()
+    if src not in {ExternalRecordSource.paypal.value, ExternalRecordSource.amazon.value}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Quelle muss 'paypal' oder 'amazon' sein.")
+    if not await user_has_household(session, user.id, household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+
+    r = await session.execute(
+        select(ExternalTransactionRecord)
+        .where(
+            ExternalTransactionRecord.household_id == household_id,
+            ExternalTransactionRecord.source == src,
+        )
+        .options(
+            joinedload(ExternalTransactionRecord.tx_links)
+            .joinedload(TransactionEnrichment.transaction)
+            .joinedload(Transaction.bank_account),
+        )
+        .order_by(ExternalTransactionRecord.booking_date.desc(), ExternalTransactionRecord.id.desc())
+        .limit(limit)
+    )
+    records = r.unique().scalars().all()
+
+    out: list[ExternalRecordMappingOut] = []
+    for rec in records:
+        order_id: str | None = None
+        try:
+            details = json.loads(rec.details_json or "{}")
+            if isinstance(details, dict):
+                if src == ExternalRecordSource.paypal.value:
+                    rel = str(details.get("paypal_related_code") or "").strip()
+                    tid = str(details.get("paypal_transaction_code") or "").strip()
+                    order_id = rel or tid or None
+                else:
+                    v = str(details.get("order_id") or "").strip()
+                    order_id = v or None
+        except Exception:
+            order_id = None
+
+        link = next((x for x in (rec.tx_links or []) if x.source == src), None)
+        tx = link.transaction if link is not None else None
+        acc = tx.bank_account if tx is not None else None
+        out.append(
+            ExternalRecordMappingOut(
+                record_id=rec.id,
+                source=rec.source,
+                external_ref=rec.external_ref,
+                order_id=order_id,
+                booking_date=rec.booking_date,
+                amount=rec.amount,
+                currency=rec.currency,
+                description=rec.description,
+                counterparty=rec.counterparty,
+                vendor=rec.vendor,
+                matched=link is not None and tx is not None,
+                matched_transaction_id=tx.id if tx is not None else None,
+                matched_bank_account_id=acc.id if acc is not None else None,
+                matched_bank_account_name=acc.name if acc is not None else None,
+                matched_booking_date=tx.booking_date if tx is not None else None,
+                matched_amount=tx.amount if tx is not None else None,
+                matched_currency=tx.currency if tx is not None else None,
+                matched_description=tx.description if tx is not None else None,
+                matched_counterparty=tx.counterparty if tx is not None else None,
+                matched_at=link.matched_at if link is not None else None,
+            )
+        )
+    return out
+
+
+@router.get("/{transaction_id}/enrichments", response_model=list[TransactionEnrichmentOut])
+async def list_transaction_enrichments(
+    transaction_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> list[TransactionEnrichmentOut]:
+    tx_r = await session.execute(select(Transaction).where(Transaction.id == transaction_id))
+    tx = tx_r.scalar_one_or_none()
+    if tx is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Buchung nicht gefunden")
+    if not await bank_account_visible_to_user(session, user, tx.bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diese Buchung")
+
+    r = await session.execute(
+        select(TransactionEnrichment)
+        .where(TransactionEnrichment.transaction_id == transaction_id)
+        .options(
+            joinedload(TransactionEnrichment.external_record),
+        )
+        .order_by(TransactionEnrichment.matched_at.desc(), TransactionEnrichment.id.desc())
+    )
+    rows = r.scalars().all()
+    out: list[TransactionEnrichmentOut] = []
+    for row in rows:
+        rec = row.external_record
+        if rec is None:
+            continue
+        try:
+            details = json.loads(rec.details_json or "{}")
+            if not isinstance(details, dict):
+                details = {}
+        except Exception:
+            details = {}
+        try:
+            raw = json.loads(rec.raw_json or "{}")
+            if not isinstance(raw, dict):
+                raw = {}
+        except Exception:
+            raw = {}
+        out.append(
+            TransactionEnrichmentOut(
+                id=row.id,
+                source=row.source,
+                external_ref=rec.external_ref,
+                booking_date=rec.booking_date,
+                amount=rec.amount,
+                currency=rec.currency,
+                description=rec.description,
+                counterparty=rec.counterparty,
+                vendor=rec.vendor,
+                details=details,
+                raw=raw,
+                matched_at=row.matched_at,
+            )
+        )
+    return out
+
+
+@router.post("/enrichments/import", response_model=ExternalRecordsImportResult)
+async def import_external_records(
+    body: ExternalRecordsImportBody,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> ExternalRecordsImportResult:
+    source = (body.source or "").strip().lower()
+    if source not in {ExternalRecordSource.paypal.value, ExternalRecordSource.amazon.value}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Quelle muss 'paypal' oder 'amazon' sein.")
+    if not await user_has_household(session, user.id, body.household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+    if not body.records:
+        return ExternalRecordsImportResult(
+            imported=0, matched=0, unmatched=0, skipped_low_confidence=0, skipped_internal=0
+        )
+
+    imported_ids: list[int] = []
+    for item in body.records:
+        row = await upsert_external_record(
+            session,
+            household_id=body.household_id,
+            source=source,
+            external_ref=(item.external_ref or "").strip(),
+            booking_date=item.booking_date,
+            amount=item.amount,
+            currency=(item.currency or "EUR").strip().upper(),
+            description=item.description or "",
+            counterparty=item.counterparty,
+            vendor=item.vendor,
+            details=item.details,
+            raw=item.raw,
+        )
+        imported_ids.append(row.id)
+
+    if body.auto_match:
+        st = await rematch_external_records(
+            session,
+            household_id=body.household_id,
+            source=source,
+            external_record_ids=imported_ids,
+        )
+    else:
+        st = ExternalRecordsImportResult(
+            imported=len(imported_ids),
+            matched=0,
+            unmatched=len(imported_ids),
+            skipped_low_confidence=0,
+            skipped_internal=0,
+        )
+    await session.commit()
+    return ExternalRecordsImportResult(
+        imported=st.imported,
+        matched=st.matched,
+        unmatched=st.unmatched,
+        skipped_low_confidence=st.skipped_low_confidence,
+        skipped_internal=st.skipped_internal,
+    )
+
+
+@router.post("/enrichments/rematch", response_model=ExternalRecordsImportResult)
+async def rematch_external_records_endpoint(
+    household_id: int,
+    source: str,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> ExternalRecordsImportResult:
+    src = (source or "").strip().lower()
+    if src not in {ExternalRecordSource.paypal.value, ExternalRecordSource.amazon.value}:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Quelle muss 'paypal' oder 'amazon' sein.")
+    if not await user_has_household(session, user.id, household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+    st = await rematch_external_records(
+        session,
+        household_id=household_id,
+        source=src,
+    )
+    await session.commit()
+    return ExternalRecordsImportResult(
+        imported=st.imported,
+        matched=st.matched,
+        unmatched=st.unmatched,
+        skipped_low_confidence=st.skipped_low_confidence,
+        skipped_internal=st.skipped_internal,
+    )
 
 
 @router.patch("/{transaction_id}", response_model=TransactionOut)
@@ -140,7 +392,12 @@ async def patch_transaction_category(
         )
     )
     tx2 = r2.unique().scalar_one()
-    return transaction_to_out(tx2)
+    meta_map = await enrichment_list_meta_for_transactions(session, [tx2.id])
+    m = meta_map[tx2.id]
+    return transaction_to_out(
+        tx2,
+        enrichment_preview_lines=m.preview_lines,
+    )
 
 
 @router.post("/bulk-category", response_model=BulkTransactionCategoryResult)

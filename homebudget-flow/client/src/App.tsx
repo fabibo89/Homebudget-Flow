@@ -12,6 +12,7 @@ import BankFintsSettings from './pages/BankFintsSettings';
 import BankAccountsSettings from './pages/BankAccountsSettings';
 import CategoriesSettings from './pages/CategoriesSettings';
 import { useAuthStore } from './store/authStore';
+import EnrichmentsSettings from './pages/EnrichmentsSettings';
 
 export default function App() {
   const token = useAuthStore((s) => s.token);
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="accounts" element={<BankAccountsSettings />} />
             <Route path="categories" element={<CategoriesSettings />} />
             <Route path="integration" element={<Integration />} />
+            <Route path="enrichments" element={<EnrichmentsSettings />} />
           </Route>
           <Route path="setup" element={<Navigate to="/settings/setup" replace />} />
           <Route path="credentials" element={<Navigate to="/settings/fints" replace />} />

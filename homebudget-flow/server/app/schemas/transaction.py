@@ -5,7 +5,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.db.models import Category, Transaction as TransactionRow
 from app.services.category_colors import effective_color, normalize_hex
@@ -71,11 +71,22 @@ class TransactionOut(BaseModel):
     category_name: Optional[str] = None
     category_color_hex: Optional[str] = None
     booking_flow: BookingFlow
+    # Externe Positionsbeschreibungen (z. B. alle Amazon-Produkte) für die Listenansicht
+    enrichment_preview_lines: list[str] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
+    @field_validator("enrichment_preview_lines", mode="before")
+    @classmethod
+    def _none_preview_lines_to_empty(cls, v: object) -> object:
+        return v if v is not None else []
 
-def transaction_to_out(row: TransactionRow) -> TransactionOut:
+
+def transaction_to_out(
+    row: TransactionRow,
+    *,
+    enrichment_preview_lines: list[str] | None = None,
+) -> TransactionOut:
     """ORM → API inkl. Kategoriename (Relationship ``category``)."""
     cat = row.category
     return TransactionOut(
@@ -93,6 +104,7 @@ def transaction_to_out(row: TransactionRow) -> TransactionOut:
         category_name=cat.name if cat is not None else None,
         category_color_hex=_effective_hex_for_category(cat),
         booking_flow=booking_flow_from_amount(row.amount),
+        enrichment_preview_lines=list(enrichment_preview_lines or []),
     )
 
 

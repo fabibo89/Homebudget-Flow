@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,6 +21,8 @@ from app.db.models import (
 from app.db.session import get_session
 from app.schemas.household import (
     AccountGroupCreate,
+    AccountGroupMemberOut,
+    AccountGroupMembersPut,
     AccountGroupOut,
     AccountGroupUpdate,
     BankAccountCreate,
@@ -29,12 +31,19 @@ from app.schemas.household import (
     HouseholdInvitationCreate,
     HouseholdInvitationOutgoingOut,
     HouseholdInvitationOut,
+    HouseholdMemberOut,
     HouseholdOut,
     HouseholdUpdate,
     bank_account_to_out,
     household_to_out,
 )
-from app.services.access import user_can_access_account_group, user_has_household, user_is_household_owner
+from app.services.access import (
+    user_can_access_account_group,
+    user_can_manage_account_group_sharing,
+    user_can_view_account_group_members,
+    user_has_household,
+    user_is_household_owner,
+)
 from app.services.bank_account_provision import normalize_iban
 from app.services.default_income_categories import ensure_income_category_tree
 
@@ -211,6 +220,113 @@ async def list_households(user: CurrentUser, session: AsyncSession = Depends(get
     )
     rows = r.all()
     return [household_to_out(h, hm.role) for h, hm in rows]
+
+
+@router.get("/{household_id}/members", response_model=list[HouseholdMemberOut])
+async def list_household_members(
+    household_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> list[HouseholdMemberOut]:
+    if not await user_has_household(session, user.id, household_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt.")
+    r = await session.execute(
+        select(HouseholdMember, User)
+        .join(User, User.id == HouseholdMember.user_id)
+        .where(HouseholdMember.household_id == household_id)
+        .order_by(User.email)
+    )
+    return [
+        HouseholdMemberOut(
+            user_id=u.id,
+            email=u.email,
+            display_name=u.display_name,
+            role=hm.role,
+        )
+        for hm, u in r.all()
+    ]
+
+
+@router.get("/account-groups/{account_group_id}/members", response_model=list[AccountGroupMemberOut])
+async def list_account_group_members(
+    account_group_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> list[AccountGroupMemberOut]:
+    if not await user_can_view_account_group_members(session, user.id, account_group_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Kein Zugriff auf die Mitgliederliste dieser Kontogruppe.",
+        )
+    r = await session.execute(
+        select(AccountGroupMember, User)
+        .join(User, User.id == AccountGroupMember.user_id)
+        .where(AccountGroupMember.account_group_id == account_group_id)
+        .order_by(User.email)
+    )
+    return [
+        AccountGroupMemberOut(
+            user_id=u.id,
+            email=u.email,
+            display_name=u.display_name,
+            can_edit=agm.can_edit,
+        )
+        for agm, u in r.all()
+    ]
+
+
+@router.put("/account-groups/{account_group_id}/members", response_model=list[AccountGroupMemberOut])
+async def put_account_group_members(
+    account_group_id: int,
+    body: AccountGroupMembersPut,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> list[AccountGroupMemberOut]:
+    if not await user_can_manage_account_group_sharing(session, user.id, account_group_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Keine Berechtigung, die Mitgliedschaft dieser Kontogruppe zu ändern.",
+        )
+    g = await session.get(AccountGroup, account_group_id)
+    if g is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Kontogruppe nicht gefunden.")
+    uids = sorted(set(body.user_ids))
+    if len(uids) < 1:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Mindestens eine Person muss Zugriff haben.",
+        )
+    r_hm = await session.execute(
+        select(HouseholdMember.user_id).where(
+            HouseholdMember.household_id == g.household_id,
+            HouseholdMember.user_id.in_(uids),
+        )
+    )
+    ok = {row[0] for row in r_hm.all()}
+    if len(ok) != len(uids):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Nur Nutzer, die Mitglied dieses Haushalts sind, können freigeschaltet werden.",
+        )
+    await session.execute(delete(AccountGroupMember).where(AccountGroupMember.account_group_id == account_group_id))
+    for uid in uids:
+        session.add(AccountGroupMember(account_group_id=account_group_id, user_id=uid, can_edit=True))
+    await session.commit()
+    r_out = await session.execute(
+        select(AccountGroupMember, User)
+        .join(User, User.id == AccountGroupMember.user_id)
+        .where(AccountGroupMember.account_group_id == account_group_id)
+        .order_by(User.email)
+    )
+    return [
+        AccountGroupMemberOut(
+            user_id=u.id,
+            email=u.email,
+            display_name=u.display_name,
+            can_edit=agm.can_edit,
+        )
+        for agm, u in r_out.all()
+    ]
 
 
 @router.patch("/account-groups/{account_group_id}", response_model=AccountGroupOut)

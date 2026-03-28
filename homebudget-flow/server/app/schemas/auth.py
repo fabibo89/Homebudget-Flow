@@ -29,6 +29,7 @@ class TokenOut(BaseModel):
 
 
 class UserMeOut(BaseModel):
+    id: int
     email: EmailStr
     display_name: str
     all_household_transactions: bool

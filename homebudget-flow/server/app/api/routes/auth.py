@@ -41,6 +41,7 @@ async def login(body: LoginIn, session: AsyncSession = Depends(get_session)) -> 
 @router.get("/me", response_model=UserMeOut)
 async def get_me(user: CurrentUser) -> UserMeOut:
     return UserMeOut(
+        id=user.id,
         email=user.email,
         display_name=user.display_name,
         all_household_transactions=user.all_household_transactions,
@@ -60,6 +61,7 @@ async def patch_me(
     await session.commit()
     await session.refresh(user)
     return UserMeOut(
+        id=user.id,
         email=user.email,
         display_name=user.display_name,
         all_household_transactions=user.all_household_transactions,

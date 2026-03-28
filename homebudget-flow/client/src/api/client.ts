@@ -52,6 +52,7 @@ export async function register(
 }
 
 export type UserMe = {
+  id: number;
   email: string;
   display_name: string;
   all_household_transactions: boolean;
@@ -424,6 +425,39 @@ export type AccountGroup = {
   description: string;
 };
 
+export type HouseholdMember = {
+  user_id: number;
+  email: string;
+  display_name: string;
+  role: string;
+};
+
+export async function fetchHouseholdMembers(householdId: number): Promise<HouseholdMember[]> {
+  const { data } = await api.get<HouseholdMember[]>(`/api/households/${householdId}/members`);
+  return data;
+}
+
+export type AccountGroupMember = {
+  user_id: number;
+  email: string;
+  display_name: string;
+  can_edit: boolean;
+};
+
+export async function fetchAccountGroupMembers(accountGroupId: number): Promise<AccountGroupMember[]> {
+  const { data } = await api.get<AccountGroupMember[]>(
+    `/api/households/account-groups/${accountGroupId}/members`,
+  );
+  return data;
+}
+
+export async function putAccountGroupMembers(accountGroupId: number, userIds: number[]): Promise<AccountGroupMember[]> {
+  const { data } = await api.put<AccountGroupMember[]>(`/api/households/account-groups/${accountGroupId}/members`, {
+    user_ids: userIds,
+  });
+  return data;
+}
+
 export async function fetchAccountGroups(householdId: number): Promise<AccountGroup[]> {
   const { data } = await api.get<AccountGroup[]>(`/api/households/${householdId}/account-groups`);
   return data;
@@ -433,11 +467,13 @@ export async function createAccountGroup(body: {
   household_id: number;
   name: string;
   description?: string;
+  member_user_ids?: number[];
 }): Promise<AccountGroup> {
   const { data } = await api.post<AccountGroup>('/api/households/account-groups', {
     household_id: body.household_id,
     name: body.name,
     description: body.description ?? '',
+    member_user_ids: body.member_user_ids ?? [],
   });
   return data;
 }

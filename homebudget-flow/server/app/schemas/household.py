@@ -74,6 +74,26 @@ class AccountGroupUpdate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=500)
 
 
+class HouseholdMemberOut(BaseModel):
+    user_id: int
+    email: str
+    display_name: str
+    role: str
+
+
+class AccountGroupMemberOut(BaseModel):
+    user_id: int
+    email: str
+    display_name: str
+    can_edit: bool
+
+
+class AccountGroupMembersPut(BaseModel):
+    """Haushaltsmitglieder mit Zugriff auf diese Kontogruppe (mindestens eine Person)."""
+
+    user_ids: list[int] = Field(..., min_length=1)
+
+
 class BankAccountCreate(BaseModel):
     account_group_id: int
     provider: str = "comdirect"

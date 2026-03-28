@@ -17,6 +17,7 @@ router = APIRouter(prefix="/users", tags=["user-settings"])
 
 def _to_out(user: User) -> UserSettingsOut:
     return UserSettingsOut(
+        id=user.id,
         email=user.email,
         display_name=user.display_name,
         all_household_transactions=user.all_household_transactions,

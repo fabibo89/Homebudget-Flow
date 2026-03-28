@@ -1,16 +1,22 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
   Card,
   CardContent,
+  Checkbox,
   CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  FormControlLabel,
+  FormGroup,
   IconButton,
   InputLabel,
   Link,
@@ -34,6 +40,7 @@ import {
   Add as AddIcon,
   DeleteOutline as DeleteOutlineIcon,
   EditOutlined as EditOutlinedIcon,
+  ExpandMore as ExpandMoreIcon,
   PersonAddAlt1 as PersonAddAlt1Icon,
 } from '@mui/icons-material';
 import { Link as RouterLink } from 'react-router-dom';
@@ -47,13 +54,17 @@ import {
   deleteAccountGroup,
   deleteHousehold,
   deleteHouseholdInvitation,
+  fetchAccountGroupMembers,
   fetchAccountGroups,
   fetchAccounts,
   fetchBankCredentials,
+  fetchCurrentUser,
+  fetchHouseholdMembers,
   fetchHouseholds,
   fetchIncomingHouseholdInvitations,
   fetchOutgoingHouseholdInvitations,
   inviteHouseholdMember,
+  putAccountGroupMembers,
   updateAccountGroup,
   updateHousehold,
   type BankAccount,
@@ -65,6 +76,119 @@ type GroupBankAccountsBlockProps = {
   accountsLoading: boolean;
   accountsError: unknown | null;
 };
+
+type AccountGroupSharingBlockProps = {
+  groupId: number;
+  householdId: number;
+};
+
+function AccountGroupSharingBlock({ groupId, householdId }: AccountGroupSharingBlockProps) {
+  const qc = useQueryClient();
+  const membersQ = useQuery({
+    queryKey: ['household-members', householdId],
+    queryFn: () => fetchHouseholdMembers(householdId),
+  });
+  const agMembersQ = useQuery({
+    queryKey: ['account-group-members', groupId],
+    queryFn: () => fetchAccountGroupMembers(groupId),
+  });
+  const [draft, setDraft] = useState<number[] | null>(null);
+
+  useEffect(() => {
+    if (agMembersQ.data) {
+      setDraft(agMembersQ.data.map((m) => m.user_id));
+    }
+  }, [agMembersQ.data]);
+
+  const putMut = useMutation({
+    mutationFn: (userIds: number[]) => putAccountGroupMembers(groupId, userIds),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['account-group-members', groupId] });
+      void qc.invalidateQueries({ queryKey: ['accounts'] });
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+      void qc.invalidateQueries({ queryKey: ['sync-overview'] });
+    },
+  });
+
+  const canSave = useMemo(() => {
+    if (draft == null || !agMembersQ.data) return false;
+    const a = [...draft].sort((x, y) => x - y).join(',');
+    const b = agMembersQ.data
+      .map((m) => m.user_id)
+      .sort((x, y) => x - y)
+      .join(',');
+    return a !== b;
+  }, [draft, agMembersQ.data]);
+
+  if (agMembersQ.isError) {
+    return null;
+  }
+  if (membersQ.isLoading || agMembersQ.isLoading || !draft) {
+    return (
+      <Box sx={{ mt: 2 }}>
+        <CircularProgress size={20} />
+      </Box>
+    );
+  }
+  if (membersQ.isError) {
+    return null;
+  }
+
+  const members = membersQ.data ?? [];
+  const toggle = (uid: number) => {
+    setDraft((prev) => {
+      const p = prev ?? [];
+      if (p.includes(uid)) {
+        if (p.length <= 1) return p;
+        return p.filter((x) => x !== uid);
+      }
+      return [...p, uid];
+    });
+  };
+
+  return (
+    <Box sx={{ mt: 2 }}>
+      <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+        Zugriff (Haushaltsmitglieder)
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+        Wer diese Kontogruppe und die zugehörigen Bankkonten/Buchungen sieht (wenn unter Profil nicht „alle
+        Haushaltsbuchungen“ aktiv ist).
+      </Typography>
+      <FormGroup>
+        {members.map((m) => (
+          <FormControlLabel
+            key={m.user_id}
+            control={
+              <Checkbox
+                checked={draft.includes(m.user_id)}
+                onChange={() => toggle(m.user_id)}
+                disabled={putMut.isPending || (draft.includes(m.user_id) && draft.length === 1)}
+              />
+            }
+            label={`${m.display_name || m.email} (${m.email})${m.role === 'owner' ? ' · Besitzer' : ''}`}
+          />
+        ))}
+      </FormGroup>
+      <Button
+        size="small"
+        variant="outlined"
+        sx={{ mt: 1 }}
+        disabled={!canSave || putMut.isPending || draft.length < 1}
+        onClick={() => {
+          if (draft.length >= 1) putMut.mutate(draft);
+        }}
+      >
+        {putMut.isPending ? 'Speichern…' : 'Zugriff speichern'}
+      </Button>
+      {putMut.isError ? (
+        <Alert severity="error" sx={{ mt: 1 }}>
+          {apiErrorMessage(putMut.error)}
+        </Alert>
+      ) : null}
+    </Box>
+  );
+}
 
 function GroupBankAccountsBlock({
   groupId,
@@ -143,6 +267,7 @@ export default function Setup() {
   const [groupName, setGroupName] = useState('');
   const [groupDesc, setGroupDesc] = useState('');
   const [groupError, setGroupError] = useState('');
+  const [groupMemberUserIds, setGroupMemberUserIds] = useState<number[]>([]);
 
   const [bankDialog, setBankDialog] = useState<{
     open: boolean;
@@ -181,6 +306,25 @@ export default function Setup() {
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
   const allAccounts: BankAccount[] = accountsQuery.data ?? [];
 
+  const meQuery = useQuery({ queryKey: ['me'], queryFn: fetchCurrentUser });
+
+  const householdMembersForDialog = useQuery({
+    queryKey: ['household-members', groupHouseholdId],
+    queryFn: () => fetchHouseholdMembers(Number(groupHouseholdId)),
+    enabled: groupDialogOpen && groupHouseholdId !== '' && editingGroupId === null,
+  });
+
+  useEffect(() => {
+    if (!groupDialogOpen || editingGroupId != null) return;
+    const myId = meQuery.data?.id;
+    const mem = householdMembersForDialog.data;
+    if (!myId || !mem?.length) return;
+    setGroupMemberUserIds((prev) => {
+      if (prev.length > 0) return prev;
+      return mem.some((m) => m.user_id === myId) ? [myId] : [];
+    });
+  }, [groupDialogOpen, editingGroupId, meQuery.data?.id, householdMembersForDialog.data]);
+
   const saveHhMut = useMutation({
     mutationFn: () => {
       const name = hhName.trim();
@@ -206,10 +350,14 @@ export default function Setup() {
       if (editingGroupId != null) {
         return updateAccountGroup(editingGroupId, { name, description });
       }
+      if (groupMemberUserIds.length < 1) {
+        throw new Error('Mindestens eine Person muss Zugriff auf die Kontogruppe haben.');
+      }
       return createAccountGroup({
         household_id: Number(groupHouseholdId),
         name,
         description,
+        member_user_ids: groupMemberUserIds,
       });
     },
     onSuccess: () => {
@@ -222,6 +370,7 @@ export default function Setup() {
       setGroupName('');
       setGroupDesc('');
       setGroupError('');
+      setGroupMemberUserIds([]);
     },
     onError: (e) => setGroupError(apiErrorMessage(e)),
   });
@@ -399,6 +548,7 @@ export default function Setup() {
               setGroupName('');
               setGroupDesc('');
               setGroupError('');
+              setGroupMemberUserIds([]);
               setGroupDialogOpen(true);
             }}
           >
@@ -485,97 +635,112 @@ export default function Setup() {
 
                     <Box sx={{ mt: 2 }}>
                       {h.my_role === 'owner' ? (
-                        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-                          <Typography variant="subtitle2" fontWeight={600} gutterBottom>
-                            Mitglieder einladen
-                          </Typography>
-                          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-                            Nur für registrierte Nutzer: gleiche E-Mail wie beim Login. Die Person sieht die Einladung
-                            hier unter Einrichtung, sobald sie angemeldet ist.
-                          </Typography>
-                          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
-                            <TextField
-                              size="small"
-                              label="E-Mail-Adresse"
-                              type="email"
-                              fullWidth
-                              value={inviteEmailByHh[h.id] ?? ''}
-                              onChange={(e) => {
-                                const v = e.target.value;
-                                setInviteEmailByHh((prev) => ({ ...prev, [h.id]: v }));
-                                setInviteErrorByHh((prev) => {
-                                  const n = { ...prev };
-                                  delete n[h.id];
-                                  return n;
-                                });
-                              }}
-                              disabled={inviteMut.isPending}
-                            />
-                            <Button
-                              variant="outlined"
-                              startIcon={<PersonAddAlt1Icon />}
-                              disabled={
-                                inviteMut.isPending || !(inviteEmailByHh[h.id] ?? '').trim()
-                              }
-                              onClick={() => {
-                                setInviteErrorByHh((prev) => {
-                                  const n = { ...prev };
-                                  delete n[h.id];
-                                  return n;
-                                });
-                                inviteMut.mutate({
-                                  householdId: h.id,
-                                  email: (inviteEmailByHh[h.id] ?? '').trim(),
-                                });
-                              }}
-                              sx={{ flexShrink: 0 }}
-                            >
-                              Einladen
-                            </Button>
-                          </Stack>
-                          {inviteErrorByHh[h.id] ? (
-                            <Alert severity="error" sx={{ mt: 1 }}>
-                              {inviteErrorByHh[h.id]}
-                            </Alert>
-                          ) : null}
-                          {oq?.isFetching ? (
-                            <Box sx={{ mt: 1 }}>
-                              <CircularProgress size={22} />
-                            </Box>
-                          ) : null}
-                          {(oq?.data ?? []).length > 0 ? (
-                            <Box sx={{ mt: 2 }}>
-                              <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
-                                Ausstehende Einladungen
-                              </Typography>
-                              <Stack spacing={0.75}>
-                                {(oq?.data ?? []).map((o) => (
-                                  <Stack
-                                    key={o.id}
-                                    direction="row"
-                                    alignItems="center"
-                                    justifyContent="space-between"
-                                    flexWrap="wrap"
-                                    useFlexGap
-                                    gap={1}
-                                  >
-                                    <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
-                                      {o.invitee_email}
-                                    </Typography>
-                                    <Button
-                                      size="small"
-                                      color="inherit"
-                                      onClick={() => deleteInvMut.mutate(o.id)}
-                                      disabled={deleteInvMut.isPending}
+                        <Accordion
+                          disableGutters
+                          elevation={0}
+                          defaultExpanded={false}
+                          sx={{
+                            mb: 2,
+                            border: 1,
+                            borderColor: 'divider',
+                            borderRadius: 1,
+                            '&:before': { display: 'none' },
+                          }}
+                        >
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 2 }}>
+                            <Typography variant="subtitle2" fontWeight={600}>
+                              Mitglieder einladen
+                            </Typography>
+                          </AccordionSummary>
+                          <AccordionDetails sx={{ px: 2, pt: 0, pb: 2 }}>
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+                              Nur für registrierte Nutzer: gleiche E-Mail wie beim Login. Die Person sieht die Einladung
+                              hier unter Einrichtung, sobald sie angemeldet ist.
+                            </Typography>
+                            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'flex-start' }}>
+                              <TextField
+                                size="small"
+                                label="E-Mail-Adresse"
+                                type="email"
+                                fullWidth
+                                value={inviteEmailByHh[h.id] ?? ''}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setInviteEmailByHh((prev) => ({ ...prev, [h.id]: v }));
+                                  setInviteErrorByHh((prev) => {
+                                    const n = { ...prev };
+                                    delete n[h.id];
+                                    return n;
+                                  });
+                                }}
+                                disabled={inviteMut.isPending}
+                              />
+                              <Button
+                                variant="outlined"
+                                startIcon={<PersonAddAlt1Icon />}
+                                disabled={
+                                  inviteMut.isPending || !(inviteEmailByHh[h.id] ?? '').trim()
+                                }
+                                onClick={() => {
+                                  setInviteErrorByHh((prev) => {
+                                    const n = { ...prev };
+                                    delete n[h.id];
+                                    return n;
+                                  });
+                                  inviteMut.mutate({
+                                    householdId: h.id,
+                                    email: (inviteEmailByHh[h.id] ?? '').trim(),
+                                  });
+                                }}
+                                sx={{ flexShrink: 0 }}
+                              >
+                                Einladen
+                              </Button>
+                            </Stack>
+                            {inviteErrorByHh[h.id] ? (
+                              <Alert severity="error" sx={{ mt: 1 }}>
+                                {inviteErrorByHh[h.id]}
+                              </Alert>
+                            ) : null}
+                            {oq?.isFetching ? (
+                              <Box sx={{ mt: 1 }}>
+                                <CircularProgress size={22} />
+                              </Box>
+                            ) : null}
+                            {(oq?.data ?? []).length > 0 ? (
+                              <Box sx={{ mt: 2 }}>
+                                <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                                  Ausstehende Einladungen
+                                </Typography>
+                                <Stack spacing={0.75}>
+                                  {(oq?.data ?? []).map((o) => (
+                                    <Stack
+                                      key={o.id}
+                                      direction="row"
+                                      alignItems="center"
+                                      justifyContent="space-between"
+                                      flexWrap="wrap"
+                                      useFlexGap
+                                      gap={1}
                                     >
-                                      Zurücknehmen
-                                    </Button>
-                                  </Stack>
-                                ))}
-                              </Stack>
-                            </Box>
-                          ) : null}
-                        </Paper>
+                                      <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                                        {o.invitee_email}
+                                      </Typography>
+                                      <Button
+                                        size="small"
+                                        color="inherit"
+                                        onClick={() => deleteInvMut.mutate(o.id)}
+                                        disabled={deleteInvMut.isPending}
+                                      >
+                                        Zurücknehmen
+                                      </Button>
+                                    </Stack>
+                                  ))}
+                                </Stack>
+                              </Box>
+                            ) : null}
+                          </AccordionDetails>
+                        </Accordion>
                       ) : null}
                       {gq?.isLoading ? (
                         <CircularProgress size={28} />
@@ -627,6 +792,7 @@ export default function Setup() {
                                           setGroupName(g.name);
                                           setGroupDesc(g.description ?? '');
                                           setGroupError('');
+                                          setGroupMemberUserIds([]);
                                           setGroupDialogOpen(true);
                                         }}
                                       >
@@ -657,6 +823,7 @@ export default function Setup() {
                                   </Tooltip>
                                 </Stack>
                               </Stack>
+                              <AccountGroupSharingBlock groupId={g.id} householdId={h.id} />
                               <GroupBankAccountsBlock
                                 groupId={g.id}
                                 accounts={allAccounts}
@@ -738,7 +905,10 @@ export default function Setup() {
                 labelId="ghh"
                 label="Haushalt"
                 value={groupHouseholdId === '' ? '' : groupHouseholdId}
-                onChange={(e) => setGroupHouseholdId(e.target.value as number)}
+                onChange={(e) => {
+                  setGroupHouseholdId(e.target.value as number);
+                  setGroupMemberUserIds([]);
+                }}
               >
                 {households.map((h) => (
                   <MenuItem key={h.id} value={h.id}>
@@ -761,6 +931,46 @@ export default function Setup() {
               value={groupDesc}
               onChange={(e) => setGroupDesc(e.target.value)}
             />
+            {editingGroupId === null && groupHouseholdId !== '' ? (
+              <Box>
+                <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+                  Zugriff
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                  Wer diese Kontogruppe nutzen darf (sichtbar mit Profil-Einstellung „nur freigegebene Kontogruppen“).
+                </Typography>
+                {householdMembersForDialog.isLoading ? (
+                  <CircularProgress size={22} />
+                ) : (
+                  <FormGroup>
+                    {(householdMembersForDialog.data ?? []).map((m) => (
+                      <FormControlLabel
+                        key={m.user_id}
+                        control={
+                          <Checkbox
+                            checked={groupMemberUserIds.includes(m.user_id)}
+                            onChange={() => {
+                              setGroupMemberUserIds((prev) => {
+                                if (prev.includes(m.user_id)) {
+                                  if (prev.length <= 1) return prev;
+                                  return prev.filter((x) => x !== m.user_id);
+                                }
+                                return [...prev, m.user_id];
+                              });
+                            }}
+                            disabled={
+                              saveGroupMut.isPending ||
+                              (groupMemberUserIds.includes(m.user_id) && groupMemberUserIds.length === 1)
+                            }
+                          />
+                        }
+                        label={`${m.display_name || m.email} (${m.email})${m.role === 'owner' ? ' · Besitzer' : ''}`}
+                      />
+                    ))}
+                  </FormGroup>
+                )}
+              </Box>
+            ) : null}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -768,6 +978,7 @@ export default function Setup() {
             onClick={() => {
               setGroupDialogOpen(false);
               setEditingGroupId(null);
+              setGroupMemberUserIds([]);
             }}
             disabled={saveGroupMut.isPending}
           >
@@ -778,7 +989,8 @@ export default function Setup() {
             disabled={
               saveGroupMut.isPending ||
               !groupName.trim() ||
-              (editingGroupId === null && groupHouseholdId === '')
+              (editingGroupId === null &&
+                (groupHouseholdId === '' || groupMemberUserIds.length < 1))
             }
             onClick={() => {
               setGroupError('');

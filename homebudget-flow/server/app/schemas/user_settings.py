@@ -8,6 +8,7 @@ from pydantic import BaseModel, EmailStr, Field
 class UserSettingsOut(BaseModel):
     """Antwort für GET/PATCH Nutzereinstellungen (temporäre Route)."""
 
+    id: int
     email: EmailStr
     display_name: str
     all_household_transactions: bool

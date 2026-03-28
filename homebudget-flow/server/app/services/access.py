@@ -1,5 +1,7 @@
 """Zugriffsprüfung: Nutzer nur auf Konten in Gruppen, in denen sie Mitglied sind."""
 
+from typing import Optional
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +44,43 @@ async def user_can_access_account_group(session: AsyncSession, user_id: int, gro
         )
     )
     return r.scalar_one_or_none() is not None
+
+
+async def household_id_for_account_group(
+    session: AsyncSession, account_group_id: int
+) -> Optional[int]:
+    r = await session.execute(select(AccountGroup.household_id).where(AccountGroup.id == account_group_id))
+    return r.scalar_one_or_none()
+
+
+async def user_can_view_account_group_members(
+    session: AsyncSession, user_id: int, account_group_id: int
+) -> bool:
+    """Haushaltsbesitzer oder Mitglied der Kontogruppe."""
+    hid = await household_id_for_account_group(session, account_group_id)
+    if hid is None:
+        return False
+    if await user_is_household_owner(session, user_id, hid):
+        return True
+    return await user_can_access_account_group(session, user_id, account_group_id)
+
+
+async def user_can_manage_account_group_sharing(
+    session: AsyncSession, user_id: int, account_group_id: int
+) -> bool:
+    """Haushaltsbesitzer oder Kontogruppenmitglied mit can_edit."""
+    hid = await household_id_for_account_group(session, account_group_id)
+    if hid is None:
+        return False
+    if await user_is_household_owner(session, user_id, hid):
+        return True
+    r = await session.execute(
+        select(AccountGroupMember.can_edit).where(
+            AccountGroupMember.user_id == user_id,
+            AccountGroupMember.account_group_id == account_group_id,
+        )
+    )
+    return r.scalar_one_or_none() is True
 
 
 async def user_can_access_bank_account(session: AsyncSession, user_id: int, bank_account_id: int) -> bool:

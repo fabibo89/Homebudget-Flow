@@ -9,10 +9,15 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Divider,
   FormControl,
   InputLabel,
+  List,
+  ListItemButton,
+  ListItemText,
   MenuItem,
   Paper,
+  Popover,
   Select,
   Stack,
   Tab,
@@ -61,6 +66,20 @@ function formatMoneyFull(n: number, currency: string): string {
     style: 'currency',
     currency: currency || 'EUR',
   }).format(n);
+}
+
+/** Stabiler Key für React-Query / useEffect (Reihenfolge der IDs egal). */
+function analysesIncludedAccountsKey(ids: number[] | null): string {
+  if (ids === null) return 'all';
+  if (ids.length === 0) return 'none';
+  return [...ids].sort((a, b) => a - b).join(',');
+}
+
+/** `null` = alle Konten mit Zugriff (API ohne bank_account_id); `[]` = nichts gewählt. */
+function normalizeIncludedAccountIds(next: Set<number>, allIdsSorted: number[]): number[] | null {
+  if (next.size === 0) return [];
+  if (next.size === allIdsSorted.length && allIdsSorted.every((id) => next.has(id))) return null;
+  return [...next].sort((a, b) => a - b);
 }
 
 /** Pro Kalendertag im Intervall [from, to]: Summe der Beträge (fehlende Tage = 0). */
@@ -547,7 +566,9 @@ export default function Analyses() {
   const defaultFrom = useMemo(() => addDays(today, -30), [today]);
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(today);
-  const [accountFilter, setAccountFilter] = useState<number | 'all'>('all');
+  /** `null` = alle Konten mit Zugriff; sonst explizite Mehrfachauswahl (Reihenfolge egal). */
+  const [includedAccountIds, setIncludedAccountIds] = useState<number[] | null>(null);
+  const [accountFilterAnchor, setAccountFilterAnchor] = useState<HTMLElement | null>(null);
   const [selectedBarDay, setSelectedBarDay] = useState<string | null>(null);
   const [selectedCategorySlice, setSelectedCategorySlice] = useState<CategorySliceSelection | null>(null);
   const [verlaufSelectedKeys, setVerlaufSelectedKeys] = useState<string[]>([]);
@@ -559,25 +580,31 @@ export default function Analyses() {
     queryFn: fetchAccounts,
   });
 
-  const { groupLabelById } = useAccountGroupLabelMap();
+  const { groupLabelById, householdWithGroups } = useAccountGroupLabelMap();
 
   const rangeOk = from <= to;
+  const includedAccountsQueryKey = analysesIncludedAccountsKey(includedAccountIds);
+  const singleAccountForApi =
+    includedAccountIds !== null && includedAccountIds.length === 1 ? includedAccountIds[0] : undefined;
   const txQuery = useQuery({
-    queryKey: ['analyses-transactions', from, to, accountFilter],
+    queryKey: ['analyses-transactions', from, to, includedAccountsQueryKey],
     queryFn: () =>
       fetchAllTransactions({
         from: from || undefined,
         to: to || undefined,
-        bank_account_id: accountFilter === 'all' ? undefined : accountFilter,
+        bank_account_id: singleAccountForApi,
       }),
-    enabled: rangeOk && (tab === 'tagesbilanz' || tab === 'kategorien' || tab === 'kategorieverlauf'),
+    enabled:
+      rangeOk &&
+      (tab === 'tagesbilanz' || tab === 'kategorien' || tab === 'kategorieverlauf') &&
+      (includedAccountIds === null || includedAccountIds.length > 0),
   });
 
   useEffect(() => {
     setSelectedBarDay(null);
     setSelectedCategorySlice(null);
     setVerlaufSelectedPeriodIndex(null);
-  }, [from, to, accountFilter, verlaufBucket]);
+  }, [from, to, includedAccountsQueryKey, verlaufBucket]);
 
   function handleTabChange(_: unknown, v: AnalysisTab) {
     setTab(v);
@@ -590,31 +617,68 @@ export default function Analyses() {
     () => sortBankAccountsForDisplay(accountsQuery.data ?? [], groupLabelById),
     [accountsQuery.data, groupLabelById],
   );
+
+  const allAccountIdsSorted = useMemo(
+    () => accounts.map((a) => a.id).sort((a, b) => a - b),
+    [accounts],
+  );
+
+  const includedSet = useMemo(() => {
+    if (includedAccountIds === null) return new Set(allAccountIdsSorted);
+    return new Set(includedAccountIds);
+  }, [includedAccountIds, allAccountIdsSorted]);
+
+  const scopedTransactions = useMemo(() => {
+    if (includedAccountIds !== null && includedAccountIds.length === 0) return [];
+    const raw = txQuery.data ?? [];
+    if (includedAccountIds === null) return raw;
+    const set = new Set(includedAccountIds);
+    return raw.filter((t) => set.has(t.bank_account_id));
+  }, [txQuery.data, includedAccountIds, accounts]);
+
+  const applyIncludedSet = useCallback(
+    (next: Set<number>) => {
+      setIncludedAccountIds(normalizeIncludedAccountIds(next, allAccountIdsSorted));
+    },
+    [allAccountIdsSorted],
+  );
+
+  const accountFilterSummary = useMemo(() => {
+    if (!accounts.length) return 'Konten';
+    if (includedAccountIds === null) return 'Alle meine Konten';
+    if (includedAccountIds.length === 0) return 'Kein Konto';
+    if (includedAccountIds.length === 1) {
+      const a = accounts.find((x) => x.id === includedAccountIds[0]);
+      return a?.name ?? '1 Konto';
+    }
+    return `${includedAccountIds.length} Konten`;
+  }, [accounts, includedAccountIds]);
+
   const defaultCurrency = accounts[0]?.currency ?? 'EUR';
 
   const daily = useMemo(() => {
-    if (!txQuery.data) return [];
-    return dailyNetSums(txQuery.data, from, to);
-  }, [txQuery.data, from, to]);
+    if (!scopedTransactions.length) return [];
+    return dailyNetSums(scopedTransactions, from, to);
+  }, [scopedTransactions, from, to]);
 
   const cumulative = useMemo(() => cumulativeFromDaily(daily), [daily]);
 
   const categoryAggsIncome = useMemo(() => {
-    if (!txQuery.data?.length) return [];
-    return aggregateByCategory(txQuery.data.filter((t) => Number(t.amount) > 0));
-  }, [txQuery.data]);
+    if (!scopedTransactions.length) return [];
+    return aggregateByCategory(scopedTransactions.filter((t) => Number(t.amount) > 0));
+  }, [scopedTransactions]);
 
   const categoryAggsExpense = useMemo(() => {
-    if (!txQuery.data?.length) return [];
-    return aggregateByCategory(txQuery.data.filter((t) => Number(t.amount) < 0));
-  }, [txQuery.data]);
+    if (!scopedTransactions.length) return [];
+    return aggregateByCategory(scopedTransactions.filter((t) => Number(t.amount) < 0));
+  }, [scopedTransactions]);
 
   const dailyExpenseMatrix = useMemo(
     () =>
-      txQuery.data?.length
-        ? buildDailyExpenseMatrix(txQuery.data, from, to)
+      scopedTransactions.length
+        ? buildDailyExpenseMatrix(scopedTransactions, from, to)
         : { days: [] as string[], byKey: new Map<string, number[]>() },
-    [txQuery.data, from, to],
+    [scopedTransactions, from, to],
   );
 
   const keysWithSpendInVerlauf = useMemo(() => {
@@ -637,7 +701,7 @@ export default function Analyses() {
     setVerlaufSelectedKeys(
       keysWithSpendSignature ? keysWithSpendSignature.split('\n') : [],
     );
-  }, [from, to, accountFilter, keysWithSpendSignature]);
+  }, [from, to, includedAccountsQueryKey, keysWithSpendSignature]);
 
   const householdIdsForCategories = useMemo(() => {
     const s = new Set<number>();
@@ -665,8 +729,8 @@ export default function Analyses() {
     verlaufBucket === 'day' ? 'Tag' : verlaufBucket === 'week' ? 'Kalenderwoche (Mo–So im Filter)' : 'Monat';
 
   const transactionsForSelectedVerlaufPeriod = useMemo(() => {
-    const all = txQuery.data;
-    if (all == null || verlaufSelectedPeriodIndex == null) return [];
+    const all = scopedTransactions;
+    if (verlaufSelectedPeriodIndex == null) return [];
     const daysIn = verlaufPeriodMatrix.periodDays[verlaufSelectedPeriodIndex];
     if (!daysIn?.length) return [];
     const daySet = new Set(daysIn);
@@ -674,7 +738,7 @@ export default function Analyses() {
       .filter((t) => Number(t.amount) < 0 && daySet.has(t.booking_date.slice(0, 10)))
       .slice()
       .sort((a, b) => b.id - a.id);
-  }, [txQuery.data, verlaufSelectedPeriodIndex, verlaufPeriodMatrix.periodDays]);
+  }, [scopedTransactions, verlaufSelectedPeriodIndex, verlaufPeriodMatrix.periodDays]);
 
   const verlaufSelectedPeriodTitle = useMemo(() => {
     if (verlaufSelectedPeriodIndex == null) return '';
@@ -685,13 +749,13 @@ export default function Analyses() {
   }, [verlaufSelectedPeriodIndex, verlaufPeriodMatrix.periodLabels, verlaufBucket]);
 
   const transactionsForSelectedDay = useMemo(() => {
-    const all = txQuery.data;
+    const all = scopedTransactions;
     if (!all || !selectedBarDay) return [];
     return all
       .filter((t) => t.booking_date.slice(0, 10) === selectedBarDay)
       .slice()
       .sort((a, b) => b.id - a.id);
-  }, [txQuery.data, selectedBarDay]);
+  }, [scopedTransactions, selectedBarDay]);
 
   const transactionsForSelectedCategory = useMemo(() => {
     if (!selectedCategorySlice) return [];
@@ -1088,7 +1152,12 @@ export default function Analyses() {
 
   const sharedLoading = txQuery.isLoading;
   const sharedError = txQuery.isError;
-  const sharedDataReady = rangeOk && !sharedLoading && !sharedError && txQuery.data;
+  const noAccountsSelected = includedAccountIds !== null && includedAccountIds.length === 0;
+  const sharedDataReady =
+    rangeOk &&
+    !sharedLoading &&
+    !sharedError &&
+    (noAccountsSelected || txQuery.data !== undefined);
   const categoryQueriesLoading =
     tab === 'kategorieverlauf' && categoryQueries.some((q) => q.isLoading);
   const firstCategoryQueryError = categoryQueries.find((q) => q.isError)?.error;
@@ -1170,26 +1239,125 @@ export default function Analyses() {
                 <Button onClick={() => shiftRangeByMonths(1)}>+1 Monat</Button>
               </ButtonGroup>
             </Stack>
-            <FormControl size="small" sx={{ minWidth: 220 }}>
-              <InputLabel id="analyses-acc">Konto</InputLabel>
-              <Select
-                labelId="analyses-acc"
-                label="Konto"
-                value={accountFilter}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setAccountFilter(v === 'all' ? 'all' : Number(v));
-                }}
-              >
-                <MenuItem value="all">Alle Konten</MenuItem>
-                {accounts.map((a) => (
-                  <MenuItem key={a.id} value={a.id}>
-                    {a.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <Button variant="outlined" onClick={() => void txQuery.refetch()} disabled={txQuery.isFetching || !rangeOk}>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={(e) => setAccountFilterAnchor(e.currentTarget)}
+              sx={{ minWidth: 220, justifyContent: 'flex-start', textAlign: 'left' }}
+            >
+              {accountFilterSummary}
+            </Button>
+            <Popover
+              open={Boolean(accountFilterAnchor)}
+              anchorEl={accountFilterAnchor}
+              onClose={() => setAccountFilterAnchor(null)}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+              slotProps={{
+                paper: {
+                  sx: { maxHeight: 420, width: 340, mt: 0.5 },
+                },
+              }}
+            >
+              <List dense disablePadding sx={{ py: 1 }}>
+                <ListItemButton
+                  selected={includedAccountIds === null}
+                  onClick={() => setIncludedAccountIds(null)}
+                  sx={{ pl: 1, alignItems: 'flex-start' }}
+                >
+                  <ListItemText
+                    primary="Alle meine Konten"
+                    secondary="Alle Konten, auf die du Zugriff hast"
+                    secondaryTypographyProps={{ variant: 'caption', color: 'text.secondary' }}
+                  />
+                </ListItemButton>
+                <Divider />
+                {householdWithGroups.map(({ household: hh, groups }) => {
+                  const hhAccounts = accounts.filter((a) => a.household_id === hh.id);
+                  const hhAccountIds = hhAccounts.map((a) => a.id);
+                  const hhAll =
+                    hhAccountIds.length > 0 && hhAccountIds.every((id) => includedSet.has(id));
+                  const hhSome = hhAccountIds.some((id) => includedSet.has(id));
+                  return (
+                    <Box key={hh.id}>
+                      <ListItemButton
+                        sx={{ pl: 1 }}
+                        onClick={() => {
+                          const next = new Set(includedSet);
+                          if (hhAll) for (const id of hhAccountIds) next.delete(id);
+                          else for (const id of hhAccountIds) next.add(id);
+                          applyIncludedSet(next);
+                        }}
+                      >
+                        <Checkbox
+                          edge="start"
+                          checked={hhAccountIds.length > 0 && hhAll}
+                          indeterminate={hhSome && !hhAll}
+                          tabIndex={-1}
+                          disableRipple
+                        />
+                        <ListItemText primary={hh.name} />
+                      </ListItemButton>
+                      {groups.map((g) => {
+                        const gAccounts = accounts.filter(
+                          (a) => a.household_id === hh.id && a.account_group_id === g.id,
+                        );
+                        const gAccountIds = gAccounts.map((a) => a.id);
+                        const gAll =
+                          gAccountIds.length > 0 && gAccountIds.every((id) => includedSet.has(id));
+                        const gSome = gAccountIds.some((id) => includedSet.has(id));
+                        return (
+                          <Box key={g.id}>
+                            <ListItemButton
+                              sx={{ pl: 3 }}
+                              onClick={() => {
+                                const next = new Set(includedSet);
+                                if (gAll) for (const id of gAccountIds) next.delete(id);
+                                else for (const id of gAccountIds) next.add(id);
+                                applyIncludedSet(next);
+                              }}
+                            >
+                              <Checkbox
+                                edge="start"
+                                checked={gAccountIds.length > 0 && gAll}
+                                indeterminate={gSome && !gAll}
+                                tabIndex={-1}
+                                disableRipple
+                              />
+                              <ListItemText primary={g.name} />
+                            </ListItemButton>
+                            {gAccounts.map((acc) => (
+                              <ListItemButton
+                                key={acc.id}
+                                sx={{ pl: 5 }}
+                                onClick={() => {
+                                  const next = new Set(includedSet);
+                                  if (next.has(acc.id)) next.delete(acc.id);
+                                  else next.add(acc.id);
+                                  applyIncludedSet(next);
+                                }}
+                              >
+                                <Checkbox
+                                  edge="start"
+                                  checked={includedSet.has(acc.id)}
+                                  tabIndex={-1}
+                                  disableRipple
+                                />
+                                <ListItemText primary={acc.name} />
+                              </ListItemButton>
+                            ))}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  );
+                })}
+              </List>
+            </Popover>
+            <Button
+              variant="outlined"
+              onClick={() => void txQuery.refetch()}
+              disabled={txQuery.isFetching || !rangeOk || noAccountsSelected}
+            >
               {txQuery.isFetching ? 'Laden…' : 'Aktualisieren'}
             </Button>
           </Stack>
@@ -1243,7 +1411,7 @@ export default function Analyses() {
         </>
       ) : tab === 'kategorien' ? (
         <>
-          {!txQuery.data?.length ? (
+          {!scopedTransactions.length ? (
             <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
           ) : (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
@@ -1301,7 +1469,7 @@ export default function Analyses() {
               </Stack>
             </Paper>
           )}
-          {selectedCategorySlice && sharedDataReady && txQuery.data?.length ? (
+          {selectedCategorySlice && sharedDataReady && scopedTransactions.length ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
                 <Typography variant="subtitle1" fontWeight={600}>
@@ -1328,7 +1496,7 @@ export default function Analyses() {
               fehlen ggf. in der Auswahl.
             </Alert>
           ) : null}
-          {!txQuery.data?.length ? (
+          {!scopedTransactions.length ? (
             <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
           ) : dailyExpenseMatrix.days.length === 0 ? (
             <Alert severity="info">Keine Tage im Zeitraum.</Alert>
@@ -1537,7 +1705,7 @@ export default function Analyses() {
               )}
             </Paper>
           )}
-          {verlaufSelectedPeriodIndex != null && sharedDataReady && txQuery.data?.length ? (
+          {verlaufSelectedPeriodIndex != null && sharedDataReady && scopedTransactions.length ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
                 <Typography variant="subtitle1" fontWeight={600}>

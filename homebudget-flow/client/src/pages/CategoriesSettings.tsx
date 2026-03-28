@@ -627,90 +627,160 @@ export default function CategoriesSettings() {
                     </Typography>
                   ) : null}
                   {suggestionActiveList.length > 0 ? (
-                    <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
-                      <Table size="small" sx={{ minWidth: 860 }}>
-                        <TableHead>
-                          <TableRow>
-                            <TableCell>Bedingung</TableCell>
-                            <TableCell>Muster</TableCell>
-                            <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                              Buchungen
-                            </TableCell>
-                            <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                              Verschiedene Texte
-                            </TableCell>
-                            <TableCell>Beispiele</TableCell>
-                            <TableCell align="right" sx={{ width: 220, whiteSpace: 'nowrap' }}>
-                              Aktionen
-                            </TableCell>
-                          </TableRow>
-                        </TableHead>
-                        <TableBody>
-                          {suggestionActiveList.map((s) => (
-                            <TableRow
-                              key={`active:${s.rule_type}:${s.pattern}`}
-                              hover
-                              sx={{ cursor: 'pointer' }}
-                              onClick={() => setSuggestionPreviewDialog(s)}
-                            >
-                              <TableCell>{categoryRuleTypeDescription(s.rule_type)}</TableCell>
-                              <TableCell>
-                                <Typography
-                                  component="span"
-                                  variant="body2"
-                                  sx={{ fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}
-                                >
-                                  „{s.pattern}“
+                    isXs ? (
+                      <Stack spacing={1.25}>
+                        {suggestionActiveList.map((s) => (
+                          <Card
+                            key={`active:${s.rule_type}:${s.pattern}`}
+                            variant="outlined"
+                            onClick={() => setSuggestionPreviewDialog(s)}
+                            sx={{ cursor: 'pointer' }}
+                          >
+                            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                {categoryRuleTypeDescription(s.rule_type)}
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                sx={{ mt: 0.5, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}
+                              >
+                                „{s.pattern}“
+                              </Typography>
+                              <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                                <Typography variant="body2" color="text.secondary">
+                                  {s.transaction_count} Buchungen
                                 </Typography>
-                              </TableCell>
-                              <TableCell align="right">{s.transaction_count}</TableCell>
-                              <TableCell align="right">{s.distinct_label_count}</TableCell>
-                              <TableCell>
-                                <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5}>
-                                  {s.sample_labels.map((lab, li) => (
-                                    <Chip
-                                      key={`${li}-${lab}`}
-                                      size="small"
-                                      variant="outlined"
-                                      label={lab.length > 48 ? `${lab.slice(0, 45)}…` : lab}
-                                      title={lab}
-                                    />
-                                  ))}
-                                </Stack>
-                              </TableCell>
-                              <TableCell align="right">
-                                <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
-                                  <Button
+                                <Typography variant="body2" color="text.secondary">
+                                  {s.distinct_label_count} verschiedene Texte
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5} sx={{ mt: 1 }}>
+                                {s.sample_labels.map((lab, li) => (
+                                  <Chip
+                                    key={`${li}-${lab}`}
                                     size="small"
                                     variant="outlined"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setRuleEditDialog(null);
-                                      setNewRuleDialogOpen(false);
-                                      setSuggestionDialog(s);
-                                    }}
-                                    disabled={suggestionMutating}
-                                  >
-                                    Regel anlegen
-                                  </Button>
-                                  <Button
-                                    size="small"
-                                    color="inherit"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      dismissSuggestionMut.mutate(s);
-                                    }}
-                                    disabled={suggestionMutating}
-                                  >
-                                    Ignorieren
-                                  </Button>
-                                </Stack>
+                                    label={lab.length > 48 ? `${lab.slice(0, 45)}…` : lab}
+                                    title={lab}
+                                  />
+                                ))}
+                              </Stack>
+                              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRuleEditDialog(null);
+                                    setNewRuleDialogOpen(false);
+                                    setSuggestionDialog(s);
+                                  }}
+                                  disabled={suggestionMutating}
+                                >
+                                  Regel anlegen
+                                </Button>
+                                <Button
+                                  size="small"
+                                  color="inherit"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    dismissSuggestionMut.mutate(s);
+                                  }}
+                                  disabled={suggestionMutating}
+                                >
+                                  Ignorieren
+                                </Button>
+                              </Stack>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </Stack>
+                    ) : (
+                      <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
+                        <Table size="small" sx={{ minWidth: 860 }}>
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Bedingung</TableCell>
+                              <TableCell>Muster</TableCell>
+                              <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                Buchungen
+                              </TableCell>
+                              <TableCell align="right" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                Verschiedene Texte
+                              </TableCell>
+                              <TableCell>Beispiele</TableCell>
+                              <TableCell align="right" sx={{ width: 220, whiteSpace: 'nowrap' }}>
+                                Aktionen
                               </TableCell>
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </TableContainer>
+                          </TableHead>
+                          <TableBody>
+                            {suggestionActiveList.map((s) => (
+                              <TableRow
+                                key={`active:${s.rule_type}:${s.pattern}`}
+                                hover
+                                sx={{ cursor: 'pointer' }}
+                                onClick={() => setSuggestionPreviewDialog(s)}
+                              >
+                                <TableCell>{categoryRuleTypeDescription(s.rule_type)}</TableCell>
+                                <TableCell>
+                                  <Typography
+                                    component="span"
+                                    variant="body2"
+                                    sx={{ fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}
+                                  >
+                                    „{s.pattern}“
+                                  </Typography>
+                                </TableCell>
+                                <TableCell align="right">{s.transaction_count}</TableCell>
+                                <TableCell align="right">{s.distinct_label_count}</TableCell>
+                                <TableCell>
+                                  <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5}>
+                                    {s.sample_labels.map((lab, li) => (
+                                      <Chip
+                                        key={`${li}-${lab}`}
+                                        size="small"
+                                        variant="outlined"
+                                        label={lab.length > 48 ? `${lab.slice(0, 45)}…` : lab}
+                                        title={lab}
+                                      />
+                                    ))}
+                                  </Stack>
+                                </TableCell>
+                                <TableCell align="right">
+                                  <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
+                                    <Button
+                                      size="small"
+                                      variant="outlined"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setRuleEditDialog(null);
+                                        setNewRuleDialogOpen(false);
+                                        setSuggestionDialog(s);
+                                      }}
+                                      disabled={suggestionMutating}
+                                    >
+                                      Regel anlegen
+                                    </Button>
+                                    <Button
+                                      size="small"
+                                      color="inherit"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        dismissSuggestionMut.mutate(s);
+                                      }}
+                                      disabled={suggestionMutating}
+                                    >
+                                      Ignorieren
+                                    </Button>
+                                  </Stack>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
+                    )
                   ) : null}
 
                   <Box>
@@ -725,6 +795,74 @@ export default function CategoriesSettings() {
                       <Typography color="text.secondary" variant="body2">
                         Keine ignorierten Vorschläge.
                       </Typography>
+                    ) : isXs ? (
+                      <Stack spacing={1.25}>
+                        {suggestionIgnoredList.map((s) => (
+                          <Card
+                            key={`ignored:${s.rule_type}:${s.pattern}`}
+                            variant="outlined"
+                            onClick={() => setSuggestionPreviewDialog(s)}
+                            sx={{ cursor: 'pointer' }}
+                          >
+                            <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                {categoryRuleTypeDescription(s.rule_type)}
+                              </Typography>
+                              <Typography
+                                variant="body2"
+                                sx={{ mt: 0.5, fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}
+                              >
+                                „{s.pattern}“
+                              </Typography>
+                              <Stack direction="row" spacing={2} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap>
+                                <Typography variant="body2" color="text.secondary">
+                                  {s.transaction_count} Buchungen (Snapshot)
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  {s.distinct_label_count} verschiedene Texte
+                                </Typography>
+                              </Stack>
+                              <Stack direction="row" flexWrap="wrap" useFlexGap spacing={0.5} sx={{ mt: 1 }}>
+                                {s.sample_labels.map((lab, li) => (
+                                  <Chip
+                                    key={`${li}-${lab}`}
+                                    size="small"
+                                    variant="outlined"
+                                    label={lab.length > 48 ? `${lab.slice(0, 45)}…` : lab}
+                                    title={lab}
+                                  />
+                                ))}
+                              </Stack>
+                              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    restoreSuggestionMut.mutate(s);
+                                  }}
+                                  disabled={suggestionMutating}
+                                >
+                                  Wiederherstellen
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRuleEditDialog(null);
+                                    setNewRuleDialogOpen(false);
+                                    setSuggestionDialog(s);
+                                  }}
+                                  disabled={suggestionMutating}
+                                >
+                                  Regel anlegen
+                                </Button>
+                              </Stack>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </Stack>
                     ) : (
                       <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
                         <Table size="small" sx={{ minWidth: 860 }}>
@@ -838,6 +976,96 @@ export default function CategoriesSettings() {
                       Keine Regeln in dieser Ansicht — anderes Register wählen (z. B. „Alle“) oder eine Regel mit
                       passender Buchungsrichtung anlegen.
                     </Typography>
+                  ) : isXs ? (
+                    <Stack spacing={1.25}>
+                      {rulesListFiltered.map(({ rule, globalPriority }) => (
+                        <Card key={rule.id} variant="outlined">
+                          <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                            <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
+                              <Chip size="small" label={`Priorität ${globalPriority}`} variant="outlined" />
+                              <Stack direction="row" spacing={0.25}>
+                                <Tooltip title="Regel bearbeiten">
+                                  <IconButton
+                                    size="small"
+                                    aria-label="Regel bearbeiten"
+                                    onClick={() => {
+                                      setSuggestionDialog(null);
+                                      setNewRuleDialogOpen(false);
+                                      setRuleEditDialog(rule);
+                                    }}
+                                  >
+                                    <EditOutlinedIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                                <Tooltip title="Regel löschen">
+                                  <IconButton
+                                    size="small"
+                                    color="error"
+                                    aria-label="Regel löschen"
+                                    disabled={deleteRuleMut.isPending}
+                                    onClick={() => {
+                                      if (
+                                        !window.confirm(
+                                          `Regel wirklich löschen?\n\n${categoryRuleTypeDescription(rule.rule_type)}: "${rule.pattern}"`,
+                                        )
+                                      )
+                                        return;
+                                      deleteRuleMut.mutate(rule.id);
+                                    }}
+                                  >
+                                    <DeleteOutlineIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </Stack>
+                            </Stack>
+                            <Box sx={{ mt: 1 }}>
+                              {rule.category_missing || rule.category_id == null ? (
+                                <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
+                                  <Chip size="small" color="warning" label="Defekt" />
+                                  <Typography variant="body2" color="text.secondary">
+                                    Keine Kategorie — bitte neu zuordnen
+                                  </Typography>
+                                </Stack>
+                              ) : (
+                                <Typography variant="subtitle2" fontWeight={700}>
+                                  {categoryLabels.get(rule.category_id) ?? `Kategorie #${rule.category_id}`}
+                                </Typography>
+                              )}
+                            </Box>
+                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                              Geltung:{' '}
+                              {rule.applies_to_household !== false ? 'Haushalt' : 'Meine Konten'}
+                            </Typography>
+                            <Box sx={{ mt: 1 }}>
+                              {(rule.conditions?.length ?? 0) > 0 ? (
+                                <Stack spacing={0.5}>
+                                  {rule.conditions.map((c, i) => (
+                                    <Typography key={i} variant="body2">
+                                      {describeCategoryRuleCondition(c)}
+                                    </Typography>
+                                  ))}
+                                </Stack>
+                              ) : (
+                                <Stack spacing={0.5}>
+                                  <Typography variant="body2">
+                                    {categoryRuleTypeDescription(rule.rule_type)}
+                                  </Typography>
+                                  <Typography
+                                    variant="body2"
+                                    sx={{ fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}
+                                  >
+                                    „{rule.pattern}“
+                                  </Typography>
+                                </Stack>
+                              )}
+                            </Box>
+                            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                              Angelegt: {formatDateTime(rule.created_at)}
+                            </Typography>
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </Stack>
                   ) : (
                     <TableContainer component={Paper} variant="outlined" sx={{ maxWidth: 1100, overflowX: 'auto' }}>
                       <Table size="small" sx={{ minWidth: 880 }}>
@@ -856,7 +1084,16 @@ export default function CategoriesSettings() {
                             <TableRow key={rule.id} hover>
                               <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>{globalPriority}</TableCell>
                               <TableCell>
-                                {categoryLabels.get(rule.category_id) ?? `Kategorie #${rule.category_id}`}
+                                {rule.category_missing || rule.category_id == null ? (
+                                  <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap" useFlexGap>
+                                    <Chip size="small" color="warning" label="Defekt" />
+                                    <Typography variant="body2" color="text.secondary">
+                                      Keine Kategorie — bitte neu zuordnen
+                                    </Typography>
+                                  </Stack>
+                                ) : (
+                                  categoryLabels.get(rule.category_id) ?? `Kategorie #${rule.category_id}`
+                                )}
                               </TableCell>
                               <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                 <Typography variant="body2">

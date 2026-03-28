@@ -39,6 +39,7 @@ from app.api.routes import (
     households,
     sync,
     transactions,
+    user_settings,
 )
 from app.db.session import init_db
 from app.scheduler import setup_scheduler
@@ -74,6 +75,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(auth.router, prefix="/api")
+app.include_router(user_settings.router, prefix="/api")
 app.include_router(households.router, prefix="/api")
 app.include_router(categories.router, prefix="/api")
 app.include_router(category_rules.router, prefix="/api")

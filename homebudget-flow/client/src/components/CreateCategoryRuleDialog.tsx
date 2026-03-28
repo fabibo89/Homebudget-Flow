@@ -187,7 +187,7 @@ export default function CreateCategoryRuleDialog({
       setRulePattern(st.pattern);
       setAmountMin(st.amountMin);
       setAmountMax(st.amountMax);
-      setPickCategoryId(editingRule.category_id);
+      setPickCategoryId(editingRule.category_id ?? null);
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(editingRule.applies_to_household !== false);
       return;
@@ -225,7 +225,15 @@ export default function CreateCategoryRuleDialog({
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
     }
-  }, [open, editingRule?.id, transaction?.id, suggestionPreset?.rule_type, suggestionPreset?.pattern]);
+  }, [
+    open,
+    editingRule?.id,
+    editingRule?.category_id,
+    editingRule?.category_missing,
+    transaction?.id,
+    suggestionPreset?.rule_type,
+    suggestionPreset?.pattern,
+  ]);
 
   const categoryRulePickOptions: CategoryFlatOptionWithMeta[] = useMemo(() => {
     const roots = categoriesQuery.data ?? [];
@@ -338,6 +346,12 @@ export default function CreateCategoryRuleDialog({
                       <Typography variant="caption" color="text.secondary">
                         Angelegt von {editingRule.created_by_display.trim()}
                       </Typography>
+                    ) : null}
+                    {editingRule?.category_missing || editingRule?.category_id == null ? (
+                      <Alert severity="warning">
+                        Die zugeordnete Kategorie fehlt (z. B. nach Löschen der Kategorie). Bitte eine neue
+                        Unterkategorie wählen und speichern — bis dahin wird die Regel nicht angewendet.
+                      </Alert>
                     ) : null}
                   </Stack>
                 ) : fromSuggestion ? (

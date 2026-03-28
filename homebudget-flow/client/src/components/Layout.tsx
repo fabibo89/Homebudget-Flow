@@ -74,7 +74,9 @@ export default function Layout() {
   const openUserMenu = (e: React.MouseEvent<HTMLElement>) => setUserMenuAnchor(e.currentTarget);
   const closeUserMenu = () => setUserMenuAnchor(null);
 
-  const goSettings = (sub: 'setup' | 'fints' | 'accounts' | 'categories' | 'integration' | 'enrichments') => {
+  const goSettings = (
+    sub: 'profile' | 'setup' | 'fints' | 'accounts' | 'categories' | 'integration' | 'enrichments',
+  ) => {
     navigate(`/settings/${sub}`);
     closeUserMenu();
   };
@@ -182,6 +184,12 @@ export default function Layout() {
             transformOrigin={{ vertical: 'top', horizontal: 'right' }}
             slotProps={{ list: { 'aria-labelledby': 'user-menu-button' } }}
           >
+            <MenuItem onClick={() => goSettings('profile')}>
+              <ListItemIcon>
+                <PersonIcon fontSize="small" />
+              </ListItemIcon>
+              Konto
+            </MenuItem>
             <MenuItem onClick={() => goSettings('setup')}>
               <ListItemIcon>
                 <SettingsIcon fontSize="small" />

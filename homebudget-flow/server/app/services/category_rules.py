@@ -78,6 +78,8 @@ def first_matching_rule_category_id(
 ) -> int | None:
     """Erste passende Regel (nach ID absteigend = neueste zuerst); sonst None."""
     for rule in rules:
+        if rule.category_id is None or getattr(rule, "category_missing", False):
+            continue
         allowed = rule_allowed_accounts.get(rule.id)
         if allowed is not None and tx.bank_account_id not in allowed:
             continue
@@ -199,6 +201,8 @@ async def apply_category_rules_to_uncategorized(
     updated = 0
     for tx in txs:
         for rule in rules:
+            if rule.category_id is None or getattr(rule, "category_missing", False):
+                continue
             allowed = rule_allowed.get(rule.id)
             if allowed is not None and tx.bank_account_id not in allowed:
                 continue

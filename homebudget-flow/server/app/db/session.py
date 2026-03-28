@@ -311,6 +311,106 @@ async def _migrate_transaction_external_ids_to_txv1(conn) -> None:
         )
 
 
+async def _sqlite_rebuild_category_rules_nullable_category(conn) -> None:
+    """SQLite: category_id nullable + category_missing; Legacy-Tabellen haben oft NOT NULL auf category_id."""
+    await conn.execute(
+        text(
+            """
+            CREATE TABLE category_rules__new (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              household_id INTEGER NOT NULL REFERENCES households(id) ON DELETE CASCADE,
+              category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+              category_missing BOOLEAN NOT NULL DEFAULT 0,
+              rule_type VARCHAR(32) NOT NULL,
+              pattern VARCHAR(512) NOT NULL,
+              conditions_json TEXT,
+              created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+              applies_to_household BOOLEAN NOT NULL DEFAULT 1,
+              created_at DATETIME
+            )
+            """
+        ),
+    )
+    r = await conn.execute(text("PRAGMA table_info(category_rules)"))
+    col_names = {row[1] for row in r.fetchall()}
+    has_cm = "category_missing" in col_names
+    if has_cm:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO category_rules__new (
+                  id, household_id, category_id, category_missing, rule_type, pattern,
+                  conditions_json, created_by_user_id, applies_to_household, created_at
+                )
+                SELECT id, household_id, category_id, category_missing, rule_type, pattern,
+                  conditions_json, created_by_user_id, applies_to_household, created_at
+                FROM category_rules
+                """
+            ),
+        )
+    else:
+        await conn.execute(
+            text(
+                """
+                INSERT INTO category_rules__new (
+                  id, household_id, category_id, category_missing, rule_type, pattern,
+                  conditions_json, created_by_user_id, applies_to_household, created_at
+                )
+                SELECT id, household_id, category_id, 0, rule_type, pattern,
+                  conditions_json, created_by_user_id, applies_to_household, created_at
+                FROM category_rules
+                """
+            ),
+        )
+    await conn.execute(text("DROP TABLE category_rules"))
+    await conn.execute(text("ALTER TABLE category_rules__new RENAME TO category_rules"))
+
+
+async def _ensure_category_rules_missing_nullable_category(conn) -> None:
+    """category_missing + nullable category_id (Regel bleibt erhalten, wenn Kategorie gelöscht wird)."""
+    url = settings.database_url.lower()
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE category_rules ADD COLUMN IF NOT EXISTS category_missing BOOLEAN NOT NULL DEFAULT FALSE",
+            ),
+        )
+        try:
+            await conn.execute(text("ALTER TABLE category_rules ALTER COLUMN category_id DROP NOT NULL"))
+        except Exception:
+            pass
+        await conn.execute(text("ALTER TABLE category_rules DROP CONSTRAINT IF EXISTS category_rules_category_id_fkey"))
+        try:
+            await conn.execute(
+                text(
+                    "ALTER TABLE category_rules ADD CONSTRAINT category_rules_category_id_fkey "
+                    "FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL",
+                ),
+            )
+        except Exception:
+            pass
+        return
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(category_rules)"))
+        cols = list(r.fetchall())
+        if not cols:
+            return
+        names = {row[1] for row in cols}
+        if "category_missing" not in names:
+            await conn.execute(
+                text("ALTER TABLE category_rules ADD COLUMN category_missing BOOLEAN NOT NULL DEFAULT 0"),
+            )
+        r2 = await conn.execute(text("PRAGMA table_info(category_rules)"))
+        cat_notnull = 0
+        for row in r2.fetchall():
+            if row[1] == "category_id":
+                cat_notnull = int(row[3])
+                break
+        if cat_notnull == 1:
+            await _sqlite_rebuild_category_rules_nullable_category(conn)
+        return
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -322,6 +422,7 @@ async def init_db() -> None:
         await _ensure_category_rules_conditions_json(conn)
         await _ensure_category_rules_created_by_user_id(conn)
         await _ensure_category_rules_applies_to_household(conn)
+        await _ensure_category_rules_missing_nullable_category(conn)
         await _ensure_bank_accounts_last_salary_cache(conn)
         await _ensure_bank_credentials_fints_verification(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)

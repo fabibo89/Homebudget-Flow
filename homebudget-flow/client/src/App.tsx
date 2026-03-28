@@ -13,6 +13,7 @@ import BankAccountsSettings from './pages/BankAccountsSettings';
 import CategoriesSettings from './pages/CategoriesSettings';
 import { useAuthStore } from './store/authStore';
 import EnrichmentsSettings from './pages/EnrichmentsSettings';
+import UserSettings from './pages/UserSettings';
 
 export default function App() {
   const token = useAuthStore((s) => s.token);
@@ -30,7 +31,8 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="analysen" element={<Analyses />} />
           <Route path="settings" element={<SettingsLayout />}>
-            <Route index element={<Navigate to="setup" replace />} />
+            <Route index element={<Navigate to="profile" replace />} />
+            <Route path="profile" element={<UserSettings />} />
             <Route path="setup" element={<Setup />} />
             <Route path="fints" element={<BankFintsSettings />} />
             <Route path="accounts" element={<BankAccountsSettings />} />

@@ -62,8 +62,27 @@ export async function fetchCurrentUser(): Promise<UserMe> {
   return data;
 }
 
-export async function patchCurrentUser(body: { all_household_transactions: boolean }): Promise<UserMe> {
+export async function patchCurrentUser(body: {
+  display_name?: string;
+  all_household_transactions?: boolean;
+}): Promise<UserMe> {
   const { data } = await api.patch<UserMe>('/api/auth/me', body);
+  return data;
+}
+
+/** Temporäre Nutzereinstellungen (parallel zu /api/auth/me); gleiche Payload wie patchCurrentUser. */
+export type UserSettings = UserMe;
+
+export async function fetchUserSettings(): Promise<UserSettings> {
+  const { data } = await api.get<UserSettings>('/api/users/me/settings');
+  return data;
+}
+
+export async function patchUserSettings(body: {
+  display_name?: string;
+  all_household_transactions?: boolean;
+}): Promise<UserSettings> {
+  const { data } = await api.patch<UserSettings>('/api/users/me/settings', body);
   return data;
 }
 
@@ -219,7 +238,9 @@ export type CategoryRuleCondition =
 export type CategoryRuleOut = {
   id: number;
   household_id: number;
-  category_id: number;
+  category_id: number | null;
+  /** true, wenn die Zielkategorie fehlt — Regel greift nicht, bis neu zugeordnet */
+  category_missing?: boolean;
   /** true: alle Konten im Haushalt; false: nur Konten des Erstellers (sichtbare Gruppen) */
   applies_to_household?: boolean;
   rule_type: CategoryRuleType;

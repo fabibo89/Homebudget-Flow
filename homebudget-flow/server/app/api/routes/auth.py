@@ -7,6 +7,7 @@ from app.db.models import User
 from app.db.session import get_session
 from app.schemas.auth import LoginIn, RegisterIn, TokenOut, UserMeOut, UserMePatch
 from app.security import create_access_token, hash_password, verify_password
+from app.services.user_settings import apply_user_settings_updates
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -55,8 +56,7 @@ async def patch_me(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Keine Felder zum Aktualisieren.")
-    if "all_household_transactions" in updates:
-        user.all_household_transactions = bool(updates["all_household_transactions"])
+    apply_user_settings_updates(user, updates)
     await session.commit()
     await session.refresh(user)
     return UserMeOut(

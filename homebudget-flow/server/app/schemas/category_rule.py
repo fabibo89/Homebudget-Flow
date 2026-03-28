@@ -45,7 +45,8 @@ class CategoryRuleUpdate(CategoryRuleConditionsBody):
 class CategoryRuleOut(BaseModel):
     id: int
     household_id: int
-    category_id: int
+    category_id: Optional[int] = None
+    category_missing: bool = False
     applies_to_household: bool = True
     rule_type: str
     pattern: str

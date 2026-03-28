@@ -310,7 +310,12 @@ class CategoryRule(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
-    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"))
+    category_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    """True, wenn die Zielkategorie fehlt (z. B. nach Löschen der Kategorie) — Regel wird nicht angewendet."""
+    category_missing: Mapped[bool] = mapped_column(Boolean, default=False)
     rule_type: Mapped[str] = mapped_column(String(32))
     pattern: Mapped[str] = mapped_column(String(512))
     conditions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -323,7 +328,7 @@ class CategoryRule(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     household: Mapped[Household] = relationship(back_populates="category_rules")
-    category: Mapped[Category] = relationship(back_populates="assignment_rules")
+    category: Mapped[Optional["Category"]] = relationship(back_populates="assignment_rules")
     created_by_user: Mapped[Optional["User"]] = relationship(
         "User",
         back_populates="category_rules_created",

@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
@@ -320,7 +320,11 @@ async def delete_category(
     r_sub = await session.execute(select(Category).where(Category.parent_id == category_id))
     subs = list(r_sub.scalars().all())
     clear_ids = [category_id] + [s.id for s in subs]
-    await session.execute(delete(CategoryRule).where(CategoryRule.category_id.in_(clear_ids)))
+    await session.execute(
+        update(CategoryRule)
+        .where(CategoryRule.category_id.in_(clear_ids))
+        .values(category_id=None, category_missing=True),
+    )
     await session.execute(update(Transaction).where(Transaction.category_id.in_(clear_ids)).values(category_id=None))
     await refresh_salary_cache_for_household(session, household_id)
     for sub in subs:

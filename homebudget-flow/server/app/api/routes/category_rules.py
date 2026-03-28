@@ -86,6 +86,7 @@ def _rule_to_out(row: CategoryRule, user_map: dict[int, User]) -> CategoryRuleOu
         id=row.id,
         household_id=row.household_id,
         category_id=row.category_id,
+        category_missing=bool(getattr(row, "category_missing", False)),
         applies_to_household=row.applies_to_household,
         rule_type=row.rule_type,
         pattern=row.pattern,
@@ -136,6 +137,12 @@ async def list_category_rules(
     rules = [_rule_to_out(x, user_map) for x in rows]
     gehalt_id = await get_gehalt_category_id(session, household_id)
     warnings = income_gehalt_rule_warnings(rows, gehalt_id)
+    broken = sum(1 for x in rows if x.category_id is None or getattr(x, "category_missing", False))
+    if broken:
+        warnings = [
+            *warnings,
+            f"{broken} Zuordnungsregel(n) ohne gültige Kategorie — bitte im Dialog „Regel bearbeiten“ neu zuordnen.",
+        ]
     return CategoryRulesListOut(rules=rules, warnings=warnings)
 
 
@@ -437,6 +444,7 @@ async def create_category_rule(
     row = CategoryRule(
         household_id=household_id,
         category_id=body.category_id,
+        category_missing=False,
         rule_type=rt,
         pattern=(pat or "")[:512],
         conditions_json=cj,
@@ -542,6 +550,7 @@ async def update_category_rule(
     cj = conditions_to_json(conds)
 
     row.category_id = body.category_id
+    row.category_missing = False
     row.rule_type = rt
     row.pattern = (pat or "")[:512]
     row.conditions_json = cj

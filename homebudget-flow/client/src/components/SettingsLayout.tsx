@@ -1,7 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Box, Tab, Tabs } from '@mui/material';
 
-const TAB_PATHS = ['setup', 'fints', 'accounts', 'categories', 'integration', 'enrichments'] as const;
+const TAB_PATHS = ['profile', 'setup', 'fints', 'accounts', 'categories', 'integration', 'enrichments'] as const;
 
 export default function SettingsLayout() {
   const location = useLocation();
@@ -21,6 +21,7 @@ export default function SettingsLayout() {
         variant="scrollable"
         scrollButtons="auto"
       >
+        <Tab label="Konto" id="settings-tab-profile" aria-controls="settings-panel-profile" />
         <Tab label="Einrichtung" id="settings-tab-setup" aria-controls="settings-panel-setup" />
         <Tab label="Bankzugang (FinTS)" id="settings-tab-fints" aria-controls="settings-panel-fints" />
         <Tab label="Bankkonten" id="settings-tab-accounts" aria-controls="settings-panel-accounts" />

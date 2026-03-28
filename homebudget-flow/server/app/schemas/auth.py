@@ -35,4 +35,5 @@ class UserMeOut(BaseModel):
 
 
 class UserMePatch(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=255)
     all_household_transactions: Optional[bool] = None

@@ -665,7 +665,15 @@ export default function CategoriesSettings() {
                                   />
                                 ))}
                               </Stack>
-                              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+                              <Stack
+                                direction="row"
+                                spacing={1}
+                                sx={{ mt: 1.5 }}
+                                flexWrap="wrap"
+                                useFlexGap
+                                onClick={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >
                                 <Button
                                   size="small"
                                   variant="outlined"
@@ -747,7 +755,11 @@ export default function CategoriesSettings() {
                                     ))}
                                   </Stack>
                                 </TableCell>
-                                <TableCell align="right">
+                                <TableCell
+                                  align="right"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                >
                                   <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
                                     <Button
                                       size="small"
@@ -833,7 +845,15 @@ export default function CategoriesSettings() {
                                   />
                                 ))}
                               </Stack>
-                              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+                              <Stack
+                                direction="row"
+                                spacing={1}
+                                sx={{ mt: 1.5 }}
+                                flexWrap="wrap"
+                                useFlexGap
+                                onClick={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >
                                 <Button
                                   size="small"
                                   variant="outlined"
@@ -915,7 +935,11 @@ export default function CategoriesSettings() {
                                     ))}
                                   </Stack>
                                 </TableCell>
-                                <TableCell align="right">
+                                <TableCell
+                                  align="right"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                >
                                   <Stack direction="row" spacing={0.5} justifyContent="flex-end" flexWrap="wrap" useFlexGap>
                                     <Button
                                       size="small"

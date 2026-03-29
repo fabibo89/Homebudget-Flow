@@ -1,6 +1,7 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.app_time import get_app_tz
+from app.config import settings
 from app.db.session import SessionLocal
 from app.services.sync_service import sync_all_configured_accounts
 

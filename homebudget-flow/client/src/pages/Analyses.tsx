@@ -900,7 +900,7 @@ export default function Analyses() {
   const posColor = theme.palette.success.main;
   const negColor = theme.palette.error.main;
 
-  const { chartOptions, series, saldoLineChartOptions, saldoLineSeries } = useMemo(() => {
+  const { chartOptions, series } = useMemo(() => {
     const labels = daily.map((d) =>
       new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short' }).format(parseIsoDate(d.day)),
     );
@@ -918,77 +918,6 @@ export default function Analyses() {
 
     const barColors = daily.map((d) => (d.sum >= 0 ? posColor : negColor));
 
-    let yMin = 0;
-    let yMax = 0;
-    for (let i = 0; i < cumulative.length; i++) {
-      const prev = i === 0 ? 0 : cumulative[i - 1];
-      yMin = Math.min(yMin, prev, cumulative[i]);
-      yMax = Math.max(yMax, prev, cumulative[i]);
-    }
-    const span = yMax - yMin;
-    const pad = span > 0 ? span * 0.06 : Math.max(Math.abs(yMax), 1) * 0.06;
-    const yAxisFloor = yMin - pad;
-    const yAxisCeil = yMax + pad;
-
-    const pickDayFromChart = (dataPointIndex: number | undefined) => {
-      if (typeof dataPointIndex !== 'number' || dataPointIndex < 0) return;
-      const row = daily[dataPointIndex];
-      if (row) setSelectedBarDay(row.day);
-    };
-
-    const saldoLineColor = theme.palette.primary.main;
-
-    const saldoLineOptions: ApexOptions = {
-      chart: {
-        type: 'line',
-        toolbar: { show: true },
-        zoom: { enabled: true },
-        foreColor: theme.palette.text.secondary,
-        background: 'transparent',
-        fontFamily: theme.typography.fontFamily,
-        events: {
-          click: (_e, _chart, opts) => {
-            pickDayFromChart(opts?.dataPointIndex);
-          },
-          dataPointSelection: (_e, _chart, opts) => {
-            pickDayFromChart(opts?.dataPointIndex);
-          },
-        },
-      },
-      colors: [saldoLineColor],
-      stroke: { curve: 'smooth', width: 2.5 },
-      markers: { size: 3, strokeWidth: 2, strokeColors: saldoLineColor, hover: { size: 5 } },
-      grid: {
-        borderColor: theme.palette.divider,
-        strokeDashArray: 4,
-      },
-      xaxis: {
-        type: 'category',
-        categories: labels,
-        tickAmount: Math.min(12, Math.max(4, Math.floor(labels.length / 14))),
-        labels: { show: false },
-        axisBorder: { show: false },
-        axisTicks: { show: false },
-        title: { text: undefined },
-      },
-      yaxis: {
-        min: yAxisFloor,
-        max: yAxisCeil,
-        title: { text: 'Saldo (kumuliert)' },
-        labels: {
-          formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
-        },
-      },
-      dataLabels: { enabled: false },
-      tooltip: {
-        theme: theme.palette.mode,
-        y: {
-          formatter: (val) => formatMoneyFull(Number(val), defaultCurrency),
-        },
-      },
-      legend: { show: true, position: 'top', horizontalAlign: 'right' },
-    };
-
     const options: ApexOptions = {
       chart: {
         type: 'rangeBar',
@@ -999,10 +928,16 @@ export default function Analyses() {
         fontFamily: theme.typography.fontFamily,
         events: {
           click: (_e, _chart, opts) => {
-            pickDayFromChart(opts?.dataPointIndex);
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0) return;
+            const row = daily[i];
+            if (row) setSelectedBarDay(row.day);
           },
           dataPointSelection: (_e, _chart, opts) => {
-            pickDayFromChart(opts?.dataPointIndex);
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0) return;
+            const row = daily[i];
+            if (row) setSelectedBarDay(row.day);
           },
         },
       },
@@ -1035,8 +970,6 @@ export default function Analyses() {
         title: { text: 'Buchungstag' },
       },
       yaxis: {
-        min: yAxisFloor,
-        max: yAxisCeil,
         title: { text: 'Kumulierte Tagesbilanz' },
         labels: {
           formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
@@ -1096,8 +1029,6 @@ export default function Analyses() {
     return {
       chartOptions: options,
       series: [{ name: 'Kumuliert', data: rangeData }],
-      saldoLineChartOptions: saldoLineOptions,
-      saldoLineSeries: [{ name: 'Saldo (Ende Tag)', data: cumulative }],
     };
   }, [daily, cumulative, theme, defaultCurrency, posColor, negColor]);
 
@@ -1861,25 +1792,13 @@ export default function Analyses() {
           ) : (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                <strong>Linie</strong>: kumulierter Saldo nach jedem Buchungstag. <strong>Balken</strong>: Tagesänderung
-                (vom Stand des Vortags bis zum Stand nach diesem Tag — Wasserfall). Farbe der Balken = Tagesänderung
-                (grün aufwärts, rot abwärts). Diagramm oder Balken <strong>anklicken</strong>, um die Buchungen dieses
-                Tages darunter anzuzeigen.
+                Jeder Balken reicht vom kumulierten Stand des Vortags bis zum Stand nach diesem Tag (Wasserfall /
+                Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
+                <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
               </Typography>
-              <Stack spacing={1.5} sx={{ width: '100%' }}>
-                <Box sx={{ width: '100%', minHeight: isXs ? 200 : 240, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                  <Chart
-                    options={saldoLineChartOptions}
-                    series={saldoLineSeries}
-                    type="line"
-                    height={isXs ? 200 : 240}
-                    width="100%"
-                  />
-                </Box>
-                <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                  <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
-                </Box>
-              </Stack>
+              <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
+              </Box>
             </Paper>
           )}
           {selectedBarDay && sharedDataReady ? (

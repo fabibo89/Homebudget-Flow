@@ -22,6 +22,8 @@ from app.db.base import Base
 
 
 class HouseholdMemberRole(str, enum.Enum):
+    """Historisch: owner; in der App sind alle gleichberechtigt (Migration setzt alles auf member)."""
+
     owner = "owner"
     member = "member"
 

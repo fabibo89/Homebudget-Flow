@@ -21,10 +21,12 @@ export default function BankFintsSettings() {
     () =>
       households.flatMap((h, hi) => {
         const list = groupQueries[hi]?.data ?? [];
-        return list.map((g) => ({
-          householdName: h.name,
-          group: g,
-        }));
+        return list
+          .filter((g) => g.current_user_is_member)
+          .map((g) => ({
+            householdName: h.name,
+            group: g,
+          }));
       }),
     [households, groupQueries],
   );

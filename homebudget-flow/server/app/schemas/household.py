@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -16,15 +16,17 @@ class HouseholdOut(BaseModel):
     id: int
     name: str
     created_at: datetime
-    my_role: str = Field(description="owner oder member — Rolle des angemeldeten Nutzers in diesem Haushalt")
+    my_role: Literal["member"] = Field(
+        default="member",
+        description="Alle Haushaltsmitglieder haben dieselben Rechte; es gibt keine Besitzer-Rolle.",
+    )
 
 
-def household_to_out(h: Household, my_role: str) -> HouseholdOut:
+def household_to_out(h: Household) -> HouseholdOut:
     return HouseholdOut(
         id=h.id,
         name=h.name,
         created_at=h.created_at,
-        my_role=my_role,
     )
 
 
@@ -65,6 +67,10 @@ class AccountGroupOut(BaseModel):
     household_id: int
     name: str
     description: str
+    current_user_is_member: bool = False
+    """Ob der angemeldete Nutzer Mitglied dieser Kontogruppe ist (Sicht auf Konten/Buchungen je Profil)."""
+    current_user_can_manage_sharing: bool = False
+    """Ob der Nutzer die Freigabeliste (Mitglieder) ändern darf — nur Kontogruppenmitglied mit can_edit."""
 
     model_config = {"from_attributes": True}
 
@@ -78,7 +84,10 @@ class HouseholdMemberOut(BaseModel):
     user_id: int
     email: str
     display_name: str
-    role: str
+    role: Literal["member"] = Field(
+        default="member",
+        description="Historisch unterschiedliche Werte; in der API nur noch Mitglieder ohne Sonderrolle.",
+    )
 
 
 class AccountGroupMemberOut(BaseModel):

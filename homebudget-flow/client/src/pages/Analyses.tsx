@@ -640,6 +640,8 @@ export default function Analyses() {
   const [selectedBarDay, setSelectedBarDay] = useState<string | null>(null);
   const [selectedCategorySlice, setSelectedCategorySlice] = useState<CategorySliceSelection | null>(null);
   const [verlaufSelectedKeys, setVerlaufSelectedKeys] = useState<string[]>([]);
+  /** Tortendiagramme „Kategorien“: gleiche Schlüssel wie Kategorieverlauf (`__none__`, `c{id}`). */
+  const [kategorienSelectedKeys, setKategorienSelectedKeys] = useState<string[]>([]);
   const [verlaufBucket, setVerlaufBucket] = useState<VerlaufBucket>('week');
   const [verlaufSelectedPeriodIndex, setVerlaufSelectedPeriodIndex] = useState<number | null>(null);
   const [regelClusterSubcategoryId, setRegelClusterSubcategoryId] = useState<number | null>(null);
@@ -758,6 +760,32 @@ export default function Analyses() {
     return aggregateByCategory(scopedTransactions.filter((t) => Number(t.amount) < 0));
   }, [scopedTransactions]);
 
+  const allPieCategoryKeysSorted = useMemo(() => {
+    const s = new Set<string>();
+    for (const a of categoryAggsIncome) s.add(a.key);
+    for (const a of categoryAggsExpense) s.add(a.key);
+    return [...s].sort();
+  }, [categoryAggsIncome, categoryAggsExpense]);
+
+  const pieCategoryKeysSignature = allPieCategoryKeysSorted.join('\n');
+
+  useEffect(() => {
+    if (tab !== 'kategorien') return;
+    setKategorienSelectedKeys(pieCategoryKeysSignature ? pieCategoryKeysSignature.split('\n') : []);
+  }, [tab, from, to, includedAccountsQueryKey, pieCategoryKeysSignature]);
+
+  const categoryAggsIncomeFiltered = useMemo(() => {
+    if (kategorienSelectedKeys.length === 0) return [];
+    const set = new Set(kategorienSelectedKeys);
+    return categoryAggsIncome.filter((a) => set.has(a.key));
+  }, [categoryAggsIncome, kategorienSelectedKeys]);
+
+  const categoryAggsExpenseFiltered = useMemo(() => {
+    if (kategorienSelectedKeys.length === 0) return [];
+    const set = new Set(kategorienSelectedKeys);
+    return categoryAggsExpense.filter((a) => set.has(a.key));
+  }, [categoryAggsExpense, kategorienSelectedKeys]);
+
   const dailyExpenseMatrix = useMemo(
     () =>
       scopedTransactions.length
@@ -800,7 +828,7 @@ export default function Analyses() {
       queryFn: () => fetchCategories(hid),
       enabled:
         rangeOk &&
-        (tab === 'kategorieverlauf' || tab === 'regelcluster') &&
+        (tab === 'kategorien' || tab === 'kategorieverlauf' || tab === 'regelcluster') &&
         householdIdsForCategories.length > 0,
     })),
   });
@@ -872,7 +900,7 @@ export default function Analyses() {
   const posColor = theme.palette.success.main;
   const negColor = theme.palette.error.main;
 
-  const { chartOptions, series } = useMemo(() => {
+  const { chartOptions, series, saldoLineChartOptions, saldoLineSeries } = useMemo(() => {
     const labels = daily.map((d) =>
       new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short' }).format(parseIsoDate(d.day)),
     );
@@ -890,6 +918,77 @@ export default function Analyses() {
 
     const barColors = daily.map((d) => (d.sum >= 0 ? posColor : negColor));
 
+    let yMin = 0;
+    let yMax = 0;
+    for (let i = 0; i < cumulative.length; i++) {
+      const prev = i === 0 ? 0 : cumulative[i - 1];
+      yMin = Math.min(yMin, prev, cumulative[i]);
+      yMax = Math.max(yMax, prev, cumulative[i]);
+    }
+    const span = yMax - yMin;
+    const pad = span > 0 ? span * 0.06 : Math.max(Math.abs(yMax), 1) * 0.06;
+    const yAxisFloor = yMin - pad;
+    const yAxisCeil = yMax + pad;
+
+    const pickDayFromChart = (dataPointIndex: number | undefined) => {
+      if (typeof dataPointIndex !== 'number' || dataPointIndex < 0) return;
+      const row = daily[dataPointIndex];
+      if (row) setSelectedBarDay(row.day);
+    };
+
+    const saldoLineColor = theme.palette.primary.main;
+
+    const saldoLineOptions: ApexOptions = {
+      chart: {
+        type: 'line',
+        toolbar: { show: true },
+        zoom: { enabled: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+        events: {
+          click: (_e, _chart, opts) => {
+            pickDayFromChart(opts?.dataPointIndex);
+          },
+          dataPointSelection: (_e, _chart, opts) => {
+            pickDayFromChart(opts?.dataPointIndex);
+          },
+        },
+      },
+      colors: [saldoLineColor],
+      stroke: { curve: 'smooth', width: 2.5 },
+      markers: { size: 3, strokeWidth: 2, strokeColors: saldoLineColor, hover: { size: 5 } },
+      grid: {
+        borderColor: theme.palette.divider,
+        strokeDashArray: 4,
+      },
+      xaxis: {
+        type: 'category',
+        categories: labels,
+        tickAmount: Math.min(12, Math.max(4, Math.floor(labels.length / 14))),
+        labels: { show: false },
+        axisBorder: { show: false },
+        axisTicks: { show: false },
+        title: { text: undefined },
+      },
+      yaxis: {
+        min: yAxisFloor,
+        max: yAxisCeil,
+        title: { text: 'Saldo (kumuliert)' },
+        labels: {
+          formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
+        },
+      },
+      dataLabels: { enabled: false },
+      tooltip: {
+        theme: theme.palette.mode,
+        y: {
+          formatter: (val) => formatMoneyFull(Number(val), defaultCurrency),
+        },
+      },
+      legend: { show: true, position: 'top', horizontalAlign: 'right' },
+    };
+
     const options: ApexOptions = {
       chart: {
         type: 'rangeBar',
@@ -900,16 +999,10 @@ export default function Analyses() {
         fontFamily: theme.typography.fontFamily,
         events: {
           click: (_e, _chart, opts) => {
-            const i = opts?.dataPointIndex;
-            if (typeof i !== 'number' || i < 0) return;
-            const row = daily[i];
-            if (row) setSelectedBarDay(row.day);
+            pickDayFromChart(opts?.dataPointIndex);
           },
           dataPointSelection: (_e, _chart, opts) => {
-            const i = opts?.dataPointIndex;
-            if (typeof i !== 'number' || i < 0) return;
-            const row = daily[i];
-            if (row) setSelectedBarDay(row.day);
+            pickDayFromChart(opts?.dataPointIndex);
           },
         },
       },
@@ -942,6 +1035,8 @@ export default function Analyses() {
         title: { text: 'Buchungstag' },
       },
       yaxis: {
+        min: yAxisFloor,
+        max: yAxisCeil,
         title: { text: 'Kumulierte Tagesbilanz' },
         labels: {
           formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
@@ -1001,6 +1096,8 @@ export default function Analyses() {
     return {
       chartOptions: options,
       series: [{ name: 'Kumuliert', data: rangeData }],
+      saldoLineChartOptions: saldoLineOptions,
+      saldoLineSeries: [{ name: 'Saldo (Ende Tag)', data: cumulative }],
     };
   }, [daily, cumulative, theme, defaultCurrency, posColor, negColor]);
 
@@ -1023,27 +1120,27 @@ export default function Analyses() {
   const incomeDonut = useMemo(
     () =>
       createCategoryDonutConfig(
-        categoryAggsIncome,
+        categoryAggsIncomeFiltered,
         'income',
         theme,
         defaultCurrency,
         piePalette,
         (key) => setSelectedCategorySlice({ flow: 'income', categoryKey: key }),
       ),
-    [categoryAggsIncome, theme, defaultCurrency, piePalette],
+    [categoryAggsIncomeFiltered, theme, defaultCurrency, piePalette],
   );
 
   const expenseDonut = useMemo(
     () =>
       createCategoryDonutConfig(
-        categoryAggsExpense,
+        categoryAggsExpenseFiltered,
         'expense',
         theme,
         defaultCurrency,
         piePalette,
         (key) => setSelectedCategorySlice({ flow: 'expense', categoryKey: key }),
       ),
-    [categoryAggsExpense, theme, defaultCurrency, piePalette],
+    [categoryAggsExpenseFiltered, theme, defaultCurrency, piePalette],
   );
 
   const categoryQueriesTick = categoryQueries.map((q) => q.dataUpdatedAt).join('|');
@@ -1110,8 +1207,31 @@ export default function Analyses() {
     return out;
   }, [verlaufPickOptions, verlaufSelectedKeys]);
 
+  const kategorienAutocompletePickValue = useMemo(() => {
+    const out: VerlaufPickOption[] = [];
+    for (const row of verlaufPickOptions) {
+      if (row.rowKind === 'parent') continue;
+      if (row.rowKind === 'none') {
+        if (kategorienSelectedKeys.includes('__none__')) out.push(row);
+      } else if (kategorienSelectedKeys.includes(row.option.key)) {
+        out.push(row);
+      }
+    }
+    return out;
+  }, [verlaufPickOptions, kategorienSelectedKeys]);
+
   const toggleVerlaufSubtree = useCallback((subtreeKeys: string[]) => {
     setVerlaufSelectedKeys((prev) => {
+      const allOn = subtreeKeys.length > 0 && subtreeKeys.every((k) => prev.includes(k));
+      if (allOn) return prev.filter((k) => !subtreeKeys.includes(k));
+      const next = new Set(prev);
+      for (const k of subtreeKeys) next.add(k);
+      return Array.from(next).sort();
+    });
+  }, []);
+
+  const toggleKategorienSubtree = useCallback((subtreeKeys: string[]) => {
+    setKategorienSelectedKeys((prev) => {
       const allOn = subtreeKeys.length > 0 && subtreeKeys.every((k) => prev.includes(k));
       if (allOn) return prev.filter((k) => !subtreeKeys.includes(k));
       const next = new Set(prev);
@@ -1254,7 +1374,8 @@ export default function Analyses() {
     !sharedError &&
     (noAccountsSelected || txQuery.data !== undefined);
   const categoryQueriesLoading =
-    (tab === 'kategorieverlauf' || tab === 'regelcluster') && categoryQueries.some((q) => q.isLoading);
+    (tab === 'kategorien' || tab === 'kategorieverlauf' || tab === 'regelcluster') &&
+    categoryQueries.some((q) => q.isLoading);
   const firstCategoryQueryError = categoryQueries.find((q) => q.isError)?.error;
   const rulesQueriesLoading = tab === 'regelcluster' && rulesQueries.some((q) => q.isLoading);
   const firstRulesQueryError = rulesQueries.find((q) => q.isError)?.error;
@@ -1740,13 +1861,25 @@ export default function Analyses() {
           ) : (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Jeder Balken reicht vom kumulierten Stand des Vortags bis zum Stand nach diesem Tag (Wasserfall /
-                Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
-                <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
+                <strong>Linie</strong>: kumulierter Saldo nach jedem Buchungstag. <strong>Balken</strong>: Tagesänderung
+                (vom Stand des Vortags bis zum Stand nach diesem Tag — Wasserfall). Farbe der Balken = Tagesänderung
+                (grün aufwärts, rot abwärts). Diagramm oder Balken <strong>anklicken</strong>, um die Buchungen dieses
+                Tages darunter anzuzeigen.
               </Typography>
-              <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
-              </Box>
+              <Stack spacing={1.5} sx={{ width: '100%' }}>
+                <Box sx={{ width: '100%', minHeight: isXs ? 200 : 240, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                  <Chart
+                    options={saldoLineChartOptions}
+                    series={saldoLineSeries}
+                    type="line"
+                    height={isXs ? 200 : 240}
+                    width="100%"
+                  />
+                </Box>
+                <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                  <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
+                </Box>
+              </Stack>
             </Paper>
           )}
           {selectedBarDay && sharedDataReady ? (
@@ -1776,56 +1909,230 @@ export default function Analyses() {
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
                 <strong>Einnahmen-Torte</strong>: nur Buchungen mit positivem Betrag. <strong>Ausgaben-Torte</strong>: nur
-                negative Beträge (Scheibengröße nach Summe im Absolutbetrag, Beschriftung mit Vorzeichen).{' '}
+                negative Beträge (Scheibengröße nach Summe im Absolutbetrag, Beschriftung mit Vorzeichen). Wähle die
+                Kategorien wie beim Kategorieverlauf (Hauptzeile schaltet den ganzen Teilbaum).{' '}
                 <strong>Segment anklicken</strong> für die Buchungsliste unten.
               </Typography>
               <Stack
                 direction={{ xs: 'column', md: 'row' }}
-                spacing={3}
-                alignItems="stretch"
-                sx={{ mt: 1 }}
+                spacing={2}
+                alignItems={{ xs: 'stretch', md: 'center' }}
+                sx={{ mt: 2, mb: 1 }}
+                flexWrap="wrap"
+                useFlexGap
               >
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="subtitle2" fontWeight={700} color="success.main" gutterBottom textAlign="center">
-                    Einnahmen
-                  </Typography>
-                  {categoryAggsIncome.length === 0 ? (
-                    <Alert severity="info" sx={{ mt: 1 }}>
-                      Keine Einnahmen im Zeitraum.
-                    </Alert>
-                  ) : (
-                    <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
-                      <Chart
-                        options={incomeDonut.options}
-                        series={incomeDonut.series}
-                        type="donut"
-                        height={isXs ? 320 : 420}
-                        width="100%"
-                      />
-                    </Box>
+                <Autocomplete<VerlaufPickOption, true, false, false>
+                  multiple
+                  disableCloseOnSelect
+                  options={verlaufPickOptions}
+                  getOptionLabel={(row) => row.option.label}
+                  isOptionEqualToValue={(opt, val) => verlaufPickRowListKey(opt) === verlaufPickRowListKey(val)}
+                  value={kategorienAutocompletePickValue}
+                  onChange={(_, newRows) => {
+                    const keys = newRows
+                      .filter((r) => r.rowKind === 'none' || r.rowKind === 'leaf')
+                      .map((r) => r.option.key)
+                      .filter((k) => typeof k === 'string' && k.length > 0);
+                    setKategorienSelectedKeys([...new Set(keys)].sort());
+                  }}
+                  renderOption={(props, row, { selected }) => {
+                    if (row.rowKind === 'parent') {
+                      const sk = row.subtreeKeys;
+                      const allOn = sk.length > 0 && sk.every((k) => kategorienSelectedKeys.includes(k));
+                      const someOn = sk.some((k) => kategorienSelectedKeys.includes(k));
+                      const { key: _liKey, onMouseDown: _omd, ...liProps } = props as HTMLAttributes<HTMLLIElement> & {
+                        key?: string;
+                      };
+                      return (
+                        <Box
+                          key={verlaufPickRowListKey(row)}
+                          component="li"
+                          {...liProps}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleKategorienSubtree(sk);
+                          }}
+                          sx={{
+                            ...((liProps as { sx?: object }).sx as object),
+                            cursor: 'pointer',
+                            listStyle: 'none',
+                          }}
+                        >
+                          <Stack direction="row" alignItems="center" spacing={1} sx={{ width: '100%', py: 0.25, pl: 0.5 }}>
+                            <Checkbox
+                              size="small"
+                              checked={allOn}
+                              indeterminate={someOn && !allOn}
+                              tabIndex={-1}
+                              sx={{ p: 0.25, pointerEvents: 'none' }}
+                            />
+                            <Box
+                              sx={{
+                                width: 10,
+                                height: 10,
+                                borderRadius: '50%',
+                                bgcolor: row.option.colorHex,
+                                flexShrink: 0,
+                                border: 1,
+                                borderColor: 'divider',
+                              }}
+                            />
+                            <CategorySymbolDisplay value={row.option.iconEmoji} fontSize="1.15rem" />
+                            <Typography variant="subtitle2" fontWeight={600}>
+                              {row.option.label}
+                            </Typography>
+                            {someOn && !allOn ? (
+                              <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                                (Teilauswahl)
+                              </Typography>
+                            ) : null}
+                          </Stack>
+                        </Box>
+                      );
+                    }
+                    const opt = row.option;
+                    const leafSelected =
+                      selected ||
+                      (row.rowKind === 'none'
+                        ? kategorienSelectedKeys.includes('__none__')
+                        : kategorienSelectedKeys.includes(opt.key));
+                    const { key: _lk, ...leafLiProps } = props as HTMLAttributes<HTMLLIElement> & { key?: string };
+                    const indentSub =
+                      row.rowKind === 'leaf' && row.option.label.includes(' › ');
+                    return (
+                      <li key={verlaufPickRowListKey(row)} {...leafLiProps}>
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          spacing={1}
+                          sx={{ width: '100%', pl: indentSub ? 2.5 : 0.5 }}
+                        >
+                          <Checkbox size="small" checked={leafSelected} sx={{ p: 0.25 }} />
+                          <Box
+                            sx={{
+                              width: 10,
+                              height: 10,
+                              borderRadius: '50%',
+                              bgcolor: opt.colorHex,
+                              flexShrink: 0,
+                              border: 1,
+                              borderColor: 'divider',
+                            }}
+                          />
+                          <CategorySymbolDisplay value={opt.iconEmoji} fontSize="1.15rem" />
+                          <Typography variant="body2">{opt.label}</Typography>
+                        </Stack>
+                      </li>
+                    );
+                  }}
+                  renderTags={(tagValue, getTagProps) =>
+                    tagValue.map((row, index) => {
+                      const option = row.option;
+                      return (
+                        <Chip
+                          {...getTagProps({ index })}
+                          key={verlaufPickRowListKey(row)}
+                          size="small"
+                          variant="outlined"
+                          sx={{
+                            borderColor: option.colorHex,
+                            bgcolor: alpha(option.colorHex, 0.14),
+                            '& .MuiChip-label': { px: 0.75 },
+                          }}
+                          label={
+                            <Stack direction="row" alignItems="center" spacing={0.5}>
+                              <Box
+                                sx={{
+                                  width: 8,
+                                  height: 8,
+                                  borderRadius: '50%',
+                                  bgcolor: option.colorHex,
+                                  flexShrink: 0,
+                                }}
+                              />
+                              <CategorySymbolDisplay value={option.iconEmoji} fontSize="1rem" />
+                              <Typography component="span" variant="caption" noWrap sx={{ maxWidth: 180 }}>
+                                {option.label}
+                              </Typography>
+                            </Stack>
+                          }
+                        />
+                      );
+                    })
+                  }
+                  renderInput={(params) => (
+                    <TextField {...params} label="Kategorien im Diagramm" placeholder="Auswählen…" size="small" />
                   )}
-                </Box>
-                <Box sx={{ flex: 1, minWidth: 0 }}>
-                  <Typography variant="subtitle2" fontWeight={700} color="error.main" gutterBottom textAlign="center">
-                    Ausgaben
-                  </Typography>
-                  {categoryAggsExpense.length === 0 ? (
-                    <Alert severity="info" sx={{ mt: 1 }}>
-                      Keine Ausgaben im Zeitraum.
-                    </Alert>
-                  ) : (
-                    <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
-                      <Chart
-                        options={expenseDonut.options}
-                        series={expenseDonut.series}
-                        type="donut"
-                        height={isXs ? 320 : 420}
-                        width="100%"
-                      />
-                    </Box>
-                  )}
-                </Box>
+                  sx={{ flex: 1, minWidth: 260, maxWidth: 640 }}
+                />
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setKategorienSelectedKeys([...allPieCategoryKeysSorted])}
+                  disabled={allPieCategoryKeysSorted.length === 0}
+                >
+                  Alle mit Buchungen
+                </Button>
               </Stack>
+              {categoryQueriesLoading ? (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Kategorienamen werden geladen…
+                </Typography>
+              ) : null}
+              {kategorienSelectedKeys.length === 0 ? (
+                <Alert severity="info" sx={{ mt: 1 }}>
+                  Bitte mindestens eine Kategorie auswählen.
+                </Alert>
+              ) : (
+                <Stack
+                  direction={{ xs: 'column', md: 'row' }}
+                  spacing={3}
+                  alignItems="stretch"
+                  sx={{ mt: 1 }}
+                >
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="subtitle2" fontWeight={700} color="success.main" gutterBottom textAlign="center">
+                      Einnahmen
+                    </Typography>
+                    {categoryAggsIncomeFiltered.length === 0 ? (
+                      <Alert severity="info" sx={{ mt: 1 }}>
+                        Keine Einnahmen für die gewählten Kategorien im Zeitraum.
+                      </Alert>
+                    ) : (
+                      <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
+                        <Chart
+                          options={incomeDonut.options}
+                          series={incomeDonut.series}
+                          type="donut"
+                          height={isXs ? 320 : 420}
+                          width="100%"
+                        />
+                      </Box>
+                    )}
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="subtitle2" fontWeight={700} color="error.main" gutterBottom textAlign="center">
+                      Ausgaben
+                    </Typography>
+                    {categoryAggsExpenseFiltered.length === 0 ? (
+                      <Alert severity="info" sx={{ mt: 1 }}>
+                        Keine Ausgaben für die gewählten Kategorien im Zeitraum.
+                      </Alert>
+                    ) : (
+                      <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
+                        <Chart
+                          options={expenseDonut.options}
+                          series={expenseDonut.series}
+                          type="donut"
+                          height={isXs ? 320 : 420}
+                          width="100%"
+                        />
+                      </Box>
+                    )}
+                  </Box>
+                </Stack>
+              )}
             </Paper>
           )}
           {selectedCategorySlice && sharedDataReady && scopedTransactions.length ? (

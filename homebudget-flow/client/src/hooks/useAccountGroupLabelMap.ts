@@ -38,6 +38,7 @@ export function useAccountGroupLabelMap(): {
     const list = households ?? NO_HOUSEHOLDS;
     list.forEach((h, hi) => {
       for (const g of groupQueries[hi]?.data ?? []) {
+        if (!g.current_user_is_member) continue;
         m.set(g.id, `${h.name} · ${g.name}`);
       }
     });
@@ -48,9 +49,9 @@ export function useAccountGroupLabelMap(): {
     const list = households ?? NO_HOUSEHOLDS;
     return list.map((h, hi) => ({
       household: h,
-      groups: [...(groupQueries[hi]?.data ?? [])].sort((a, b) =>
-        a.name.localeCompare(b.name, 'de'),
-      ),
+      groups: [...(groupQueries[hi]?.data ?? [])]
+        .filter((g) => g.current_user_is_member)
+        .sort((a, b) => a.name.localeCompare(b.name, 'de')),
     }));
   }, [households, groupFetchSignature]);
 

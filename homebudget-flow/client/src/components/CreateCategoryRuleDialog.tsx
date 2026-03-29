@@ -431,7 +431,7 @@ export default function CreateCategoryRuleDialog({
                     title={
                       appliesToHousehold
                         ? 'Die Regel kann auf Buchungen aller Konten in diesem Haushalt zutreffen (wie bisher).'
-                        : 'Die Regel gilt nur für Konten aus Gruppen, in denen Sie Mitglied sind — nicht für rein geteilte Konten anderer Personen.'
+                        : 'Die Regel gilt nur für Konten aus Kontogruppen, in denen Sie Mitglied sind (nicht für alle Konten des Haushalts).'
                     }
                     enterDelay={400}
                   >

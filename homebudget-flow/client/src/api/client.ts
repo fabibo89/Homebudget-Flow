@@ -93,7 +93,8 @@ export type Household = {
   id: number;
   name: string;
   created_at: string;
-  my_role: 'owner' | 'member';
+  /** Immer member — gleiche Rechte für alle Haushaltsmitglieder (keine Besitzer-Rolle). */
+  my_role: 'member';
 };
 
 export type HouseholdInvitationIncoming = {
@@ -429,13 +430,18 @@ export type AccountGroup = {
   household_id: number;
   name: string;
   description: string;
+  /** Mitgliedschaft des angemeldeten Nutzers an dieser Kontogruppe. */
+  current_user_is_member: boolean;
+  /** Freigabeliste / Gruppe bearbeiten-löschen (can_edit am Mitglied). */
+  current_user_can_manage_sharing: boolean;
 };
 
 export type HouseholdMember = {
   user_id: number;
   email: string;
   display_name: string;
-  role: string;
+  /** Immer member — gleiche Rechte für alle Haushaltsmitglieder. */
+  role: 'member';
 };
 
 export async function fetchHouseholdMembers(householdId: number): Promise<HouseholdMember[]> {

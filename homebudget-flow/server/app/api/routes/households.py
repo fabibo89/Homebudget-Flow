@@ -42,7 +42,6 @@ from app.services.access import (
     user_can_manage_account_group_sharing,
     user_can_view_account_group_members,
     user_has_household,
-    user_is_household_owner,
 )
 from app.services.bank_account_provision import normalize_iban
 from app.services.default_income_categories import ensure_income_category_tree
@@ -50,6 +49,26 @@ from app.services.default_income_categories import ensure_income_category_tree
 router = APIRouter(prefix="/households", tags=["households"])
 
 _INVITE_VALID_DAYS = 14
+
+
+async def account_group_out_for_user(session: AsyncSession, user_id: int, g: AccountGroup) -> AccountGroupOut:
+    r = await session.execute(
+        select(AccountGroupMember.can_edit).where(
+            AccountGroupMember.user_id == user_id,
+            AccountGroupMember.account_group_id == g.id,
+        )
+    )
+    row = r.first()
+    is_member = row is not None
+    can_manage = bool(row and row[0])
+    return AccountGroupOut(
+        id=g.id,
+        household_id=g.household_id,
+        name=g.name,
+        description=g.description,
+        current_user_is_member=is_member,
+        current_user_can_manage_sharing=can_manage,
+    )
 
 
 @router.get("/invitations/incoming", response_model=list[HouseholdInvitationOut])
@@ -125,7 +144,7 @@ async def accept_household_invitation(
     )
     await session.delete(inv)
     await session.commit()
-    return household_to_out(inv.household, HouseholdMemberRole.member.value)
+    return household_to_out(inv.household)
 
 
 @router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -141,7 +160,7 @@ async def decline_or_revoke_invitation(
         await session.delete(inv)
         await session.commit()
         return
-    if await user_is_household_owner(session, user.id, inv.household_id):
+    if await user_has_household(session, user.id, inv.household_id):
         await session.delete(inv)
         await session.commit()
         return
@@ -154,8 +173,11 @@ async def delete_account_group(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    if not await user_can_access_account_group(session, user.id, account_group_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diese Kontogruppe.")
+    if not await user_can_manage_account_group_sharing(session, user.id, account_group_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Keine Berechtigung, diese Kontogruppe zu löschen.",
+        )
     g = await session.get(AccountGroup, account_group_id)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kontogruppe nicht gefunden.")
@@ -169,17 +191,10 @@ async def delete_household(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    r = await session.execute(
-        select(HouseholdMember).where(
-            HouseholdMember.user_id == user.id,
-            HouseholdMember.household_id == household_id,
-            HouseholdMember.role == HouseholdMemberRole.owner.value,
-        )
-    )
-    if r.scalar_one_or_none() is None:
+    if not await user_has_household(session, user.id, household_id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Nur der Haushaltsbesitzer kann den Haushalt löschen.",
+            "Kein Zugriff auf diesen Haushalt.",
         )
     h = await session.get(Household, household_id)
     if h is None:
@@ -201,14 +216,14 @@ async def create_household(
         HouseholdMember(
             household_id=h.id,
             user_id=user.id,
-            role=HouseholdMemberRole.owner.value,
+            role=HouseholdMemberRole.member.value,
         )
     )
     await session.flush()
     await ensure_income_category_tree(session, h.id, created_by_user_id=user.id)
     await session.commit()
     await session.refresh(h)
-    return household_to_out(h, HouseholdMemberRole.owner.value)
+    return household_to_out(h)
 
 
 @router.get("", response_model=list[HouseholdOut])
@@ -219,7 +234,7 @@ async def list_households(user: CurrentUser, session: AsyncSession = Depends(get
         .where(HouseholdMember.user_id == user.id),
     )
     rows = r.all()
-    return [household_to_out(h, hm.role) for h, hm in rows]
+    return [household_to_out(h) for h, _ in rows]
 
 
 @router.get("/{household_id}/members", response_model=list[HouseholdMemberOut])
@@ -240,10 +255,9 @@ async def list_household_members(
         HouseholdMemberOut(
             user_id=u.id,
             email=u.email,
-            display_name=u.display_name,
-            role=hm.role,
+            display_name=u.display_name or "",
         )
-        for hm, u in r.all()
+        for _, u in r.all()
     ]
 
 
@@ -290,11 +304,20 @@ async def put_account_group_members(
     g = await session.get(AccountGroup, account_group_id)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kontogruppe nicht gefunden.")
+    r_before = await session.execute(
+        select(AccountGroupMember.user_id).where(AccountGroupMember.account_group_id == account_group_id)
+    )
+    member_ids_before = {row[0] for row in r_before.all()}
     uids = sorted(set(body.user_ids))
     if len(uids) < 1:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Mindestens eine Person muss Zugriff haben.",
+        )
+    if user.id not in member_ids_before and user.id in uids:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Du kannst dir selbst keinen Zugriff zuweisen — nur ein bereits berechtigtes Mitglied kann dich hinzufügen.",
         )
     r_hm = await session.execute(
         select(HouseholdMember.user_id).where(
@@ -336,8 +359,11 @@ async def update_account_group(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
 ) -> AccountGroupOut:
-    if not await user_can_access_account_group(session, user.id, account_group_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diese Kontogruppe.")
+    if not await user_can_manage_account_group_sharing(session, user.id, account_group_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Keine Berechtigung, diese Kontogruppe zu bearbeiten.",
+        )
     g = await session.get(AccountGroup, account_group_id)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Kontogruppe nicht gefunden.")
@@ -351,7 +377,7 @@ async def update_account_group(
         g.description = str(data["description"]).strip()
     await session.commit()
     await session.refresh(g)
-    return AccountGroupOut.model_validate(g)
+    return await account_group_out_for_user(session, user.id, g)
 
 
 @router.patch("/{household_id}", response_model=HouseholdOut)
@@ -374,14 +400,7 @@ async def update_household(
         h.name = n
     await session.commit()
     await session.refresh(h)
-    hm_r = await session.execute(
-        select(HouseholdMember.role).where(
-            HouseholdMember.user_id == user.id,
-            HouseholdMember.household_id == household_id,
-        ),
-    )
-    my_role = hm_r.scalar_one()
-    return household_to_out(h, my_role)
+    return household_to_out(h)
 
 
 @router.post("/{household_id}/invitations", response_model=HouseholdInvitationOutgoingOut)
@@ -391,10 +410,10 @@ async def create_household_invitation(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
 ) -> HouseholdInvitationOutgoingOut:
-    if not await user_is_household_owner(session, user.id, household_id):
+    if not await user_has_household(session, user.id, household_id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Nur der Haushaltsbesitzer kann andere Personen einladen.",
+            "Nur Haushaltsmitglieder können andere Personen einladen.",
         )
     email_norm = body.email.strip().lower()
     if not email_norm:
@@ -449,10 +468,10 @@ async def list_outgoing_invitations(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
 ) -> list[HouseholdInvitationOutgoingOut]:
-    if not await user_is_household_owner(session, user.id, household_id):
+    if not await user_has_household(session, user.id, household_id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Nur der Haushaltsbesitzer sieht ausstehende Einladungen.",
+            "Nur Haushaltsmitglieder sehen ausstehende Einladungen.",
         )
     now = datetime.utcnow()
     r = await session.execute(
@@ -486,7 +505,27 @@ async def list_account_groups_for_household(
         select(AccountGroup).where(AccountGroup.household_id == household_id).order_by(AccountGroup.name)
     )
     rows = r.scalars().all()
-    return [AccountGroupOut.model_validate(x) for x in rows]
+    if not rows:
+        return []
+    gids = [g.id for g in rows]
+    r_mem = await session.execute(
+        select(AccountGroupMember.account_group_id, AccountGroupMember.can_edit).where(
+            AccountGroupMember.user_id == user.id,
+            AccountGroupMember.account_group_id.in_(gids),
+        )
+    )
+    access: dict[int, bool] = {gid: bool(can_edit) for gid, can_edit in r_mem.all()}
+    return [
+        AccountGroupOut(
+            id=g.id,
+            household_id=g.household_id,
+            name=g.name,
+            description=g.description,
+            current_user_is_member=g.id in access,
+            current_user_can_manage_sharing=access.get(g.id, False),
+        )
+        for g in rows
+    ]
 
 
 @router.post("/account-groups", response_model=AccountGroupOut)
@@ -497,6 +536,11 @@ async def create_account_group(
 ) -> AccountGroupOut:
     if not await user_has_household(session, user.id, body.household_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to household")
+    if user.id in body.member_user_ids:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Dich selbst kannst du nicht in die Freigabeliste setzen — du bist als Ersteller automatisch Mitglied.",
+        )
     g = AccountGroup(
         household_id=body.household_id,
         name=body.name,
@@ -509,7 +553,7 @@ async def create_account_group(
         session.add(AccountGroupMember(account_group_id=g.id, user_id=uid))
     await session.commit()
     await session.refresh(g)
-    return AccountGroupOut.model_validate(g)
+    return await account_group_out_for_user(session, user.id, g)
 
 
 @router.post("/bank-accounts", response_model=BankAccountOut)

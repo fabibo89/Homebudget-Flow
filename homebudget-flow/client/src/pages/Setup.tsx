@@ -9,6 +9,7 @@ import {
   Card,
   CardContent,
   Checkbox,
+  Chip,
   CircularProgress,
   Dialog,
   DialogActions,
@@ -41,6 +42,7 @@ import {
   DeleteOutline as DeleteOutlineIcon,
   EditOutlined as EditOutlinedIcon,
   ExpandMore as ExpandMoreIcon,
+  LockOutlined as LockOutlinedIcon,
   PersonAddAlt1 as PersonAddAlt1Icon,
 } from '@mui/icons-material';
 import { Link as RouterLink } from 'react-router-dom';
@@ -75,15 +77,19 @@ type GroupBankAccountsBlockProps = {
   accounts: BankAccount[];
   accountsLoading: boolean;
   accountsError: unknown | null;
+  locked: boolean;
 };
 
 type AccountGroupSharingBlockProps = {
   groupId: number;
   householdId: number;
+  canManageSharing: boolean;
 };
 
-function AccountGroupSharingBlock({ groupId, householdId }: AccountGroupSharingBlockProps) {
+function AccountGroupSharingBlock({ groupId, householdId, canManageSharing }: AccountGroupSharingBlockProps) {
   const qc = useQueryClient();
+  const meQuery = useQuery({ queryKey: ['me'], queryFn: fetchCurrentUser });
+  const myId = meQuery.data?.id;
   const membersQ = useQuery({
     queryKey: ['household-members', householdId],
     queryFn: () => fetchHouseholdMembers(householdId),
@@ -104,11 +110,20 @@ function AccountGroupSharingBlock({ groupId, householdId }: AccountGroupSharingB
     mutationFn: (userIds: number[]) => putAccountGroupMembers(groupId, userIds),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['account-group-members', groupId] });
+      void qc.invalidateQueries({ queryKey: ['account-groups'] });
       void qc.invalidateQueries({ queryKey: ['accounts'] });
       void qc.invalidateQueries({ queryKey: ['transactions'] });
       void qc.invalidateQueries({ queryKey: ['sync-overview'] });
     },
   });
+
+  const initialMemberIds = useMemo(
+    () => new Set(agMembersQ.data?.map((m) => m.user_id) ?? []),
+    [agMembersQ.data],
+  );
+
+  const cannotAssignSelf = (uid: number) =>
+    myId != null && uid === myId && !initialMemberIds.has(uid);
 
   const canSave = useMemo(() => {
     if (draft == null || !agMembersQ.data) return false;
@@ -135,6 +150,24 @@ function AccountGroupSharingBlock({ groupId, householdId }: AccountGroupSharingB
   }
 
   const members = membersQ.data ?? [];
+
+  if (!canManageSharing) {
+    return (
+      <Box sx={{ mt: 2 }}>
+        <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+          Zugriff (Haushaltsmitglieder)
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+          Mit Zugriff: {(agMembersQ.data ?? []).map((m) => m.display_name || m.email).join(', ') || '—'}
+        </Typography>
+        <Alert severity="info" sx={{ py: 0.5 }}>
+          Die Freigabeliste kannst du nicht ändern. Nur ein Mitglied mit Verwaltungsrecht an dieser Kontogruppe kann
+          Zugriffe zuweisen — nicht für dich selbst.
+        </Alert>
+      </Box>
+    );
+  }
+
   const toggle = (uid: number) => {
     setDraft((prev) => {
       const p = prev ?? [];
@@ -153,7 +186,8 @@ function AccountGroupSharingBlock({ groupId, householdId }: AccountGroupSharingB
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
         Wer diese Kontogruppe und die zugehörigen Bankkonten/Buchungen sieht (wenn unter Profil nicht „alle
-        Haushaltsbuchungen“ aktiv ist).
+        Haushaltsbuchungen“ aktiv ist). Du kannst dir selbst keinen Zugriff geben — das übernimmt ein anderes
+        berechtigtes Mitglied.
       </Typography>
       <FormGroup>
         {members.map((m) => (
@@ -163,10 +197,14 @@ function AccountGroupSharingBlock({ groupId, householdId }: AccountGroupSharingB
               <Checkbox
                 checked={draft.includes(m.user_id)}
                 onChange={() => toggle(m.user_id)}
-                disabled={putMut.isPending || (draft.includes(m.user_id) && draft.length === 1)}
+                disabled={
+                  putMut.isPending ||
+                  (draft.includes(m.user_id) && draft.length === 1) ||
+                  cannotAssignSelf(m.user_id)
+                }
               />
             }
-            label={`${m.display_name || m.email} (${m.email})${m.role === 'owner' ? ' · Besitzer' : ''}`}
+            label={`${m.display_name || m.email} (${m.email})`}
           />
         ))}
       </FormGroup>
@@ -195,10 +233,14 @@ function GroupBankAccountsBlock({
   accounts,
   accountsLoading,
   accountsError,
+  locked,
 }: GroupBankAccountsBlockProps) {
   const theme = useTheme();
   const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const rows = accounts.filter((a) => a.account_group_id === groupId);
+  if (locked) {
+    return null;
+  }
   return (
     <Box sx={{ mt: 2 }}>
       <Typography variant="subtitle2" fontWeight={600} gutterBottom>
@@ -299,7 +341,7 @@ export default function Setup() {
     queries: households.map((h) => ({
       queryKey: ['household-invitations-out', h.id],
       queryFn: () => fetchOutgoingHouseholdInvitations(h.id),
-      enabled: householdsQuery.isSuccess && households.length > 0 && h.my_role === 'owner',
+      enabled: householdsQuery.isSuccess && households.length > 0,
     })),
   });
 
@@ -313,17 +355,6 @@ export default function Setup() {
     queryFn: () => fetchHouseholdMembers(Number(groupHouseholdId)),
     enabled: groupDialogOpen && groupHouseholdId !== '' && editingGroupId === null,
   });
-
-  useEffect(() => {
-    if (!groupDialogOpen || editingGroupId != null) return;
-    const myId = meQuery.data?.id;
-    const mem = householdMembersForDialog.data;
-    if (!myId || !mem?.length) return;
-    setGroupMemberUserIds((prev) => {
-      if (prev.length > 0) return prev;
-      return mem.some((m) => m.user_id === myId) ? [myId] : [];
-    });
-  }, [groupDialogOpen, editingGroupId, meQuery.data?.id, householdMembersForDialog.data]);
 
   const saveHhMut = useMutation({
     mutationFn: () => {
@@ -350,14 +381,14 @@ export default function Setup() {
       if (editingGroupId != null) {
         return updateAccountGroup(editingGroupId, { name, description });
       }
-      if (groupMemberUserIds.length < 1) {
-        throw new Error('Mindestens eine Person muss Zugriff auf die Kontogruppe haben.');
-      }
+      const myId = meQuery.data?.id;
+      const extra =
+        myId != null ? groupMemberUserIds.filter((uid) => uid !== myId) : groupMemberUserIds;
       return createAccountGroup({
         household_id: Number(groupHouseholdId),
         name,
         description,
-        member_user_ids: groupMemberUserIds,
+        member_user_ids: extra,
       });
     },
     onSuccess: () => {
@@ -601,21 +632,13 @@ export default function Setup() {
                           </IconButton>
                         </span>
                       </Tooltip>
-                      <Tooltip
-                        title={
-                          h.my_role === 'owner'
-                            ? 'Haushalt löschen (Kontogruppen und zugehörige Daten werden mit entfernt)'
-                            : 'Nur der Haushaltsbesitzer kann den Haushalt löschen'
-                        }
-                      >
+                      <Tooltip title="Haushalt löschen (Kontogruppen und zugehörige Daten werden mit entfernt)">
                         <span>
                           <IconButton
                             size="small"
                             color="error"
                             aria-label="Haushalt löschen"
-                            disabled={
-                              deleteHhMut.isPending || deleteGroupMut.isPending || h.my_role !== 'owner'
-                            }
+                            disabled={deleteHhMut.isPending || deleteGroupMut.isPending}
                             onClick={() => {
                               if (
                                 window.confirm(
@@ -634,25 +657,24 @@ export default function Setup() {
                   </Stack>
 
                     <Box sx={{ mt: 2 }}>
-                      {h.my_role === 'owner' ? (
-                        <Accordion
-                          disableGutters
-                          elevation={0}
-                          defaultExpanded={false}
-                          sx={{
-                            mb: 2,
-                            border: 1,
-                            borderColor: 'divider',
-                            borderRadius: 1,
-                            '&:before': { display: 'none' },
-                          }}
-                        >
-                          <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 2 }}>
-                            <Typography variant="subtitle2" fontWeight={600}>
-                              Mitglieder einladen
-                            </Typography>
-                          </AccordionSummary>
-                          <AccordionDetails sx={{ px: 2, pt: 0, pb: 2 }}>
+                      <Accordion
+                        disableGutters
+                        elevation={0}
+                        defaultExpanded={false}
+                        sx={{
+                          mb: 2,
+                          border: 1,
+                          borderColor: 'divider',
+                          borderRadius: 1,
+                          '&:before': { display: 'none' },
+                        }}
+                      >
+                        <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ px: 2 }}>
+                          <Typography variant="subtitle2" fontWeight={600}>
+                            Mitglieder einladen
+                          </Typography>
+                        </AccordionSummary>
+                        <AccordionDetails sx={{ px: 2, pt: 0, pb: 2 }}>
                             <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
                               Nur für registrierte Nutzer: gleiche E-Mail wie beim Login. Die Person sieht die Einladung
                               hier unter Einrichtung, sobald sie angemeldet ist.
@@ -739,9 +761,8 @@ export default function Setup() {
                                 </Stack>
                               </Box>
                             ) : null}
-                          </AccordionDetails>
-                        </Accordion>
-                      ) : null}
+                        </AccordionDetails>
+                      </Accordion>
                       {gq?.isLoading ? (
                         <CircularProgress size={28} />
                       ) : gq?.isError ? (
@@ -750,11 +771,28 @@ export default function Setup() {
                         <Alert severity="warning">Noch keine Kontogruppe – „Neue Kontogruppe“ wählen und Haushalt zuordnen.</Alert>
                       ) : (
                         <Stack spacing={1.5}>
-                          {groupList.map((g) => (
-                            <Paper key={g.id} variant="outlined" sx={{ p: 2 }}>
+                          {groupList.map((g) => {
+                            const hasAccess = g.current_user_is_member;
+                            const canManage = g.current_user_can_manage_sharing;
+                            return (
+                            <Paper
+                              key={g.id}
+                              variant="outlined"
+                              sx={{
+                                p: 2,
+                                ...(!hasAccess
+                                  ? { opacity: 0.92, borderStyle: 'dashed', bgcolor: 'action.hover' }
+                                  : {}),
+                              }}
+                            >
                               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between" alignItems={{ sm: 'center' }}>
                                 <Box>
-                                  <Typography fontWeight={600}>{g.name}</Typography>
+                                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                    <Typography fontWeight={600}>{g.name}</Typography>
+                                    {!hasAccess ? (
+                                      <Chip size="small" icon={<LockOutlinedIcon />} label="Gesperrt" variant="outlined" />
+                                    ) : null}
+                                  </Stack>
                                   {g.description ? (
                                     <Typography variant="body2" color="text.secondary">
                                       {g.description}
@@ -765,23 +803,41 @@ export default function Setup() {
                                   </Typography>
                                 </Box>
                                 <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap>
-                                  <Button
-                                    size="small"
-                                    variant="contained"
-                                    onClick={() => {
-                                      setBankDialog({ open: true, accountGroupId: g.id, groupLabel: g.name });
-                                      setBankError('');
-                                    }}
+                                  <Tooltip
+                                    title={
+                                      hasAccess
+                                        ? 'Bankkonto in dieser Gruppe anlegen'
+                                        : 'Kein Mitglied dieser Kontogruppe — keine Konten anlegen.'
+                                    }
                                   >
-                                    Bankkonto hinzufügen
-                                  </Button>
-                                  <Tooltip title="Kontogruppe bearbeiten (Name & Beschreibung)">
+                                    <span>
+                                      <Button
+                                        size="small"
+                                        variant="contained"
+                                        disabled={!hasAccess}
+                                        onClick={() => {
+                                          setBankDialog({ open: true, accountGroupId: g.id, groupLabel: g.name });
+                                          setBankError('');
+                                        }}
+                                      >
+                                        Bankkonto hinzufügen
+                                      </Button>
+                                    </span>
+                                  </Tooltip>
+                                  <Tooltip
+                                    title={
+                                      canManage
+                                        ? 'Kontogruppe bearbeiten (Name & Beschreibung)'
+                                        : 'Nur ein Mitglied mit Verwaltungsrecht kann die Gruppe bearbeiten.'
+                                    }
+                                  >
                                     <span>
                                       <IconButton
                                         size="small"
                                         color="primary"
                                         aria-label="Kontogruppe bearbeiten"
                                         disabled={
+                                          !canManage ||
                                           deleteGroupMut.isPending ||
                                           deleteHhMut.isPending ||
                                           saveGroupMut.isPending
@@ -800,13 +856,19 @@ export default function Setup() {
                                       </IconButton>
                                     </span>
                                   </Tooltip>
-                                  <Tooltip title="Kontogruppe löschen (Bankkonten und zugehörige Daten dieser Gruppe werden mit entfernt)">
+                                  <Tooltip
+                                    title={
+                                      canManage
+                                        ? 'Kontogruppe löschen (Bankkonten und zugehörige Daten dieser Gruppe werden mit entfernt)'
+                                        : 'Nur ein Mitglied mit Verwaltungsrecht kann die Gruppe löschen.'
+                                    }
+                                  >
                                     <span>
                                       <IconButton
                                         size="small"
                                         color="error"
                                         aria-label="Kontogruppe löschen"
-                                        disabled={deleteGroupMut.isPending || deleteHhMut.isPending}
+                                        disabled={!canManage || deleteGroupMut.isPending || deleteHhMut.isPending}
                                         onClick={() => {
                                           if (
                                             window.confirm(
@@ -823,15 +885,29 @@ export default function Setup() {
                                   </Tooltip>
                                 </Stack>
                               </Stack>
-                              <AccountGroupSharingBlock groupId={g.id} householdId={h.id} />
+                              {!hasAccess ? (
+                                <Alert severity="warning" sx={{ mt: 2, py: 0.75 }} icon={<LockOutlinedIcon />}>
+                                  Du bist kein Mitglied dieser Kontogruppe. Buchungen und Freigaben siehst du nicht (je nach
+                                  Profil). Ein berechtigtes Mitglied kann dir Zugriff geben — du kannst dir selbst keinen
+                                  zuweisen.
+                                </Alert>
+                              ) : (
+                                <AccountGroupSharingBlock
+                                  groupId={g.id}
+                                  householdId={h.id}
+                                  canManageSharing={canManage}
+                                />
+                              )}
                               <GroupBankAccountsBlock
                                 groupId={g.id}
                                 accounts={allAccounts}
                                 accountsLoading={accountsQuery.isLoading}
                                 accountsError={accountsQuery.isError ? accountsQuery.error : null}
+                                locked={!hasAccess}
                               />
                             </Paper>
-                          ))}
+                            );
+                          })}
                         </Stack>
                       )}
                     </Box>
@@ -937,7 +1013,8 @@ export default function Setup() {
                   Zugriff
                 </Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  Wer diese Kontogruppe nutzen darf (sichtbar mit Profil-Einstellung „nur freigegebene Kontogruppen“).
+                  Du bist automatisch Mitglied der neuen Gruppe. Hier wählst du <strong>weitere</strong>{' '}
+                  Haushaltsmitglieder — dich selbst kannst du nicht anhaken.
                 </Typography>
                 {householdMembersForDialog.isLoading ? (
                   <CircularProgress size={22} />
@@ -952,19 +1029,15 @@ export default function Setup() {
                             onChange={() => {
                               setGroupMemberUserIds((prev) => {
                                 if (prev.includes(m.user_id)) {
-                                  if (prev.length <= 1) return prev;
                                   return prev.filter((x) => x !== m.user_id);
                                 }
                                 return [...prev, m.user_id];
                               });
                             }}
-                            disabled={
-                              saveGroupMut.isPending ||
-                              (groupMemberUserIds.includes(m.user_id) && groupMemberUserIds.length === 1)
-                            }
+                            disabled={saveGroupMut.isPending || m.user_id === meQuery.data?.id}
                           />
                         }
-                        label={`${m.display_name || m.email} (${m.email})${m.role === 'owner' ? ' · Besitzer' : ''}`}
+                        label={`${m.display_name || m.email} (${m.email})`}
                       />
                     ))}
                   </FormGroup>
@@ -986,12 +1059,7 @@ export default function Setup() {
           </Button>
           <Button
             variant="contained"
-            disabled={
-              saveGroupMut.isPending ||
-              !groupName.trim() ||
-              (editingGroupId === null &&
-                (groupHouseholdId === '' || groupMemberUserIds.length < 1))
-            }
+            disabled={saveGroupMut.isPending || !groupName.trim() || (editingGroupId === null && groupHouseholdId === '')}
             onClick={() => {
               setGroupError('');
               saveGroupMut.mutate();

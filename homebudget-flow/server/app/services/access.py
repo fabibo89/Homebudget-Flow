@@ -10,20 +10,8 @@ from app.db.models import (
     AccountGroupMember,
     BankAccount,
     HouseholdMember,
-    HouseholdMemberRole,
     User,
 )
-
-
-async def user_is_household_owner(session: AsyncSession, user_id: int, household_id: int) -> bool:
-    r = await session.execute(
-        select(HouseholdMember.id).where(
-            HouseholdMember.user_id == user_id,
-            HouseholdMember.household_id == household_id,
-            HouseholdMember.role == HouseholdMemberRole.owner.value,
-        )
-    )
-    return r.scalar_one_or_none() is not None
 
 
 async def user_has_household(session: AsyncSession, user_id: int, household_id: int) -> bool:
@@ -56,24 +44,14 @@ async def household_id_for_account_group(
 async def user_can_view_account_group_members(
     session: AsyncSession, user_id: int, account_group_id: int
 ) -> bool:
-    """Haushaltsbesitzer oder Mitglied der Kontogruppe."""
-    hid = await household_id_for_account_group(session, account_group_id)
-    if hid is None:
-        return False
-    if await user_is_household_owner(session, user_id, hid):
-        return True
+    """Nur Mitglieder der Kontogruppe sehen die Freigabeliste."""
     return await user_can_access_account_group(session, user_id, account_group_id)
 
 
 async def user_can_manage_account_group_sharing(
     session: AsyncSession, user_id: int, account_group_id: int
 ) -> bool:
-    """Haushaltsbesitzer oder Kontogruppenmitglied mit can_edit."""
-    hid = await household_id_for_account_group(session, account_group_id)
-    if hid is None:
-        return False
-    if await user_is_household_owner(session, user_id, hid):
-        return True
+    """Freigabeliste ändern: nur Kontogruppenmitglied mit can_edit (nicht nur Haushaltsmitglied)."""
     r = await session.execute(
         select(AccountGroupMember.can_edit).where(
             AccountGroupMember.user_id == user_id,

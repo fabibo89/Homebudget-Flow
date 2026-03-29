@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { setAppTimeZone } from '../lib/appTimeZone';
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '',
@@ -56,10 +57,13 @@ export type UserMe = {
   email: string;
   display_name: string;
   all_household_transactions: boolean;
+  /** IANA-Zeitzone (Server APP_TIMEZONE) — für Datums-/Zeitanzeige im Client. */
+  app_timezone: string;
 };
 
 export async function fetchCurrentUser(): Promise<UserMe> {
   const { data } = await api.get<UserMe>('/api/auth/me');
+  setAppTimeZone(data.app_timezone);
   return data;
 }
 
@@ -68,6 +72,7 @@ export async function patchCurrentUser(body: {
   all_household_transactions?: boolean;
 }): Promise<UserMe> {
   const { data } = await api.patch<UserMe>('/api/auth/me', body);
+  setAppTimeZone(data.app_timezone);
   return data;
 }
 
@@ -76,6 +81,7 @@ export type UserSettings = UserMe;
 
 export async function fetchUserSettings(): Promise<UserSettings> {
   const { data } = await api.get<UserSettings>('/api/users/me/settings');
+  setAppTimeZone(data.app_timezone);
   return data;
 }
 
@@ -84,6 +90,7 @@ export async function patchUserSettings(body: {
   all_household_transactions?: boolean;
 }): Promise<UserSettings> {
   const { data } = await api.patch<UserSettings>('/api/users/me/settings', body);
+  setAppTimeZone(data.app_timezone);
   return data;
 }
 
@@ -549,6 +556,8 @@ export async function createBankAccount(body: {
 export async function updateBankAccount(
   id: number,
   body: {
+    /** Andere Kontogruppe desselben Haushalts (Umzuordnen des Kontos). */
+    account_group_id?: number;
     name?: string;
     iban?: string;
     currency?: string;

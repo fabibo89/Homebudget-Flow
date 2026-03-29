@@ -6,6 +6,7 @@ from sqlalchemy.orm import joinedload
 
 from app.api.deps import CurrentUser
 from app.db.models import (
+    AccountGroup,
     AccountGroupMember,
     AccountSyncState,
     BankAccount,
@@ -15,7 +16,7 @@ from app.db.models import (
 from app.db.session import get_session
 from app.schemas.balance_snapshot import BalanceSnapshotOut, BalanceSnapshotUpdate, balance_snapshot_to_out
 from app.schemas.household import BankAccountOut, BankAccountUpdate, bank_account_to_out
-from app.services.access import user_can_access_bank_account
+from app.services.access import user_can_access_account_group, user_can_access_bank_account
 from app.services.bank_account_provision import normalize_iban
 from app.services.salary_cache import refresh_salary_cache_for_bank_account
 
@@ -218,15 +219,44 @@ async def update_my_bank_account(
             )
         row.credential_id = cr.id
 
+    if "account_group_id" in data and data["account_group_id"] is not None:
+        new_gid = int(data["account_group_id"])
+        if new_gid != row.account_group_id:
+            if row.account_group is None:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "Interner Fehler: Kontogruppe nicht geladen.",
+                )
+            if not await user_can_access_account_group(session, user.id, new_gid):
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "Kein Zugriff auf diese Kontogruppe.",
+                )
+            new_g = await session.get(AccountGroup, new_gid)
+            if new_g is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Kontogruppe nicht gefunden.")
+            if new_g.household_id != row.account_group.household_id:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "Kontogruppe muss zum selben Haushalt gehören wie das Konto.",
+                )
+            row.account_group_id = new_gid
+
     try:
         await session.commit()
-        await session.refresh(row)
     except IntegrityError as e:
         await session.rollback()
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Konflikt: Provider und IBAN sind bereits vergeben.",
         ) from e
+
+    r_out = await session.execute(
+        select(BankAccount)
+        .where(BankAccount.id == bank_account_id)
+        .options(joinedload(BankAccount.account_group)),
+    )
+    row = r_out.unique().scalar_one()
 
     st_r = await session.execute(
         select(AccountSyncState).where(AccountSyncState.bank_account_id == row.id)

@@ -28,7 +28,14 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiErrorMessage, fetchCategories, patchTransactionCategory, type BankAccount, type Transaction } from '../../api/client';
+import {
+  apiErrorMessage,
+  fetchCategories,
+  patchTransactionCategory,
+  type BankAccount,
+  type CategoryRuleOverwriteCandidate,
+  type Transaction,
+} from '../../api/client';
 import CategoryRuleOverwriteDialog from '../CategoryRuleOverwriteDialog';
 import CreateCategoryRuleDialog from '../CreateCategoryRuleDialog';
 import { CategorySymbolDisplay } from '../CategorySymbol';

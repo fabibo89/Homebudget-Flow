@@ -392,8 +392,6 @@ export default function Setup() {
       });
     },
     onSuccess: () => {
-      const wasCreate = editingGroupId == null;
-      const hhId = groupHouseholdId;
       void qc.invalidateQueries({ queryKey: ['account-groups'] });
       void qc.invalidateQueries({ queryKey: ['households'] });
       setGroupDialogOpen(false);

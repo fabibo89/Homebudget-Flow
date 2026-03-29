@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -31,6 +31,7 @@ import {
 import { useTheme } from '@mui/material/styles';
 import { Delete as DeleteIcon, Add as AddIcon, Edit as EditIcon } from '@mui/icons-material';
 import axios from 'axios';
+import { Link as RouterLink } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   apiErrorMessage,
@@ -39,6 +40,7 @@ import {
   fetchBankCredentials,
   submitSyncTransactionTan,
   updateBankCredential,
+  type BankAccount,
   type BankCredential,
   type SyncAccountNeedsTan,
 } from '../api/client';
@@ -82,26 +84,35 @@ function isNeedsTan(x: unknown): x is SyncAccountNeedsTan {
 export type ProvisionGroupOption = { id: number; label: string };
 
 type Props = {
+  /** Voreinstellung für „Neue Bankkonten anlegen in …“ (z. B. erste Kontogruppe alphabetisch). */
   accountGroupId: number;
-  /** z. B. „Haushalt · Kontogruppe“ — nur Anzeige im Titel */
+  /** z. B. „Haushalt · Kontogruppe“ — optionaler Zusatz im Titel */
   groupLabel?: string;
   /** Kontogruppen für die Auswahl „Neue Bankkonten anlegen in …“ im FinTS-Dialog */
   provisionGroupOptions: ProvisionGroupOption[];
   /** Unter „Bankzugang (FinTS)“: flache Liste ohne innere Einrückung/Trennlinie wie in der Einrichtung */
   variant?: 'default' | 'flat';
-  /**
-   * false: keine Tabelle (Zugänge sind nutzerweit — Liste z. B. einmal oben in den Einstellungen).
-   * true: volle Tabelle mit Bearbeiten/Löschen.
-   */
-  showCredentialsTable?: boolean;
+  /** Alle Bankkonten des Nutzers — für Spalte „Bankkonten“ je FinTS-Zugang (credential_id). */
+  bankAccounts?: BankAccount[];
+  /** `account_group_id` → „Haushalt · Kontogruppe“ */
+  groupLabelById?: Map<number, string>;
 };
+
+function linkedBankAccountsForCredential(
+  bankAccounts: BankAccount[] | undefined,
+  credentialId: number,
+): BankAccount[] {
+  if (!bankAccounts?.length) return [];
+  return bankAccounts.filter((a) => a.credential_id === credentialId);
+}
 
 export default function AccountGroupFinTsPanel({
   accountGroupId,
   groupLabel,
   provisionGroupOptions,
   variant = 'default',
-  showCredentialsTable = true,
+  bankAccounts,
+  groupLabelById,
 }: Props) {
   const theme = useTheme();
   const isXs = useMediaQuery(theme.breakpoints.down('sm'));
@@ -265,7 +276,8 @@ export default function AccountGroupFinTsPanel({
   function openEdit(c: BankCredential) {
     const bankPreset: FinTsBankPresetKey = c.provider === 'dkb' ? 'dkb' : 'comdirect';
     setEditingId(c.id);
-    setProvisionGroupId(accountGroupId);
+    const linked = linkedBankAccountsForCredential(bankAccounts, c.id);
+    setProvisionGroupId(linked[0]?.account_group_id ?? accountGroupId);
     setSaveOnFintsFailure(true);
     setForm({
       bankPreset,
@@ -284,10 +296,28 @@ export default function AccountGroupFinTsPanel({
 
   const deleteMut = useMutation({
     mutationFn: deleteBankCredential,
-    onSuccess: () => void qc.invalidateQueries({ queryKey: qKey }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: qKey });
+      void qc.invalidateQueries({ queryKey: ['accounts'] });
+    },
   });
 
   const rows: BankCredential[] = q.data ?? [];
+
+  const accountsByCredentialId = useMemo(() => {
+    const m = new Map<number, BankAccount[]>();
+    if (!bankAccounts?.length) return m;
+    for (const a of bankAccounts) {
+      const cid = a.credential_id;
+      const cur = m.get(cid);
+      if (cur) cur.push(a);
+      else m.set(cid, [a]);
+    }
+    for (const [, list] of m) {
+      list.sort((x, y) => x.name.localeCompare(y.name, 'de'));
+    }
+    return m;
+  }, [bankAccounts]);
   const busy = saving || deleteMut.isPending || fintsTanBusy;
 
   const rootSx =
@@ -308,9 +338,13 @@ export default function AccountGroupFinTsPanel({
       {variant === 'flat' ? (
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
           <strong>Speichern</strong> führt die FinTS-Prüfung aus; neu erkannte IBANs werden als Bankkonten in der im
-          Dialog gewählten Kontogruppe angelegt (Voreinstellung: diese Gruppe). Optional kann der Zugang auch bei
-          fehlgeschlagener Prüfung gespeichert werden (dann als nicht verifiziert). Pro Login/Provider nur ein Zugang
-          (nutzerweit). Bei PhotoTAN erscheint ein Dialog wie beim Konten-Sync.
+          Dialog gewählten Kontogruppe angelegt. Optional kann der Zugang auch bei fehlgeschlagener Prüfung gespeichert
+          werden (dann als nicht verifiziert). Pro Login nur ein Zugang (nutzerweit). Bei PhotoTAN erscheint ein Dialog
+          wie beim Konten-Sync. Kontogruppe je Konto änderst du unter{' '}
+          <Link component={RouterLink} to="/settings/accounts" underline="hover">
+            Bankkonten
+          </Link>
+          .
         </Typography>
       ) : (
         <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
@@ -326,45 +360,70 @@ export default function AccountGroupFinTsPanel({
         FinTS-Zugang anlegen
       </Button>
 
-      {showCredentialsTable && q.isError ? (
+      {q.isError ? (
         <Alert severity="error" sx={{ mt: 1 }}>
           {apiErrorMessage(q.error)}
         </Alert>
       ) : null}
 
-      {showCredentialsTable ? (
-        q.isLoading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-            <CircularProgress size={24} />
-          </Box>
-        ) : (
-          <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', mt: 1.5, overflowX: 'auto' }}>
-            <Table size="small" sx={{ minWidth: 700 }}>
-              <TableHead>
+      {q.isLoading ? (
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+          <CircularProgress size={24} />
+        </Box>
+      ) : (
+        <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', mt: 1.5, overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 900 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell>Provider</TableCell>
+                <TableCell>BLZ</TableCell>
+                <TableCell>User</TableCell>
+                <TableCell>Bankkonten</TableCell>
+                <TableCell>PIN</TableCell>
+                <TableCell>FinTS</TableCell>
+                <TableCell align="right">Aktion</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell>Provider</TableCell>
-                  <TableCell>BLZ</TableCell>
-                  <TableCell>User</TableCell>
-                  <TableCell>PIN</TableCell>
-                  <TableCell>FinTS</TableCell>
-                  <TableCell align="right">Aktion</TableCell>
+                  <TableCell colSpan={7}>
+                    <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
+                      Noch kein FinTS-Zugang für diesen Nutzer.
+                    </Typography>
+                  </TableCell>
                 </TableRow>
-              </TableHead>
-              <TableBody>
-                {rows.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6}>
-                      <Typography color="text.secondary" variant="body2" sx={{ py: 1 }}>
-                        Noch kein FinTS-Zugang für diesen Nutzer.
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  rows.map((c) => (
+              ) : (
+                rows.map((c) => {
+                  const linked = accountsByCredentialId.get(c.id) ?? [];
+                  return (
                     <TableRow key={c.id} hover>
                       <TableCell>{c.provider}</TableCell>
                       <TableCell>{c.fints_blz}</TableCell>
                       <TableCell>{c.fints_user}</TableCell>
+                      <TableCell sx={{ maxWidth: 280, verticalAlign: 'top' }}>
+                        {linked.length === 0 ? (
+                          <Typography variant="body2" color="text.secondary">
+                            —
+                          </Typography>
+                        ) : (
+                          <Stack spacing={0.75}>
+                            {linked.map((a) => (
+                              <Box key={a.id}>
+                                <Typography variant="body2" component="div">
+                                  {a.name}{' '}
+                                  <Typography component="span" variant="caption" color="text.secondary">
+                                    (…{a.iban.length >= 4 ? a.iban.slice(-4) : a.iban})
+                                  </Typography>
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" display="block">
+                                  {groupLabelById?.get(a.account_group_id) ?? `Kontogruppe #${a.account_group_id}`}
+                                </Typography>
+                              </Box>
+                            ))}
+                          </Stack>
+                        )}
+                      </TableCell>
                       <TableCell>
                         {c.has_pin ? (
                           <Typography component="span" variant="body2" color="text.secondary">
@@ -417,16 +476,12 @@ export default function AccountGroupFinTsPanel({
                         </Stack>
                       </TableCell>
                     </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        )
-      ) : (
-        <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-          Zugangsliste siehe oben unter „Alle FinTS-Zugänge“.
-        </Typography>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </TableContainer>
       )}
 
       <Dialog

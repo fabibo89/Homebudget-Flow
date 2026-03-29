@@ -38,6 +38,7 @@ import {
   updateBankAccount,
   type BankAccount,
 } from '../api/client';
+import { formatDate } from '../lib/transactionUi';
 
 function formatMoney(amount: string, currency: string): string {
   const n = Number(amount);
@@ -50,27 +51,18 @@ function moneyIsNegative(amount: string): boolean {
   return !Number.isNaN(n) && n < 0;
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  try {
-    const s = String(iso).slice(0, 10);
-    return new Intl.DateTimeFormat('de-DE').format(new Date(s + 'T12:00:00'));
-  } catch {
-    return iso;
-  }
-}
-
 export default function BankAccountsSettings() {
   const qc = useQueryClient();
   const theme = useTheme();
   const isXs = useMediaQuery(theme.breakpoints.down('sm'));
-  const { groupLabelById, loading: groupsLoading } = useAccountGroupLabelMap();
+  const { groupLabelById, loading: groupsLoading, householdWithGroups } = useAccountGroupLabelMap();
 
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
 
   const [editOpen, setEditOpen] = useState(false);
   const [editing, setEditing] = useState<BankAccount | null>(null);
   const [form, setForm] = useState({
+    account_group_id: 0,
     name: '',
     iban: '',
     currency: 'EUR',
@@ -91,6 +83,7 @@ export default function BankAccountsSettings() {
       if (!editing) throw new Error('Kein Konto');
       if (form.credential_id === '') throw new Error('FinTS-Zugang ist erforderlich.');
       return updateBankAccount(editing.id, {
+        account_group_id: form.account_group_id,
         name: form.name.trim(),
         iban: form.iban.replace(/\s/g, '').trim(),
         currency: form.currency.trim().toUpperCase(),
@@ -110,6 +103,7 @@ export default function BankAccountsSettings() {
   function openEdit(a: BankAccount) {
     setEditing(a);
     setForm({
+      account_group_id: a.account_group_id,
       name: a.name,
       iban: a.iban,
       currency: a.currency,
@@ -119,6 +113,12 @@ export default function BankAccountsSettings() {
     setFormError('');
     setEditOpen(true);
   }
+
+  const groupOptionsForEdit = useMemo(() => {
+    if (!editing) return [];
+    const hwg = householdWithGroups.find((x) => x.household.id === editing.household_id);
+    return hwg?.groups ?? [];
+  }, [editing, householdWithGroups]);
 
   const loading = groupsLoading || accountsQuery.isLoading;
   const rows = useMemo(
@@ -209,10 +209,31 @@ export default function BankAccountsSettings() {
             {formError ? <Alert severity="error">{formError}</Alert> : null}
             {editing ? (
               <Typography variant="body2" color="text.secondary">
-                Kontogruppe:{' '}
-                {groupLabelById.get(editing.account_group_id) ?? `#${editing.account_group_id}`} · Saldo-Stand:{' '}
-                {formatDate(editing.balance_at)}
+                Saldo-Stand: {editing.balance_at ? formatDate(editing.balance_at) : '—'}
               </Typography>
+            ) : null}
+            {editing && groupOptionsForEdit.length > 0 ? (
+              <FormControl fullWidth>
+                <InputLabel id="bank-acc-group">Kontogruppe</InputLabel>
+                <Select
+                  labelId="bank-acc-group"
+                  label="Kontogruppe"
+                  value={form.account_group_id}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, account_group_id: Number(e.target.value) }))
+                  }
+                >
+                  {groupOptionsForEdit.map((g) => (
+                    <MenuItem key={g.id} value={g.id}>
+                      {groupLabelById.get(g.id) ?? g.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ) : editing ? (
+              <Alert severity="info">
+                Keine weitere Kontogruppe im gleichen Haushalt – Zuordnung kann nicht geändert werden.
+              </Alert>
             ) : null}
             <TextField
               label="Anzeigename"

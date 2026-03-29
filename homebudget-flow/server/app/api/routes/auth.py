@@ -8,6 +8,7 @@ from app.db.session import get_session
 from app.schemas.auth import LoginIn, RegisterIn, TokenOut, UserMeOut, UserMePatch
 from app.security import create_access_token, hash_password, verify_password
 from app.services.user_settings import apply_user_settings_updates
+from app.config import settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -45,6 +46,7 @@ async def get_me(user: CurrentUser) -> UserMeOut:
         email=user.email,
         display_name=user.display_name,
         all_household_transactions=user.all_household_transactions,
+        app_timezone=settings.app_timezone,
     )
 
 
@@ -65,4 +67,5 @@ async def patch_me(
         email=user.email,
         display_name=user.display_name,
         all_household_transactions=user.all_household_transactions,
+        app_timezone=settings.app_timezone,
     )

@@ -31,6 +31,8 @@ import {
   VpnKey as VpnKeyIcon,
 } from '@mui/icons-material';
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { fetchCurrentUser } from '../api/client';
 import { useAuthStore } from '../store/authStore';
 import { useThemeModeStore } from '../store/themeModeStore';
 
@@ -53,6 +55,12 @@ export default function Layout() {
   const userMenuOpen = Boolean(userMenuAnchor);
 
   const token = useAuthStore((s) => s.token);
+  useQuery({
+    queryKey: ['me'],
+    queryFn: fetchCurrentUser,
+    enabled: Boolean(token),
+    staleTime: 5 * 60_000,
+  });
   const emailInitial = (() => {
     if (!token) return 'U';
     try {
@@ -133,7 +141,7 @@ export default function Layout() {
   );
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+    <Box sx={{ display: 'flex', minHeight: '100vh', minWidth: 0, overflowX: 'hidden' }}>
       <AppBar
         position="fixed"
         elevation={0}
@@ -142,8 +150,8 @@ export default function Layout() {
           borderColor: 'divider',
           bgcolor: 'background.paper',
           color: 'text.primary',
-          width: { sm: `calc(100% - ${drawerWidth}px)` },
-          ml: { sm: `${drawerWidth}px` },
+          width: { xs: '100%', sm: `calc(100% - ${drawerWidth}px)` },
+          ml: { xs: 0, sm: `${drawerWidth}px` },
         }}
       >
         <Toolbar>
@@ -287,8 +295,11 @@ export default function Layout() {
         component="main"
         sx={{
           flexGrow: 1,
+          minWidth: 0,
+          maxWidth: '100%',
+          boxSizing: 'border-box',
           p: { xs: 2, sm: 3 },
-          width: { sm: `calc(100% - ${drawerWidth}px)` },
+          width: { xs: '100%', sm: `calc(100% - ${drawerWidth}px)` },
           mt: 8,
         }}
       >

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { setAuthToken } from '../api/client';
+import { resetAppTimeZone } from '../lib/appTimeZone';
 
 const TOKEN_KEY = 'homebudget-token';
 
@@ -39,6 +40,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       /* ignore */
     }
     setAuthToken(null);
+    resetAppTimeZone();
     set({ token: null });
   },
 }));

@@ -33,6 +33,9 @@ class UserMeOut(BaseModel):
     email: EmailStr
     display_name: str
     all_household_transactions: bool
+    app_timezone: str = Field(
+        description="IANA-Zeitzone der Server-Instanz (Anzeige / „heute“ im Client; siehe APP_TIMEZONE).",
+    )
 
 
 class UserMePatch(BaseModel):

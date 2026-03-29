@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Fernet-Key (url-safe base64) für verschlüsselte PIN in bank_credentials
     credentials_fernet_key: str = ""
 
+    # IANA-Zeitzonen-ID (z. B. Europe/Berlin). Wird u. a. für den täglichen Bank-Sync (SYNC_CRON_*) verwendet.
+    app_timezone: str = "Europe/Berlin"
+
     sync_cron_hour: int = 6
     sync_cron_minute: int = 30
 

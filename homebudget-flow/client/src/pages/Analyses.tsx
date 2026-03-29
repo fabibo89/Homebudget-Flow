@@ -45,6 +45,7 @@ import { displayNameClusterForTransaction } from '../lib/categoryRuleMatching';
 import { CategorySymbolDisplay } from '../components/CategorySymbol';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
+import { getAppTimeZone, isoDateInAppTimezone, todayIsoInAppTimezone } from '../lib/appTimeZone';
 import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import {
   addMonthsToIsoDate,
@@ -100,7 +101,7 @@ function dailyNetSums(transactions: Transaction[], from: string, to: string): { 
   const end = parseIsoDate(to);
   const out: { day: string; sum: number }[] = [];
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const key = d.toISOString().slice(0, 10);
+    const key = isoDateInAppTimezone(d);
     out.push({ day: key, sum: byDay.get(key) ?? 0 });
   }
   return out;
@@ -120,7 +121,7 @@ function cumulativeFromDaily(daily: { sum: number }[]): number[] {
 function addDays(iso: string, delta: number): string {
   const d = parseIsoDate(iso);
   d.setDate(d.getDate() + delta);
-  return d.toISOString().slice(0, 10);
+  return isoDateInAppTimezone(d);
 }
 
 type CategoryAggregate = {
@@ -200,7 +201,7 @@ function buildDailyExpenseMatrix(transactions: Transaction[], from: string, to: 
   const end = parseIsoDate(to);
   const days: string[] = [];
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    days.push(d.toISOString().slice(0, 10));
+    days.push(isoDateInAppTimezone(d));
   }
   const byKey = new Map<string, number[]>();
   const ensure = (key: string) => {
@@ -232,7 +233,7 @@ function buildDailyExpenseMatrixClustered(
   const end = parseIsoDate(to);
   const days: string[] = [];
   for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    days.push(d.toISOString().slice(0, 10));
+    days.push(isoDateInAppTimezone(d));
   }
   const byKey = new Map<string, number[]>();
   const ensure = (key: string) => {
@@ -295,30 +296,42 @@ function mondayOfIsoWeek(isoDay: string): string {
   const d = parseIsoDate(isoDay);
   const dow = (d.getDay() + 6) % 7;
   d.setDate(d.getDate() - dow);
-  return d.toISOString().slice(0, 10);
+  return isoDateInAppTimezone(d);
 }
 
 function formatWeekRangeLabel(weekMondayIso: string): string {
   const start = parseIsoDate(weekMondayIso);
   const end = new Date(start);
   end.setDate(end.getDate() + 6);
-  const short = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'short' });
-  const endLong = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'short', year: 'numeric' });
+  const tz = getAppTimeZone();
+  const short = new Intl.DateTimeFormat('de-DE', { day: 'numeric', month: 'short', timeZone: tz });
+  const endLong = new Intl.DateTimeFormat('de-DE', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: tz,
+  });
   return `${short.format(start)}–${endLong.format(end)}`;
 }
 
 function formatMonthBucketLabel(yyyyMm: string): string {
   const [y, m] = yyyyMm.split('-').map(Number);
-  const d = new Date(y, m - 1, 1);
-  return new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(d);
+  return new Intl.DateTimeFormat('de-DE', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: getAppTimeZone(),
+  }).format(new Date(`${y}-${String(m).padStart(2, '0')}-01T12:00:00Z`));
 }
 
 /** Tageswerte zu Wochen- oder Monatssummen zusammenfassen (Reihenfolge = erster Vorkommenstag im Filter). */
 function rollupVerlaufFromDaily(daily: DailyExpenseMatrix, bucket: VerlaufBucket): VerlaufPeriodMatrix {
   const { days, byKey } = daily;
   if (bucket === 'day' || days.length === 0) {
+    const tz = getAppTimeZone();
     const periodLabels = days.map((d) =>
-      new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short' }).format(parseIsoDate(d)),
+      new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short', timeZone: tz }).format(
+        parseIsoDate(d),
+      ),
     );
     const periodDays = days.map((d) => [d]);
     return {
@@ -569,13 +582,7 @@ function createCategoryDonutConfig(
             name: { show: true },
             value: {
               show: true,
-              formatter: (val, opts) => {
-                const i = opts?.seriesIndex;
-                if (typeof i === 'number' && aggs[i]) {
-                  return formatMoneyShort(aggs[i].sum, defaultCurrency);
-                }
-                return formatMoneyShort(Number(val), defaultCurrency);
-              },
+              formatter: (val: string | number) => formatMoneyShort(Number(val), defaultCurrency),
             },
             total: {
               show: true,
@@ -593,7 +600,8 @@ function createCategoryDonutConfig(
     dataLabels: {
       enabled: true,
       formatter: (_val, opts) => {
-        const i = opts.seriesIndex;
+        const i = opts?.seriesIndex;
+        if (typeof i !== 'number') return '';
         const a = aggs[i];
         if (!a) return '';
         return formatMoneyShort(a.sum, defaultCurrency);
@@ -604,7 +612,8 @@ function createCategoryDonutConfig(
       position: 'bottom',
       fontSize: '12px',
       formatter: (legendName, opts) => {
-        const i = opts.seriesIndex;
+        const i = opts?.seriesIndex;
+        if (typeof i !== 'number') return legendName;
         const a = aggs[i];
         if (!a) return legendName;
         return `${legendName} (${formatMoneyFull(a.sum, defaultCurrency)})`;
@@ -614,7 +623,8 @@ function createCategoryDonutConfig(
       theme: theme.palette.mode,
       y: {
         formatter: (_val, opts) => {
-          const i = opts.seriesIndex;
+          const i = opts?.seriesIndex;
+          if (typeof i !== 'number') return '';
           const a = aggs[i];
           if (!a) return '';
           return `${formatMoneyFull(a.sum, defaultCurrency)} · ${a.count} Buchung(en)`;
@@ -630,7 +640,7 @@ export default function Analyses() {
   const theme = useTheme();
   const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [tab, setTab] = useState<AnalysisTab>('tagesbilanz');
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const today = useMemo(() => todayIsoInAppTimezone(), []);
   const defaultFrom = useMemo(() => addDays(today, -30), [today]);
   const [from, setFrom] = useState(defaultFrom);
   const [to, setTo] = useState(today);
@@ -901,11 +911,14 @@ export default function Analyses() {
   const negColor = theme.palette.error.main;
 
   const { chartOptions, series } = useMemo(() => {
-    const labels = daily.map((d) =>
-      new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short' }).format(parseIsoDate(d.day)),
+    const tz = getAppTimeZone();
+    const labels = daily.map((row) =>
+      new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short', timeZone: tz }).format(
+        parseIsoDate(row.day),
+      ),
     );
 
-    const rangeData = daily.map((d, i) => {
+    const rangeData = daily.map((_, i) => {
       const prev = i === 0 ? 0 : cumulative[i - 1];
       const curr = cumulative[i];
       const low = Math.min(prev, curr);
@@ -987,6 +1000,7 @@ export default function Analyses() {
             day: '2-digit',
             month: 'long',
             year: 'numeric',
+            timeZone: getAppTimeZone(),
           }).format(parseIsoDate(row.day));
           const deltaStr = formatMoneyFull(row.sum, defaultCurrency);
           const prevStr = formatMoneyFull(prev, defaultCurrency);
@@ -1248,7 +1262,7 @@ export default function Analyses() {
       legend: {
         position: 'bottom',
         fontSize: '12px',
-        markers: { width: 12, height: 12, radius: 2 },
+        markers: { size: 12 },
       },
       tooltip: {
         theme: theme.palette.mode,
@@ -1279,10 +1293,10 @@ export default function Analyses() {
   ]);
 
   function setPreset(preset: '7d' | '30d' | '90d' | 'ytd' | '365d') {
-    const end = new Date().toISOString().slice(0, 10);
+    const end = todayIsoInAppTimezone();
     let start: string;
     if (preset === 'ytd') {
-      start = `${new Date().getFullYear()}-01-01`;
+      start = `${end.slice(0, 4)}-01-01`;
     } else {
       const days = preset === '7d' ? 7 : preset === '30d' ? 30 : preset === '90d' ? 90 : 365;
       start = addDays(end, -(days - 1));
@@ -1494,7 +1508,7 @@ export default function Analyses() {
     const { periodLabels, byKey } = regelClusterPeriodMatrix;
     const n = periodLabels.length;
     const keys = regelClusterSortedKeys;
-    const series = keys.map((key, si) => ({
+    const series = keys.map((key) => ({
       name: regelClusterLabelForKey(key),
       data: Array.from({ length: n }, (_, i) => {
         const arr = byKey.get(key);
@@ -1547,7 +1561,7 @@ export default function Analyses() {
       legend: {
         position: 'bottom',
         fontSize: '12px',
-        markers: { width: 12, height: 12, radius: 2 },
+        markers: { size: 12 },
       },
       tooltip: {
         theme: theme.palette.mode,
@@ -2352,14 +2366,15 @@ export default function Analyses() {
                         setRegelClusterSubcategoryId(v === '' ? null : Number(v));
                       }}
                       renderValue={(selected) => {
-                        if (selected === '' || selected === undefined) {
+                        const selectedStr = String(selected ?? '');
+                        if (selectedStr === '') {
                           return (
                             <Typography component="span" color="text.secondary" fontStyle="italic" variant="body2">
                               Bitte wählen…
                             </Typography>
                           );
                         }
-                        const id = typeof selected === 'number' ? selected : Number(selected);
+                        const id = Number(selectedStr);
                         const o = subcategoryPickOptions.find((x) => x.id === id);
                         if (!o) return String(selected);
                         return <RegelClusterSubcategoryRow o={o} />;

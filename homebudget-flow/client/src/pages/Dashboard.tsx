@@ -62,6 +62,7 @@ import {
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
 import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
+import { todayIsoInAppTimezone } from '../lib/appTimeZone';
 import { addMonthsToIsoDate, formatDate, formatDateTime, formatMoney } from '../lib/transactionUi';
 
 /** Eine Zeile für Konto-Dropdown: Buchungsdatum + Betrag der letzten Gehalt-Buchung (Cache). */
@@ -105,12 +106,7 @@ export default function Dashboard() {
   const theme = useTheme();
   const isXs = useMediaQuery(theme.breakpoints.down('sm'));
   const [accountFilter, setAccountFilter] = useState<number | 'all'>('all');
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const monthAgo = useMemo(() => {
-    const d = new Date();
-    d.setMonth(d.getMonth() - 1);
-    return d.toISOString().slice(0, 10);
-  }, []);
+  const today = useMemo(() => todayIsoInAppTimezone(), []);
   // Default: unbegrenzt (leer) – erleichtert die Suche nach älteren Buchungen.
   const [from, setFrom] = useState('');
   const [to, setTo] = useState(today);
@@ -347,8 +343,21 @@ export default function Dashboard() {
     }
   }
 
+  const dateInputSx = {
+    padding: '10px 12px',
+    borderRadius: 8,
+    border: '1px solid rgba(127,127,127,0.35)',
+    background: 'transparent',
+    color: 'inherit',
+    font: 'inherit',
+    width: '100%',
+    maxWidth: '100%',
+    minWidth: 0,
+    boxSizing: 'border-box' as const,
+  };
+
   return (
-    <Stack spacing={3}>
+    <Stack spacing={3} sx={{ minWidth: 0, width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}>
       <Box>
         <Typography variant="h5" fontWeight={700} gutterBottom>
           Konten
@@ -570,10 +579,11 @@ export default function Dashboard() {
                 </Card>
               ))}
             </Box>
-            <Box sx={{ mt: 2 }}>
+            <Box sx={{ mt: 2, width: '100%', maxWidth: '100%' }}>
               <Button
                 variant="contained"
                 color="secondary"
+                fullWidth={isXs}
                 startIcon={
                   syncAllMut.isPending ? <CircularProgress size={18} color="inherit" /> : <CloudSyncIcon />
                 }
@@ -599,7 +609,7 @@ export default function Dashboard() {
         <Tabs
           value={overviewTab}
           onChange={(_, v) => setOverviewTab(v)}
-          sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}
+          sx={{ borderBottom: 1, borderColor: 'divider', mb: 2, minWidth: 0, maxWidth: '100%' }}
           variant={isXs ? 'scrollable' : 'standard'}
           scrollButtons="auto"
           allowScrollButtonsMobile
@@ -610,55 +620,74 @@ export default function Dashboard() {
 
         {overviewTab === 'buchungen' ? (
           <>
-        <Typography color="text.secondary" variant="body2" sx={{ mb: 1 }}>
+        <Typography
+          color="text.secondary"
+          variant="body2"
+          sx={{ mb: 1, overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+        >
           Zeile anklicken für Buchungsdetails. Kategorie-Spalte: Linksklick Regel oder Änderung, Rechtsklick öffnet
           sofort die Auswahlliste (Tooltips an der Spaltenüberschrift).
         </Typography>
-        <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider', mb: 2 }}>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap">
-            <Typography variant="body2" color="text.secondary" sx={{ minWidth: 120 }}>
+        <Paper
+          elevation={0}
+          sx={{
+            p: 2,
+            border: 1,
+            borderColor: 'divider',
+            mb: 2,
+            maxWidth: '100%',
+            overflow: 'hidden',
+            boxSizing: 'border-box',
+          }}
+        >
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={2}
+            alignItems={{ xs: 'stretch', sm: 'center' }}
+            flexWrap="wrap"
+            sx={{ minWidth: 0 }}
+          >
+            <Typography variant="body2" color="text.secondary" sx={{ minWidth: { sm: 120 }, flexShrink: 0 }}>
               Zeitraum
             </Typography>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <input
-                type="date"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                placeholder="von (leer = unbegrenzt)"
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: 8,
-                  border: '1px solid rgba(127,127,127,0.35)',
-                  background: 'transparent',
-                  color: 'inherit',
-                  font: 'inherit',
-                }}
-              />
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={1}
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+              flexWrap="wrap"
+              useFlexGap
+              sx={{ minWidth: 0, width: { xs: '100%', sm: 'auto' } }}
+            >
+              <Box sx={{ width: { xs: '100%', sm: 'auto' }, minWidth: 0, maxWidth: '100%' }}>
+                <input
+                  type="date"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                  placeholder="von (leer = unbegrenzt)"
+                  style={dateInputSx}
+                />
+              </Box>
               {from ? (
-                <Button size="small" variant="text" onClick={() => setFrom('')}>
+                <Button size="small" variant="text" onClick={() => setFrom('')} sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
                   Von löschen
                 </Button>
               ) : null}
-              <span>–</span>
-              <input
-                type="date"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                style={{
-                  padding: '10px 12px',
-                  borderRadius: 8,
-                  border: '1px solid rgba(127,127,127,0.35)',
-                  background: 'transparent',
-                  color: 'inherit',
-                  font: 'inherit',
-                }}
-              />
-              <ButtonGroup size="small" variant="outlined">
+              <Box
+                component="span"
+                sx={{ display: { xs: 'none', sm: 'inline' }, alignSelf: 'center' }}
+                aria-hidden
+              >
+                –
+              </Box>
+              <Box sx={{ width: { xs: '100%', sm: 'auto' }, minWidth: 0, maxWidth: '100%' }}>
+                <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={dateInputSx} />
+              </Box>
+              <ButtonGroup size="small" variant="outlined" fullWidth={isXs} sx={{ alignSelf: { sm: 'center' } }}>
                 <Button onClick={() => shiftBuchungenRangeByMonths(-1)}>−1 Monat</Button>
                 <Button onClick={() => shiftBuchungenRangeByMonths(1)}>+1 Monat</Button>
               </ButtonGroup>
             </Stack>
-            <FormControl size="small" sx={{ minWidth: 220 }}>
+            <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 220 }, width: { xs: '100%', sm: 'auto' }, maxWidth: '100%' }}>
               <InputLabel id="acc-filter">Konto</InputLabel>
               <Select
                 labelId="acc-filter"
@@ -693,7 +722,7 @@ export default function Dashboard() {
                 })}
               </Select>
             </FormControl>
-            <FormControl size="small" sx={{ minWidth: 120 }}>
+            <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 120 }, width: { xs: '100%', sm: 'auto' }, maxWidth: '100%' }}>
               <InputLabel id="page-size">Einträge</InputLabel>
               <Select
                 labelId="page-size"
@@ -707,10 +736,15 @@ export default function Dashboard() {
                 <MenuItem value={1000}>1000</MenuItem>
               </Select>
             </FormControl>
-            <Button variant="outlined" onClick={() => void txQuery.refetch()} disabled={txQuery.isFetching}>
+            <Button
+              variant="outlined"
+              onClick={() => void txQuery.refetch()}
+              disabled={txQuery.isFetching}
+              sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
+            >
               {txQuery.isFetching ? 'Laden…' : 'Aktualisieren'}
             </Button>
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ minWidth: 0, width: { xs: '100%', sm: 'auto' } }}>
               <Button
                 size="small"
                 variant="outlined"
@@ -790,13 +824,20 @@ export default function Dashboard() {
         </>
         ) : (
           <>
-            <Typography color="text.secondary" variant="body2" sx={{ mb: 1 }}>
+            <Typography
+              color="text.secondary"
+              variant="body2"
+              sx={{ mb: 1, overflowWrap: 'anywhere', wordBreak: 'break-word' }}
+            >
               Gespeicherte Salden nach jedem erfolgreichen Sync (neueste oben). „Alle Konten“: bis zu 200 Snapshots
               pro Konto, zusammen max. 500 Zeilen.
             </Typography>
-            <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider', mb: 2 }}>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap">
-                <FormControl size="small" sx={{ minWidth: 220 }}>
+            <Paper
+              elevation={0}
+              sx={{ p: 2, border: 1, borderColor: 'divider', mb: 2, maxWidth: '100%', overflow: 'hidden', boxSizing: 'border-box' }}
+            >
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap" sx={{ minWidth: 0 }}>
+                <FormControl size="small" sx={{ minWidth: { xs: 0, sm: 220 }, width: { xs: '100%', sm: 'auto' }, maxWidth: '100%' }}>
                   <InputLabel id="acc-filter-saldo">Konto</InputLabel>
                   <Select
                     labelId="acc-filter-saldo"
@@ -835,6 +876,7 @@ export default function Dashboard() {
                   variant="outlined"
                   onClick={() => void qc.invalidateQueries({ queryKey: ['balance-snapshots'] })}
                   disabled={saldoLoading || accounts.length === 0}
+                  sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
                 >
                   {saldoLoading ? 'Laden…' : 'Aktualisieren'}
                 </Button>
@@ -849,7 +891,11 @@ export default function Dashboard() {
                 <CircularProgress />
               </Box>
             ) : (
-              <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', overflowX: 'auto' }}>
+              <TableContainer
+                component={Paper}
+                elevation={0}
+                sx={{ border: 1, borderColor: 'divider', overflowX: 'auto', maxWidth: '100%', boxSizing: 'border-box' }}
+              >
                 <Table size="small" sx={{ minWidth: 620 }}>
                   <TableHead>
                     <TableRow>

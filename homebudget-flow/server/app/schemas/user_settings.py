@@ -12,6 +12,7 @@ class UserSettingsOut(BaseModel):
     email: EmailStr
     display_name: str
     all_household_transactions: bool
+    app_timezone: str = Field(description="IANA-Zeitzone der Server-Instanz (APP_TIMEZONE).")
 
 
 class UserSettingsPatch(BaseModel):

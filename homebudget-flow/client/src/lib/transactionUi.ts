@@ -1,4 +1,5 @@
 import type { CategoryOut, CategoryRuleCondition, CategoryRuleType, Transaction } from '../api/client';
+import { getAppTimeZone } from './appTimeZone';
 
 export function formatMoney(amount: string, currency: string): string {
   const n = Number(amount);
@@ -312,7 +313,11 @@ export function defaultRulePatternFromTx(tx: Transaction, field: RuleTargetField
 
 export function formatDate(iso: string): string {
   try {
-    return new Intl.DateTimeFormat('de-DE').format(new Date(iso + (iso.length === 10 ? 'T12:00:00' : '')));
+    const tz = getAppTimeZone();
+    if (iso.length === 10) {
+      return new Intl.DateTimeFormat('de-DE', { timeZone: tz }).format(new Date(`${iso.slice(0, 10)}T12:00:00Z`));
+    }
+    return new Intl.DateTimeFormat('de-DE', { timeZone: tz }).format(new Date(iso));
   } catch {
     return iso;
   }
@@ -321,7 +326,11 @@ export function formatDate(iso: string): string {
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   try {
-    return new Intl.DateTimeFormat('de-DE', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(iso));
+    return new Intl.DateTimeFormat('de-DE', {
+      dateStyle: 'short',
+      timeStyle: 'short',
+      timeZone: getAppTimeZone(),
+    }).format(new Date(iso));
   } catch {
     return iso;
   }

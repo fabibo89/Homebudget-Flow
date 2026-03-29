@@ -34,6 +34,7 @@ from app.services.bank.transaction_tan_channel import TransactionTanChannel
 from app.services.bank_account_provision import normalize_iban
 from app.services.category_rules import apply_category_rules_to_uncategorized
 from app.services.credential_crypto import decrypt_secret
+from app.app_time import app_today
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ async def sync_bank_account(
             st.transactions_attempt_at = _utc_now_naive()
             await session.flush()
 
-            snap = await connector.fetch_snapshot(iban_norm, from_d, date.today())
+            snap = await connector.fetch_snapshot(iban_norm, from_d, app_today())
             balance, currency = snap.balance, snap.currency
         except Exception as e:  # noqa: BLE001
             # Wichtig: auch bei Balance-Fehlschlag Umsätze-Versuch-Zeitstempel speichern,
@@ -177,7 +178,7 @@ async def sync_bank_account(
                 acc.id,
                 len(txs),
                 from_d.isoformat() if from_d else "all",
-                date.today().isoformat(),
+                app_today().isoformat(),
             )
             adopted = 0
             skipped_existing = 0

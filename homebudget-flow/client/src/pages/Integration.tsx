@@ -14,6 +14,7 @@ import {
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage, fetchSyncOverview } from '../api/client';
+import { formatDate, formatDateTime } from '../lib/transactionUi';
 
 function formatMoney(amount: string, currency: string): string {
   const n = Number(amount);
@@ -21,17 +22,12 @@ function formatMoney(amount: string, currency: string): string {
   return new Intl.NumberFormat('de-DE', { style: 'currency', currency: currency || 'EUR' }).format(n);
 }
 
-function formatDt(iso: string | null): string {
-  return iso ? new Date(iso).toLocaleString('de-DE') : '—';
-}
-
 function formatSalaryDate(iso: string | null | undefined): string {
   if (!iso) return '—';
   if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
-    const [y, m, d] = iso.split('-').map(Number);
-    return new Date(y, m - 1, d).toLocaleDateString('de-DE');
+    return formatDate(iso);
   }
-  return formatDt(iso);
+  return formatDateTime(iso);
 }
 
 export default function Integration() {
@@ -99,10 +95,10 @@ export default function Integration() {
                     <TableCell>{r.iban ?? '—'}</TableCell>
                     <TableCell align="right">{formatMoney(r.balance, r.currency)}</TableCell>
                     <TableCell>{r.sync_status}</TableCell>
-                    <TableCell>{formatDt(r.balance_attempt_at)}</TableCell>
-                    <TableCell>{formatDt(r.balance_success_at)}</TableCell>
-                    <TableCell>{formatDt(r.transactions_attempt_at)}</TableCell>
-                    <TableCell>{formatDt(r.transactions_success_at)}</TableCell>
+                    <TableCell>{formatDateTime(r.balance_attempt_at)}</TableCell>
+                    <TableCell>{formatDateTime(r.balance_success_at)}</TableCell>
+                    <TableCell>{formatDateTime(r.transactions_attempt_at)}</TableCell>
+                    <TableCell>{formatDateTime(r.transactions_success_at)}</TableCell>
                     <TableCell>{formatSalaryDate(r.last_salary_booking_date)}</TableCell>
                     <TableCell align="right">
                       {r.last_salary_amount != null && r.last_salary_amount !== ''

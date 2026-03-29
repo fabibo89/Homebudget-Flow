@@ -1,10 +1,10 @@
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.config import settings
+from app.app_time import get_app_tz
 from app.db.session import SessionLocal
 from app.services.sync_service import sync_all_configured_accounts
 
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone=get_app_tz())
 
 
 async def _daily_sync() -> None:

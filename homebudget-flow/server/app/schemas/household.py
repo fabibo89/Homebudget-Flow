@@ -178,6 +178,10 @@ def bank_account_to_out(
 class BankAccountUpdate(BaseModel):
     """Nur gesetzte Felder ändern. ``credential_id`` kann auf einen anderen FinTS-Zugang desselben Nutzers zeigen, nicht auf null."""
 
+    account_group_id: Optional[int] = Field(
+        default=None,
+        description="Andere Kontogruppe desselben Haushalts; Buchungen und Konto bleiben am Konto.",
+    )
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     iban: Optional[str] = Field(default=None, min_length=15, max_length=34)
     currency: Optional[str] = Field(default=None, min_length=1, max_length=8)

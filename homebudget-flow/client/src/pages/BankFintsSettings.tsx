@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { Alert, Box, CircularProgress, Link, Stack, Typography } from '@mui/material';
 import { useQueries, useQuery } from '@tanstack/react-query';
-import { apiErrorMessage, fetchAccountGroups, fetchHouseholds } from '../api/client';
+import { apiErrorMessage, fetchAccountGroups, fetchAccounts, fetchHouseholds } from '../api/client';
 import AccountGroupFinTsPanel from '../components/AccountGroupFinTsPanel';
 
 export default function BankFintsSettings() {
@@ -16,6 +16,8 @@ export default function BankFintsSettings() {
       enabled: householdsQuery.isSuccess,
     })),
   });
+
+  const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
 
   const flatGroups = useMemo(
     () =>
@@ -31,7 +33,6 @@ export default function BankFintsSettings() {
     [households, groupQueries],
   );
 
-  /** Stabile Reihenfolge: die erste Gruppe zeigt die nutzerweite Zugangs-Tabelle genau einmal. */
   const sortedFlatGroups = useMemo(
     () =>
       [...flatGroups].sort((a, b) => {
@@ -51,6 +52,16 @@ export default function BankFintsSettings() {
     [flatGroups],
   );
 
+  const groupLabelById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const { householdName, group: g } of flatGroups) {
+      m.set(g.id, `${householdName} · ${g.name}`);
+    }
+    return m;
+  }, [flatGroups]);
+
+  const defaultProvisionGroupId = sortedFlatGroups[0]?.group.id ?? 0;
+
   const loading = householdsQuery.isLoading || groupQueries.some((q) => q.isLoading);
   const firstGroupError = groupQueries.find((q) => q.isError);
 
@@ -61,13 +72,9 @@ export default function BankFintsSettings() {
           Bankzugang (FinTS)
         </Typography>
         <Typography color="text.secondary" variant="body2">
-          Nur Online-Banking-Zugang (Login/PIN), nutzerweit. Beim Anlegen oder Bearbeiten eines Zugangs wählst du im
-          Dialog die <strong>Kontogruppe für neue Bankkonten</strong> (erkannte IBANs). Die Kontenliste je Gruppe siehst
-          du unter{' '}
-          <Link component={RouterLink} to="/settings/setup" underline="hover">
-            Einrichtung
-          </Link>{' '}
-          und unter{' '}
+          Online-Banking-Zugänge (Login/PIN) sind <strong>nutzerweit</strong>. Beim Anlegen oder Bearbeiten wählst du,
+          in welcher <strong>Kontogruppe neue Bankkonten</strong> (erkannte IBANs) angelegt werden. Welches Konto zu
+          welcher Gruppe gehört, siehst du in der Tabelle unten und unter{' '}
           <Link component={RouterLink} to="/settings/accounts" underline="hover">
             Bankkonten
           </Link>
@@ -80,6 +87,11 @@ export default function BankFintsSettings() {
       ) : null}
       {firstGroupError ? (
         <Alert severity="error">{apiErrorMessage(firstGroupError.error)}</Alert>
+      ) : null}
+      {accountsQuery.isError ? (
+        <Alert severity="warning">
+          Bankkonten für die Zuordnung konnten nicht geladen werden: {apiErrorMessage(accountsQuery.error)}
+        </Alert>
       ) : null}
 
       {loading ? (
@@ -102,31 +114,16 @@ export default function BankFintsSettings() {
           </Link>{' '}
           eine Kontogruppe anlegen.
         </Alert>
+      ) : defaultProvisionGroupId === 0 ? (
+        <Alert severity="warning">Keine Kontogruppe für die Voreinstellung verfügbar.</Alert>
       ) : (
-        <Stack spacing={0}>
-          {sortedFlatGroups[0] ? (
-            <Alert severity="info" sx={{ mb: 2 }}>
-              FinTS-Zugänge sind <strong>nutzerweit</strong> (nicht pro Kontogruppe). Die Übersicht steht{' '}
-              <strong>nur einmal</strong> unter dem ersten Block:{' '}
-              <strong>
-                {sortedFlatGroups[0].householdName} · {sortedFlatGroups[0].group.name}
-              </strong>
-              . In den weiteren Blöcken kannst du ebenfalls einen Zugang anlegen; die Tabelle dort ist ausgeblendet.
-              Wenn die Meldung kommt, der Zugang existiere bereits, die Liste wurde neu geladen — dann den Eintrag dort
-              bearbeiten oder löschen.
-            </Alert>
-          ) : null}
-          {sortedFlatGroups.map(({ householdName, group: g }, idx) => (
-            <AccountGroupFinTsPanel
-              key={g.id}
-              accountGroupId={g.id}
-              groupLabel={`${householdName} · ${g.name}`}
-              provisionGroupOptions={provisionGroupOptions}
-              variant="flat"
-              showCredentialsTable={idx === 0}
-            />
-          ))}
-        </Stack>
+        <AccountGroupFinTsPanel
+          accountGroupId={defaultProvisionGroupId}
+          provisionGroupOptions={provisionGroupOptions}
+          variant="flat"
+          bankAccounts={accountsQuery.data ?? []}
+          groupLabelById={groupLabelById}
+        />
       )}
     </Stack>
   );

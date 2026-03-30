@@ -112,8 +112,8 @@ async def list_transfer_pairs(
 
     q = (
         q.options(
-            joinedload(TransferPair.out_transaction),
-            joinedload(TransferPair.in_transaction),
+            joinedload(TransferPair.out_transaction).joinedload(Transaction.category),
+            joinedload(TransferPair.in_transaction).joinedload(Transaction.category),
         )
         .order_by(TransferPair.id.desc())
         .limit(limit)

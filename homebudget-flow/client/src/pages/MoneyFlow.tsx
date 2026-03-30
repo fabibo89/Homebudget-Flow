@@ -32,11 +32,7 @@ import TransactionBookingsTable from '../components/transactions/TransactionBook
 
 function ensureCryptoRandomUUID() {
   const g: any = globalThis as any;
-  if (!g.crypto) g.crypto = {};
-  if (typeof g.crypto.randomUUID === 'function') return;
-
-  // RFC4122 v4-ish fallback (not cryptographically secure, but good enough for per-render IDs).
-  g.crypto.randomUUID = () => {
+  const fallback = () => {
     const bytes = new Uint8Array(16);
     for (let i = 0; i < bytes.length; i++) bytes[i] = (Math.random() * 256) | 0;
     bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
@@ -44,6 +40,48 @@ function ensureCryptoRandomUUID() {
     const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   };
+
+  // If crypto exists and already has randomUUID, we're done.
+  try {
+    if (g.crypto && typeof g.crypto.randomUUID === 'function') return;
+  } catch {
+    // ignore
+  }
+
+  // Best-effort: some environments expose `crypto` as read-only; use defineProperty where possible.
+  try {
+    if (!g.crypto) {
+      Object.defineProperty(g, 'crypto', {
+        value: {},
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+    }
+  } catch {
+    // ignore: if we can't define it, we'll still try to patch existing crypto below
+  }
+
+  try {
+    if (g.crypto && typeof g.crypto.randomUUID !== 'function') {
+      Object.defineProperty(g.crypto, 'randomUUID', {
+        value: fallback,
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      });
+      return;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Last resort: assignment (may fail in strict/read-only contexts).
+  try {
+    if (g.crypto && typeof g.crypto.randomUUID !== 'function') g.crypto.randomUUID = fallback;
+  } catch {
+    // ignore
+  }
 }
 
 function includedAccountsKey(ids: number[] | null | undefined): string {

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.db.models import Category, Transaction as TransactionRow
 from app.services.category_colors import effective_color, normalize_hex
+from sqlalchemy.exc import MissingGreenlet
 
 
 def _effective_hex_for_category(cat: Category | None) -> str | None:
@@ -20,12 +21,16 @@ def _effective_hex_for_category(cat: Category | None) -> str | None:
         parent_color = (pr.color_hex or normalize_hex(None)) if pr is not None else normalize_hex(None)
         s_idx, s_n = 0, 1
         if pr is not None:
-            sibs = sorted(getattr(pr, "children", []) or [], key=lambda c: c.id)
-            if sibs:
-                s_n = len(sibs)
-                found = next((i for i, c in enumerate(sibs) if c.id == cat.id), None)
-                if found is not None:
-                    s_idx = found
+            try:
+                sibs = sorted(getattr(pr, "children", []) or [], key=lambda c: c.id)
+                if sibs:
+                    s_n = len(sibs)
+                    found = next((i for i, c in enumerate(sibs) if c.id == cat.id), None)
+                    if found is not None:
+                        s_idx = found
+            except MissingGreenlet:
+                # In Async-Kontext darf kein Lazy-Load passieren. Fallback: keine Sibling-Automatik.
+                s_idx, s_n = 0, 1
         return effective_color(
             parent_color_hex=parent_color,
             own_color_hex=cat.color_hex,

@@ -30,6 +30,22 @@ import { formatMoney } from '../lib/transactionUi';
 import { getAppTimeZone, todayIsoInAppTimezone } from '../lib/appTimeZone';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 
+function ensureCryptoRandomUUID() {
+  const g: any = globalThis as any;
+  if (!g.crypto) g.crypto = {};
+  if (typeof g.crypto.randomUUID === 'function') return;
+
+  // RFC4122 v4-ish fallback (not cryptographically secure, but good enough for per-render IDs).
+  g.crypto.randomUUID = () => {
+    const bytes = new Uint8Array(16);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (Math.random() * 256) | 0;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  };
+}
+
 function includedAccountsKey(ids: number[] | null | undefined): string {
   if (ids == null) return 'all';
   if (ids.length === 0) return 'none';
@@ -458,6 +474,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
     const nodeCount = data.nodes.length;
     const height = Math.min(980, Math.max(540, 380 + nodeCount * 14));
 
+    ensureCryptoRandomUUID();
     const sankey = new ApexSankey(el, {
       width,
       height,

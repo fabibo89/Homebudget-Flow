@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser
 from app.db.models import (
@@ -113,10 +113,8 @@ async def list_transfer_pairs(
 
     q = (
         q.options(
-            # Wichtig: Category.parent / parent.children ist self-referential; selectinload ist hier stabiler
-            # als joinedload (und vermeidet MissingGreenlet durch Lazy Loads).
-            joinedload(TransferPair.out_transaction),
-            joinedload(TransferPair.in_transaction),
+            # Wichtig: Category.parent / parent.children ist self-referential; selectinload ist hier stabil
+            # und verhindert Async-Lazy-Loads (MissingGreenlet).
             selectinload(TransferPair.out_transaction)
             .selectinload(Transaction.category)
             .selectinload(Category.parent)

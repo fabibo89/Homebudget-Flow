@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import {
   Alert,
@@ -29,13 +29,20 @@ import {
 import { useTheme } from '@mui/material/styles';
 import { Edit as EditIcon } from '@mui/icons-material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import CategoryRuleConditionsEditor, {
+  type CategoryRuleConditionsPayload,
+} from '../components/CategoryRuleConditionsEditor';
 import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
 import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import {
   apiErrorMessage,
   fetchAccounts,
+  fetchCategoryRules,
   fetchBankCredentials,
+  fetchTagZeroRule,
+  upsertTagZeroRule,
   updateBankAccount,
+  type CategoryRuleOut,
   type BankAccount,
 } from '../api/client';
 import { formatDate } from '../lib/transactionUi';
@@ -70,6 +77,10 @@ export default function BankAccountsSettings() {
     credential_id: '' as '' | number,
   });
   const [formError, setFormError] = useState('');
+  const [tagZeroError, setTagZeroError] = useState('');
+  const [tagZeroSource, setTagZeroSource] = useState<'none' | 'category_rule' | 'custom'>('none');
+  const [tagZeroCategoryRuleId, setTagZeroCategoryRuleId] = useState<number | ''>('');
+  const [tagZeroCustomPayload, setTagZeroCustomPayload] = useState<CategoryRuleConditionsPayload | null>(null);
 
   const credsQuery = useQuery({
     queryKey: ['bank-credentials'],
@@ -77,6 +88,21 @@ export default function BankAccountsSettings() {
     enabled: editOpen && editing != null,
   });
   const creds = credsQuery.data ?? [];
+
+  const tagZeroQuery = useQuery({
+    queryKey: ['tag-zero-rule', editing?.id],
+    queryFn: () => fetchTagZeroRule(editing!.id),
+    enabled: editOpen && editing != null,
+  });
+
+  const categoryRulesQuery = useQuery({
+    queryKey: ['category-rules', editing?.household_id],
+    queryFn: () => fetchCategoryRules(editing!.household_id),
+    enabled: editOpen && editing != null,
+    staleTime: 60_000,
+  });
+
+  const categoryRules: CategoryRuleOut[] = categoryRulesQuery.data?.rules ?? [];
 
   const updateMut = useMutation({
     mutationFn: () => {
@@ -100,6 +126,34 @@ export default function BankAccountsSettings() {
     onError: (e) => setFormError(apiErrorMessage(e)),
   });
 
+  const saveTagZeroMut = useMutation({
+    mutationFn: async () => {
+      if (!editing) throw new Error('Kein Konto');
+      setTagZeroError('');
+      if (tagZeroSource === 'none') {
+        return upsertTagZeroRule(editing.id, { source: 'none' });
+      }
+      if (tagZeroSource === 'category_rule') {
+        if (tagZeroCategoryRuleId === '') throw new Error('Bitte eine Regel auswählen.');
+        return upsertTagZeroRule(editing.id, { source: 'category_rule', category_rule_id: tagZeroCategoryRuleId });
+      }
+      if (!tagZeroCustomPayload?.conditions?.length) {
+        throw new Error('Bitte mindestens eine gültige Bedingung angeben (Text und/oder Betragsgrenzen).');
+      }
+      return upsertTagZeroRule(editing.id, {
+        source: 'custom',
+        conditions: tagZeroCustomPayload.conditions,
+        display_name_override: tagZeroCustomPayload.display_name_override ?? undefined,
+        normalize_dot_space: tagZeroCustomPayload.normalize_dot_space,
+      });
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['tag-zero-rule'] });
+      void qc.invalidateQueries({ queryKey: ['accounts'] });
+    },
+    onError: (e) => setTagZeroError(apiErrorMessage(e)),
+  });
+
   function openEdit(a: BankAccount) {
     setEditing(a);
     setForm({
@@ -111,8 +165,41 @@ export default function BankAccountsSettings() {
       credential_id: a.credential_id,
     });
     setFormError('');
+    setTagZeroError('');
+    // defaults; actual values loaded via query
+    setTagZeroSource('none');
+    setTagZeroCategoryRuleId('');
+    setTagZeroCustomPayload(null);
     setEditOpen(true);
   }
+
+  // Hydrate Tag-Null config when loaded
+  const tz = tagZeroQuery.data;
+  useEffect(() => {
+    if (!editOpen || !editing || !tz) return;
+    setTagZeroSource(tz.source);
+    setTagZeroCategoryRuleId(tz.category_rule_id ? Number(tz.category_rule_id) : '');
+  }, [editOpen, editing?.id, tz]);
+
+  const tagZeroHydrateKey = `${editing?.id ?? 0}-${tagZeroSource}-${tagZeroQuery.dataUpdatedAt ?? 0}`;
+
+  const tagZeroEditorInitial = useMemo((): CategoryRuleConditionsPayload => {
+    if (!editing || tagZeroSource !== 'custom') {
+      return { conditions: [], display_name_override: null, normalize_dot_space: false };
+    }
+    if (tz?.source === 'custom') {
+      return {
+        conditions: tz.conditions ?? [],
+        display_name_override: tz.display_name_override ?? null,
+        normalize_dot_space: Boolean(tz.normalize_dot_space),
+      };
+    }
+    return { conditions: [], display_name_override: null, normalize_dot_space: false };
+  }, [editing?.id, tagZeroSource, tz?.source, tz?.conditions, tz?.display_name_override, tz?.normalize_dot_space]);
+
+  const onTagZeroCustomChange = useCallback((p: CategoryRuleConditionsPayload | null) => {
+    setTagZeroCustomPayload(p);
+  }, []);
 
   const groupOptionsForEdit = useMemo(() => {
     if (!editing) return [];
@@ -200,7 +287,7 @@ export default function BankAccountsSettings() {
         open={editOpen}
         onClose={() => !updateMut.isPending && setEditOpen(false)}
         fullWidth
-        maxWidth="sm"
+        maxWidth="md"
         fullScreen={isXs}
       >
         <DialogTitle>Bankkonto bearbeiten</DialogTitle>
@@ -212,6 +299,70 @@ export default function BankAccountsSettings() {
                 Saldo-Stand: {editing.balance_at ? formatDate(editing.balance_at) : '—'}
               </Typography>
             ) : null}
+            <Paper variant="outlined" sx={{ p: 1.5 }}>
+              <Stack spacing={1.5}>
+                <Typography variant="subtitle2" fontWeight={700}>
+                  Tag Null Regel
+                </Typography>
+                {tagZeroError ? <Alert severity="error">{tagZeroError}</Alert> : null}
+                <FormControl fullWidth size="small">
+                  <InputLabel id="tz-source">Quelle</InputLabel>
+                  <Select
+                    labelId="tz-source"
+                    label="Quelle"
+                    value={tagZeroSource}
+                    onChange={(e) => {
+                      const v = String(e.target.value) as 'none' | 'category_rule' | 'custom';
+                      setTagZeroSource(v);
+                      setTagZeroError('');
+                    }}
+                  >
+                    <MenuItem value="none">Keine</MenuItem>
+                    <MenuItem value="category_rule">Bestehende Kategorie-Regel wählen</MenuItem>
+                    <MenuItem value="custom">Eigene Regel (wie Kategorie-Regeln)</MenuItem>
+                  </Select>
+                </FormControl>
+
+                {tagZeroSource === 'category_rule' ? (
+                  <FormControl fullWidth size="small" disabled={categoryRulesQuery.isLoading || categoryRulesQuery.isError}>
+                    <InputLabel id="tz-cat-rule">Kategorie-Regel</InputLabel>
+                    <Select
+                      labelId="tz-cat-rule"
+                      label="Kategorie-Regel"
+                      value={tagZeroCategoryRuleId === '' ? '' : tagZeroCategoryRuleId}
+                      onChange={(e) => setTagZeroCategoryRuleId(e.target.value === '' ? '' : Number(e.target.value))}
+                    >
+                      <MenuItem value="">—</MenuItem>
+                      {categoryRules.map((r) => (
+                        <MenuItem key={r.id} value={r.id}>
+                          {r.display_name}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : null}
+
+                {tagZeroSource === 'custom' ? (
+                  <CategoryRuleConditionsEditor
+                    hydrateKey={tagZeroHydrateKey}
+                    initial={tagZeroEditorInitial}
+                    onPayloadChange={onTagZeroCustomChange}
+                    disabled={saveTagZeroMut.isPending || tagZeroQuery.isLoading}
+                  />
+                ) : null}
+
+                <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={saveTagZeroMut.isPending || tagZeroQuery.isLoading}
+                    onClick={() => saveTagZeroMut.mutate()}
+                  >
+                    {saveTagZeroMut.isPending ? 'Speichern…' : 'Regel speichern'}
+                  </Button>
+                </Box>
+              </Stack>
+            </Paper>
             {editing && groupOptionsForEdit.length > 0 ? (
               <FormControl fullWidth>
                 <InputLabel id="bank-acc-group">Kontogruppe</InputLabel>

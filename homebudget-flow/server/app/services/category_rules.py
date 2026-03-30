@@ -18,7 +18,11 @@ _OVERWRITE_CANDIDATE_LIMIT = 500
 
 def transaction_matches_rule(tx: Transaction, rule: CategoryRule) -> bool:
     conds = rule_effective_conditions(rule)
-    return transaction_matches_conditions(tx, conds)
+    return transaction_matches_conditions(
+        tx,
+        conds,
+        normalize_dot_space=bool(getattr(rule, "normalize_dot_space", False)),
+    )
 
 
 async def build_rule_allowed_bank_account_ids(

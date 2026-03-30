@@ -71,6 +71,18 @@ function clipText(s: string, max = 64): string {
 const ENRICHMENT_LINE_CLIP_MOBILE = 120;
 const ENRICHMENT_LINE_CLIP_DESKTOP = 100;
 
+function counterpartyMetaLines(t: Transaction): string[] {
+  const out: string[] = [];
+  if (t.counterparty_iban) out.push(`IBAN: ${clipText(t.counterparty_iban, 34)}`);
+  if (t.counterparty_bic) out.push(`BIC: ${clipText(t.counterparty_bic, 20)}`);
+  if (t.counterparty_partner_name) out.push(`Partner: ${clipText(t.counterparty_partner_name, 34)}`);
+  // Falls weder IBAN noch BIC existieren, zeigen wir ggf. den strukturierten Namen.
+  if (out.length === 0 && t.counterparty_name && t.counterparty_name !== t.counterparty) {
+    out.push(`Name: ${clipText(t.counterparty_name, 34)}`);
+  }
+  return out;
+}
+
 type Props = {
   rows: Transaction[];
   accounts: BankAccount[];
@@ -542,9 +554,20 @@ export default function TransactionBookingsTable({
                       ))}
                     </Stack>
                   ) : null}
-                  <Typography variant="caption" color="text.secondary">
-                    {t.counterparty ? clipText(t.counterparty, 80) : '—'}
-                  </Typography>
+                  <Stack spacing={0.25}>
+                    <Typography variant="caption" color="text.secondary">
+                      {t.counterparty ? clipText(t.counterparty, 80) : '—'}
+                    </Typography>
+                    {counterpartyMetaLines(t).length > 0 ? (
+                      <Stack spacing={0.25}>
+                        {counterpartyMetaLines(t).map((line, i) => (
+                          <Typography key={i} variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            {line}
+                          </Typography>
+                        ))}
+                      </Stack>
+                    ) : null}
+                  </Stack>
                 </CardContent>
               </Card>
             ))}
@@ -666,7 +689,22 @@ export default function TransactionBookingsTable({
                         </Stack>
                       ) : null}
                     </TableCell>
-                    <TableCell>{t.counterparty ?? '—'}</TableCell>
+                    <TableCell sx={{ maxWidth: 360 }}>
+                      <Stack spacing={0.25}>
+                        <Typography variant="body2" noWrap>
+                          {t.counterparty ?? '—'}
+                        </Typography>
+                        {counterpartyMetaLines(t).length > 0 ? (
+                          <Stack spacing={0.25}>
+                            {counterpartyMetaLines(t).map((line, i) => (
+                              <Typography key={i} variant="caption" color="text.secondary" sx={{ display: 'block' }} noWrap>
+                                {line}
+                              </Typography>
+                            ))}
+                          </Stack>
+                        ) : null}
+                      </Stack>
+                    </TableCell>
                   </TableRow>
                 ))
               )}

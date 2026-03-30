@@ -14,6 +14,7 @@ from app.db.session import get_session
 from app.schemas.category_rule import (
     CategoryRuleConditionsBody,
     CategoryRuleCreate,
+    parse_category_rule_conditions_body,
     CategoryRuleCreatedOut,
     CategoryRuleOut,
     CategoryRuleOverwriteCandidate,
@@ -35,7 +36,6 @@ from app.schemas.category_rule_conditions import (
     derive_rule_type_and_pattern,
     resolved_rule_display_name,
     transaction_matches_conditions,
-    validate_conditions_list,
 )
 from app.services.category_assignment import ensure_category_is_subcategory_for_assignment
 from app.services.access import (
@@ -96,6 +96,7 @@ def _rule_to_out(row: CategoryRule, user_map: dict[int, User]) -> CategoryRuleOu
         applies_to_household=row.applies_to_household,
         rule_type=row.rule_type,
         pattern=row.pattern,
+        normalize_dot_space=bool(getattr(row, "normalize_dot_space", False)),
         display_name=resolved_rule_display_name(row),
         display_name_override=override_raw if override_raw else None,
         conditions=conditions_for_api(row),
@@ -106,22 +107,12 @@ def _rule_to_out(row: CategoryRule, user_map: dict[int, User]) -> CategoryRuleOu
 
 
 def _parse_rule_conditions_body(body: CategoryRuleConditionsBody) -> list:
-    if body.conditions is not None:
-        try:
-            return validate_conditions_list(body.conditions)
-        except ValueError as e:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-        except ValidationError as e:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.errors()) from e
-    if body.rule_type is not None and body.pattern and body.pattern.strip():
-        try:
-            return conditions_from_legacy_api_type(body.rule_type.value, body.pattern)
-        except ValueError as e:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-    raise HTTPException(
-        status.HTTP_422_UNPROCESSABLE_ENTITY,
-        "Entweder „conditions“ (nicht-leere Liste) oder „rule_type“ mit nicht-leerem „pattern“ angeben.",
-    )
+    try:
+        return parse_category_rule_conditions_body(body)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    except ValidationError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.errors()) from e
 
 
 @router.get("/{household_id}/category-rules", response_model=CategoryRulesListOut)
@@ -471,6 +462,7 @@ async def create_category_rule(
         rule_type=rt,
         pattern=(pat or "")[:512],
         display_name_override=ovr if ovr else None,
+        normalize_dot_space=body.normalize_dot_space,
         conditions_json=cj,
         created_by_user_id=user.id,
         applies_to_household=body.applies_to_household,
@@ -582,6 +574,8 @@ async def update_category_rule(
     if "display_name_override" in body.model_fields_set:
         ovr = (body.display_name_override or "").strip()
         row.display_name_override = ovr if ovr else None
+    if "normalize_dot_space" in body.model_fields_set:
+        row.normalize_dot_space = bool(body.normalize_dot_space)
 
     n_updated = 0
     overwrite_candidates: list[CategoryRuleOverwriteCandidate] = []

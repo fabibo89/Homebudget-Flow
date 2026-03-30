@@ -170,6 +170,53 @@ export function categoryRuleApiType(field: RuleTargetField, mode: RuleMatchMode)
   return mode === 'contains' ? 'counterparty_contains' : 'counterparty_equals';
 }
 
+/** Betragseingabe für Regel-Betragsfilter (Komma/Punkt). */
+export function normalizeAmountInputForRule(raw: string): string | null {
+  const t = raw.trim().replace(/\s/g, '').replace(',', '.');
+  if (!t) return null;
+  if (!/^-?\d+(\.\d+)?$/.test(t)) return null;
+  return t;
+}
+
+/** Bedingungen wie im Kategorie-Regel-Dialog (Richtung, Text, optional Betrag zwischen). */
+export function buildCategoryRuleConditionsForSubmit(args: {
+  direction: 'all' | 'credit' | 'debit';
+  textType: CategoryRuleType;
+  pattern: string;
+  amountMin: string;
+  amountMax: string;
+}): CategoryRuleCondition[] {
+  const out: CategoryRuleCondition[] = [];
+  if (args.direction !== 'all') {
+    out.push({ type: 'direction', value: args.direction });
+  }
+  const p = args.pattern.trim();
+  if (p) {
+    const tt = args.textType;
+    if (tt === 'description_contains') out.push({ type: 'description_contains', pattern: p });
+    else if (tt === 'description_contains_word') out.push({ type: 'description_contains_word', pattern: p });
+    else if (tt === 'description_equals') out.push({ type: 'description_equals', pattern: p });
+    else if (tt === 'counterparty_contains') out.push({ type: 'counterparty_contains', pattern: p });
+    else if (tt === 'counterparty_contains_word') out.push({ type: 'counterparty_contains_word', pattern: p });
+    else if (tt === 'counterparty_equals') out.push({ type: 'counterparty_equals', pattern: p });
+  }
+  const minA = normalizeAmountInputForRule(args.amountMin);
+  const maxA = normalizeAmountInputForRule(args.amountMax);
+  if (minA != null || maxA != null) {
+    out.push({
+      type: 'amount_between',
+      min_amount: minA,
+      max_amount: maxA,
+    });
+  }
+  return out;
+}
+
+export function categoryRuleFormHasSubmitPayload(pattern: string, amountMin: string, amountMax: string): boolean {
+  if (pattern.trim().length > 0) return true;
+  return normalizeAmountInputForRule(amountMin) != null || normalizeAmountInputForRule(amountMax) != null;
+}
+
 export type CategoryRuleFormState = {
   direction: 'all' | 'credit' | 'debit';
   field: RuleTargetField;
@@ -326,11 +373,15 @@ export function formatDate(iso: string): string {
 export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return '—';
   try {
+    const s = String(iso).trim();
+    const hasZone =
+      s.endsWith('Z') || /[+-]\d\d:\d\d$/.test(s) || /[+-]\d\d\d\d$/.test(s);
+    const d = new Date(hasZone ? s : `${s}Z`);
     return new Intl.DateTimeFormat('de-DE', {
       dateStyle: 'short',
       timeStyle: 'short',
       timeZone: getAppTimeZone(),
-    }).format(new Date(iso));
+    }).format(d);
   } catch {
     return iso;
   }

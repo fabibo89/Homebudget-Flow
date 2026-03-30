@@ -262,6 +262,8 @@ export type CategoryRuleOut = {
   display_name: string;
   /** Nur wenn vom Nutzer gesetzt; sonst null (Vorgabe aus Muster). */
   display_name_override?: string | null;
+  /** True: '.' und Whitespace gleich behandeln (z. B. "ERNST LEBENSMITTEL" == "ERNST.LEBENSMITTEL"). */
+  normalize_dot_space: boolean;
   conditions: CategoryRuleCondition[];
   created_at: string;
   created_by_user_id?: number | null;
@@ -378,6 +380,7 @@ export async function createCategoryRule(
     rule_type?: CategoryRuleType;
     pattern?: string;
     display_name_override?: string | null;
+    normalize_dot_space?: boolean;
     category_id: number;
     applies_to_household?: boolean;
     apply_to_uncategorized?: boolean;
@@ -399,6 +402,7 @@ export async function updateCategoryRule(
     rule_type?: CategoryRuleType;
     pattern?: string;
     display_name_override?: string | null;
+    normalize_dot_space?: boolean;
     category_id: number;
     applies_to_household?: boolean;
     apply_to_uncategorized?: boolean;
@@ -571,6 +575,39 @@ export async function updateBankAccount(
 
 export async function refreshBankAccountSalaryCache(id: number): Promise<BankAccount> {
   const { data } = await api.post<BankAccount>(`/api/accounts/${id}/salary-cache/refresh`);
+  return data;
+}
+
+export type TagZeroRuleSource = 'none' | 'category_rule' | 'custom';
+
+export type TagZeroRuleOut = {
+  source: TagZeroRuleSource;
+  category_rule_id?: number | null;
+  display_name_override?: string | null;
+  normalize_dot_space?: boolean;
+  conditions?: CategoryRuleCondition[];
+};
+
+export async function fetchTagZeroRule(bankAccountId: number): Promise<TagZeroRuleOut> {
+  const { data } = await api.get<TagZeroRuleOut>(`/api/accounts/${bankAccountId}/tag-zero-rule`);
+  return data;
+}
+
+export async function upsertTagZeroRule(
+  bankAccountId: number,
+  body:
+    | { source: 'none' }
+    | { source: 'category_rule'; category_rule_id: number }
+    | {
+        source: 'custom';
+        display_name_override?: string;
+        normalize_dot_space?: boolean;
+        conditions?: CategoryRuleCondition[];
+        rule_type?: CategoryRuleType;
+        pattern?: string;
+      },
+): Promise<TagZeroRuleOut> {
+  const { data } = await api.put<TagZeroRuleOut>(`/api/accounts/${bankAccountId}/tag-zero-rule`, body);
   return data;
 }
 

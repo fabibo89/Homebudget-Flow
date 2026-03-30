@@ -160,6 +160,14 @@ def _text_matches_whole_words(hay: str, pattern: str) -> bool:
     return True
 
 
+def _normalize_dot_space_text(s: str) -> str:
+    """Normalisiert '.' zu Whitespace und kollabiert Mehrfach-Whitespace."""
+    raw = (s or "").replace(".", " ")
+    # Mehrfach-Whitespace vereinheitlichen
+    raw = re.sub(r"\s+", " ", raw)
+    return raw.strip()
+
+
 def conditions_from_legacy_api_type(rule_type: str, pattern: str) -> List[CategoryRuleCondition]:
     pat = pattern.strip()
     if not pat:
@@ -210,7 +218,12 @@ def conditions_for_api(rule: CategoryRule) -> List[dict[str, Any]]:
     return [c.model_dump(mode="json") for c in rule_effective_conditions(rule)]
 
 
-def transaction_matches_conditions(tx: Transaction, conditions: List[CategoryRuleCondition]) -> bool:
+def transaction_matches_conditions(
+    tx: Transaction,
+    conditions: List[CategoryRuleCondition],
+    *,
+    normalize_dot_space: bool = False,
+) -> bool:
     """Alle Bedingungen müssen erfüllt sein (UND). Leere Liste matcht nicht."""
     if not conditions:
         return False
@@ -226,34 +239,62 @@ def transaction_matches_conditions(tx: Transaction, conditions: List[CategoryRul
                 return False
             continue
         if isinstance(c, DescriptionContainsCondition):
-            needle = c.pattern.lower()
-            hay = (tx.description or "").lower()
+            if normalize_dot_space:
+                needle = _normalize_dot_space_text(c.pattern).lower()
+                hay = _normalize_dot_space_text(tx.description or "").lower()
+            else:
+                needle = c.pattern.lower()
+                hay = (tx.description or "").lower()
             if not needle or needle not in hay:
                 return False
             continue
         if isinstance(c, DescriptionContainsWordCondition):
-            if not _text_matches_whole_words(tx.description or "", c.pattern):
+            if normalize_dot_space:
+                hay = _normalize_dot_space_text(tx.description or "")
+                pat = _normalize_dot_space_text(c.pattern)
+            else:
+                hay = tx.description or ""
+                pat = c.pattern
+            if not _text_matches_whole_words(hay, pat):
                 return False
             continue
         if isinstance(c, DescriptionEqualsCondition):
-            d = (tx.description or "").strip().lower()
-            pat = c.pattern.strip().lower()
+            if normalize_dot_space:
+                d = _normalize_dot_space_text(tx.description or "").lower()
+                pat = _normalize_dot_space_text(c.pattern).lower()
+            else:
+                d = (tx.description or "").strip().lower()
+                pat = c.pattern.strip().lower()
             if not pat or d != pat:
                 return False
             continue
         if isinstance(c, CounterpartyContainsCondition):
-            needle = c.pattern.lower()
-            hay = (tx.counterparty or "").lower()
+            if normalize_dot_space:
+                needle = _normalize_dot_space_text(c.pattern).lower()
+                hay = _normalize_dot_space_text(tx.counterparty or "").lower()
+            else:
+                needle = c.pattern.lower()
+                hay = (tx.counterparty or "").lower()
             if not needle or needle not in hay:
                 return False
             continue
         if isinstance(c, CounterpartyContainsWordCondition):
-            if not _text_matches_whole_words(tx.counterparty or "", c.pattern):
+            if normalize_dot_space:
+                hay = _normalize_dot_space_text(tx.counterparty or "")
+                pat = _normalize_dot_space_text(c.pattern)
+            else:
+                hay = tx.counterparty or ""
+                pat = c.pattern
+            if not _text_matches_whole_words(hay, pat):
                 return False
             continue
         if isinstance(c, CounterpartyEqualsCondition):
-            cp = (tx.counterparty or "").strip().lower()
-            pat = c.pattern.strip().lower()
+            if normalize_dot_space:
+                cp = _normalize_dot_space_text(tx.counterparty or "").lower()
+                pat = _normalize_dot_space_text(c.pattern).lower()
+            else:
+                cp = (tx.counterparty or "").strip().lower()
+                pat = c.pattern.strip().lower()
             if not pat or not cp or cp != pat:
                 return False
             continue

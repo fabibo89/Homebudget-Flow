@@ -46,13 +46,16 @@ import { CategorySymbolDisplay } from './CategorySymbol';
 import BookingFlowTag from './transactions/BookingFlowTag';
 import {
   amountSxColorFromTransaction,
+  buildCategoryRuleConditionsForSubmit,
   categoryRuleApiType,
   categoryRuleConditionsToFormState,
+  categoryRuleFormHasSubmitPayload,
   defaultCategoryRuleDisplayName,
   defaultRulePatternFromTx,
   describeCategoryRuleCondition,
   flattenSubcategoryPickOptionsWithMeta,
   formatMoney,
+  normalizeAmountInputForRule,
   type CategoryFlatOptionWithMeta,
   RuleMatchMode,
   RuleTargetField,
@@ -64,6 +67,7 @@ type CreateRuleBody = {
   applies_to_household: boolean;
   apply_to_uncategorized: boolean;
   display_name_override: string | null;
+  normalize_dot_space: boolean;
   also_assign_transaction_id?: number | null;
 };
 
@@ -73,52 +77,8 @@ type UpdateRuleBody = {
   applies_to_household: boolean;
   apply_to_uncategorized: boolean;
   display_name_override: string | null;
+  normalize_dot_space: boolean;
 };
-
-function normalizeAmountInput(raw: string): string | null {
-  const t = raw.trim().replace(/\s/g, '').replace(',', '.');
-  if (!t) return null;
-  if (!/^-?\d+(\.\d+)?$/.test(t)) return null;
-  return t;
-}
-
-function buildConditionsForSubmit(args: {
-  direction: 'all' | 'credit' | 'debit';
-  textType: CategoryRuleType;
-  pattern: string;
-  amountMin: string;
-  amountMax: string;
-}): CategoryRuleCondition[] {
-  const out: CategoryRuleCondition[] = [];
-  if (args.direction !== 'all') {
-    out.push({ type: 'direction', value: args.direction });
-  }
-  const p = args.pattern.trim();
-  if (p) {
-    const tt = args.textType;
-    if (tt === 'description_contains') out.push({ type: 'description_contains', pattern: p });
-    else if (tt === 'description_contains_word') out.push({ type: 'description_contains_word', pattern: p });
-    else if (tt === 'description_equals') out.push({ type: 'description_equals', pattern: p });
-    else if (tt === 'counterparty_contains') out.push({ type: 'counterparty_contains', pattern: p });
-    else if (tt === 'counterparty_contains_word') out.push({ type: 'counterparty_contains_word', pattern: p });
-    else if (tt === 'counterparty_equals') out.push({ type: 'counterparty_equals', pattern: p });
-  }
-  const minA = normalizeAmountInput(args.amountMin);
-  const maxA = normalizeAmountInput(args.amountMax);
-  if (minA != null || maxA != null) {
-    out.push({
-      type: 'amount_between',
-      min_amount: minA,
-      max_amount: maxA,
-    });
-  }
-  return out;
-}
-
-function ruleFormHasSubmitPayload(pattern: string, amountMin: string, amountMax: string): boolean {
-  if (pattern.trim().length > 0) return true;
-  return normalizeAmountInput(amountMin) != null || normalizeAmountInput(amountMax) != null;
-}
 
 function ruleTypeToFieldMode(rt: CategoryRuleType): { field: RuleTargetField; mode: RuleMatchMode } {
   switch (rt) {
@@ -177,6 +137,7 @@ export default function CreateCategoryRuleDialog({
   const [applyRulesToUncategorized, setApplyRulesToUncategorized] = useState(true);
   const [appliesToHousehold, setAppliesToHousehold] = useState(true);
   const [ruleDisplayNameOverride, setRuleDisplayNameOverride] = useState('');
+  const [ruleNormalizeDotSpace, setRuleNormalizeDotSpace] = useState(false);
 
   const fromSuggestion = Boolean(suggestionPreset && !transaction && !editingRule);
   const isEditing = Boolean(editingRule);
@@ -201,6 +162,7 @@ export default function CreateCategoryRuleDialog({
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(editingRule.applies_to_household !== false);
       setRuleDisplayNameOverride(editingRule.display_name_override ?? '');
+      setRuleNormalizeDotSpace(Boolean(editingRule.normalize_dot_space));
       return;
     }
     if (transaction) {
@@ -215,6 +177,7 @@ export default function CreateCategoryRuleDialog({
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
       setRuleDisplayNameOverride('');
+      setRuleNormalizeDotSpace(false);
     } else if (suggestionPreset) {
       const fm = ruleTypeToFieldMode(suggestionPreset.rule_type);
       setRuleField(fm.field);
@@ -227,6 +190,7 @@ export default function CreateCategoryRuleDialog({
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
       setRuleDisplayNameOverride('');
+      setRuleNormalizeDotSpace(false);
     } else {
       setRuleField('description');
       setRuleMode('contains');
@@ -238,6 +202,7 @@ export default function CreateCategoryRuleDialog({
       setApplyRulesToUncategorized(true);
       setAppliesToHousehold(true);
       setRuleDisplayNameOverride('');
+      setRuleNormalizeDotSpace(false);
     }
   }, [
     open,
@@ -245,6 +210,7 @@ export default function CreateCategoryRuleDialog({
     editingRule?.category_id,
     editingRule?.category_missing,
     editingRule?.display_name_override,
+    editingRule?.normalize_dot_space,
     transaction?.id,
     suggestionPreset?.rule_type,
     suggestionPreset?.pattern,
@@ -311,8 +277,8 @@ export default function CreateCategoryRuleDialog({
     createRuleMut.isPending || updateRuleMut.isPending || applyRuleMut.isPending || reverseRuleMut.isPending;
 
   const previewConditions = useMemo(() => {
-    if (!ruleFormHasSubmitPayload(rulePattern, amountMin, amountMax)) return [];
-    return buildConditionsForSubmit({
+    if (!categoryRuleFormHasSubmitPayload(rulePattern, amountMin, amountMax)) return [];
+    return buildCategoryRuleConditionsForSubmit({
       direction: ruleDirection,
       textType: categoryRuleApiType(ruleField, ruleMode),
       pattern: rulePattern,
@@ -527,6 +493,16 @@ export default function CreateCategoryRuleDialog({
                       : `Vorgabe: ${defaultDisplayNamePreview || '—'} (Mustertext in Großbuchstaben)`
                   }
                 />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={ruleNormalizeDotSpace}
+                      onChange={(e) => setRuleNormalizeDotSpace(e.target.checked)}
+                      size="small"
+                    />
+                  }
+                  label="Punkt/Leerzeichen gleich behandeln"
+                />
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
                   <TextField
                     label="Betrag min (optional)"
@@ -684,15 +660,15 @@ export default function CreateCategoryRuleDialog({
               householdId == null ||
               categoriesQuery.isLoading ||
               categoriesQuery.isError ||
-              !ruleFormHasSubmitPayload(rulePattern, amountMin, amountMax) ||
+              !categoryRuleFormHasSubmitPayload(rulePattern, amountMin, amountMax) ||
               pickCategoryId == null ||
               categoryRulePickOptions.length === 0 ||
-              (amountMin.trim() !== '' && normalizeAmountInput(amountMin) === null) ||
-              (amountMax.trim() !== '' && normalizeAmountInput(amountMax) === null)
+              (amountMin.trim() !== '' && normalizeAmountInputForRule(amountMin) === null) ||
+              (amountMax.trim() !== '' && normalizeAmountInputForRule(amountMax) === null)
             }
             onClick={() => {
               if (householdId == null || pickCategoryId == null || !editingRule) return;
-              const conditions = buildConditionsForSubmit({
+              const conditions = buildCategoryRuleConditionsForSubmit({
                 direction: ruleDirection,
                 textType: categoryRuleApiType(ruleField, ruleMode),
                 pattern: rulePattern,
@@ -709,6 +685,7 @@ export default function CreateCategoryRuleDialog({
                   applies_to_household: appliesToHousehold,
                   apply_to_uncategorized: true,
                   display_name_override: dn.length > 0 ? dn : null,
+                  normalize_dot_space: ruleNormalizeDotSpace,
                 },
               });
             }}
@@ -742,15 +719,15 @@ export default function CreateCategoryRuleDialog({
             householdId == null ||
             categoriesQuery.isLoading ||
             categoriesQuery.isError ||
-            !ruleFormHasSubmitPayload(rulePattern, amountMin, amountMax) ||
+            !categoryRuleFormHasSubmitPayload(rulePattern, amountMin, amountMax) ||
             pickCategoryId == null ||
             categoryRulePickOptions.length === 0 ||
-            (amountMin.trim() !== '' && normalizeAmountInput(amountMin) === null) ||
-            (amountMax.trim() !== '' && normalizeAmountInput(amountMax) === null)
+            (amountMin.trim() !== '' && normalizeAmountInputForRule(amountMin) === null) ||
+            (amountMax.trim() !== '' && normalizeAmountInputForRule(amountMax) === null)
           }
           onClick={() => {
             if (householdId == null || pickCategoryId == null) return;
-            const conditions = buildConditionsForSubmit({
+            const conditions = buildCategoryRuleConditionsForSubmit({
               direction: ruleDirection,
               textType: categoryRuleApiType(ruleField, ruleMode),
               pattern: rulePattern,
@@ -769,6 +746,7 @@ export default function CreateCategoryRuleDialog({
                   applies_to_household: appliesToHousehold,
                   apply_to_uncategorized: applyRulesToUncategorized,
                   display_name_override,
+                  normalize_dot_space: ruleNormalizeDotSpace,
                 },
               });
               return;
@@ -781,6 +759,7 @@ export default function CreateCategoryRuleDialog({
                 applies_to_household: appliesToHousehold,
                 apply_to_uncategorized: applyRulesToUncategorized,
                 display_name_override,
+                normalize_dot_space: ruleNormalizeDotSpace,
                 also_assign_transaction_id: transaction?.id,
               },
             });

@@ -112,7 +112,7 @@ async def _ensure_bank_credentials_fints_verification(conn) -> None:
 
 
 async def _ensure_bank_accounts_last_salary_cache(conn) -> None:
-    """Cache-Spalten für letzte Gehalt-Buchung (Standardkategorie)."""
+    """Cache-Spalten („Tag Null“) für letzte Gehalt-Buchung (Standardkategorie)."""
     url = settings.database_url.lower()
     if "sqlite" in url:
         r = await conn.execute(text("PRAGMA table_info(bank_accounts)"))
@@ -129,6 +129,60 @@ async def _ensure_bank_accounts_last_salary_cache(conn) -> None:
         await conn.execute(
             text(
                 "ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS last_salary_amount NUMERIC(18, 2)",
+            ),
+        )
+
+
+async def _ensure_bank_accounts_tag_zero_rule(conn) -> None:
+    """Konfiguration der „Tag Null“-Regel pro Bankkonto (optional)."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(bank_accounts)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "tag_zero_rule_category_rule_id" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE bank_accounts ADD COLUMN tag_zero_rule_category_rule_id "
+                    "INTEGER REFERENCES category_rules(id)",
+                ),
+            )
+        if cols and "tag_zero_rule_conditions_json" not in cols:
+            await conn.execute(text("ALTER TABLE bank_accounts ADD COLUMN tag_zero_rule_conditions_json TEXT"))
+        if cols and "tag_zero_rule_normalize_dot_space" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE bank_accounts ADD COLUMN tag_zero_rule_normalize_dot_space "
+                    "BOOLEAN NOT NULL DEFAULT 0",
+                ),
+            )
+        if cols and "tag_zero_rule_display_name_override" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE bank_accounts ADD COLUMN tag_zero_rule_display_name_override VARCHAR(512)",
+                ),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS tag_zero_rule_category_rule_id "
+                "INTEGER REFERENCES category_rules(id) ON DELETE SET NULL",
+            ),
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS tag_zero_rule_conditions_json TEXT",
+            ),
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS tag_zero_rule_normalize_dot_space "
+                "BOOLEAN NOT NULL DEFAULT FALSE",
+            ),
+        )
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS tag_zero_rule_display_name_override VARCHAR(512)",
             ),
         )
 
@@ -508,6 +562,28 @@ async def _ensure_category_rules_display_name_override(conn) -> None:
         )
 
 
+async def _ensure_category_rules_normalize_dot_space(conn) -> None:
+    """Optionaler Matching-Schalter: '.' und Whitespace gleich behandeln."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(category_rules)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "normalize_dot_space" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE category_rules ADD COLUMN normalize_dot_space BOOLEAN NOT NULL DEFAULT 0",
+                ),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE category_rules ADD COLUMN IF NOT EXISTS normalize_dot_space "
+                "BOOLEAN NOT NULL DEFAULT FALSE",
+            ),
+        )
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -521,7 +597,9 @@ async def init_db() -> None:
         await _ensure_category_rules_applies_to_household(conn)
         await _ensure_category_rules_missing_nullable_category(conn)
         await _ensure_category_rules_display_name_override(conn)
+        await _ensure_category_rules_normalize_dot_space(conn)
         await _ensure_bank_accounts_last_salary_cache(conn)
+        await _ensure_bank_accounts_tag_zero_rule(conn)
         await _ensure_transactions_transfer_target(conn)
         await _ensure_transactions_counterparty_fields(conn)
         await _ensure_transactions_fints_raw_and_reference_fields(conn)

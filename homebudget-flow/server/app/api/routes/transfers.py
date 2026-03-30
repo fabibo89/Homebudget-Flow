@@ -96,7 +96,10 @@ async def list_transfer_pairs(
 
     # Filter: Datum bezieht sich auf Ausgangsbuchung
     if from_date is not None or to_date is not None or bank_account_id is not None:
-        q = q.join(Transaction, Transaction.id == TransferPair.out_transaction_id)
+        # _pairs_base_query() joint Transaction bereits in der "nicht all_household"-Variante.
+        # In der all_household-Variante brauchen wir den Join hier, sonst nicht (vermeidet DuplicateAliasError).
+        if user.all_household_transactions:
+            q = q.join(Transaction, Transaction.id == TransferPair.out_transaction_id)
         if from_date is not None:
             q = q.where(Transaction.booking_date >= from_date)
         if to_date is not None:

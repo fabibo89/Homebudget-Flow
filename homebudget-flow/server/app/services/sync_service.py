@@ -29,6 +29,7 @@ from app.db.models import (
     BankAccount,
     BankAccountBalanceSnapshot,
     BankCredential,
+    CategoryRule,
     SyncStatus,
     Transaction,
     TransferPair,
@@ -40,6 +41,11 @@ from app.services.bank_account_provision import normalize_iban
 from app.services.category_rules import apply_category_rules_to_uncategorized
 from app.services.credential_crypto import decrypt_secret
 from app.app_time import app_today
+from app.schemas.category_rule_conditions import (
+    parse_conditions_json,
+    rule_effective_conditions,
+    transaction_matches_conditions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -562,6 +568,19 @@ async def sync_bank_account(
             iban_to_acc_id: dict[str, int] = {}
             if household_id is not None:
                 iban_to_acc_id = await _household_iban_to_account_id(session, int(household_id))
+            # Tag Null Regel vorbereiten (pro Konto: Kategorie-Regel referenzieren oder eigene Bedingungen).
+            tag_zero_conds = None
+            tag_zero_norm = False
+            if getattr(acc, "tag_zero_rule_category_rule_id", None) is not None and household_id is not None:
+                rule = await session.get(CategoryRule, int(acc.tag_zero_rule_category_rule_id))
+                if rule is not None and int(rule.household_id) == int(household_id):
+                    tag_zero_conds = rule_effective_conditions(rule)
+                    tag_zero_norm = bool(getattr(rule, "normalize_dot_space", False))
+            if tag_zero_conds is None:
+                raw = getattr(acc, "tag_zero_rule_conditions_json", None)
+                if raw and str(raw).strip():
+                    tag_zero_conds = parse_conditions_json(str(raw))
+                    tag_zero_norm = bool(getattr(acc, "tag_zero_rule_normalize_dot_space", False))
             txs = snap.transactions
             logger.info(
                 "Sync[%s] received %d transactions (from=%s to=%s)",
@@ -678,6 +697,17 @@ async def sync_bank_account(
                 await session.flush()
                 if household_id is not None:
                     await _try_pair_transfer(session, household_id=int(household_id), tx_id=int(row.id))
+                # Tag Null: wenn Regel passt, Datum/Betrag am Konto setzen (nur nach vorne).
+                if tag_zero_conds:
+                    try:
+                        if transaction_matches_conditions(row, tag_zero_conds, normalize_dot_space=tag_zero_norm):
+                            cur_d = acc.last_salary_booking_date
+                            if cur_d is None or row.booking_date >= cur_d:
+                                acc.last_salary_booking_date = row.booking_date
+                                acc.last_salary_amount = row.amount
+                    except Exception:
+                        # Matching darf Sync nicht abbrechen (z. B. kaputte Regel-Konfiguration).
+                        pass
                 logger.info(
                     "Sync[%s] adopted tx ext=%s booking=%s amount=%s %s",
                     acc.id,

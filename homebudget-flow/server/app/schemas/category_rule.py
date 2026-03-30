@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.category_rule_conditions import conditions_from_legacy_api_type, validate_conditions_list
+
 
 class CategoryRuleTypeSchema(str, Enum):
     description_contains = "description_contains"
@@ -23,11 +25,25 @@ class CategoryRuleConditionsBody(BaseModel):
     display_name_override: Optional[str] = Field(None, max_length=512)
     """Eigener Anzeigename; leer/None = Vorgabe aus Mustertext (Großbuchstaben)."""
 
+    normalize_dot_space: bool = False
+    """True: '.' und Whitespace gleich behandeln (z. B. "ERNST LEBENSMITTEL" == "ERNST.LEBENSMITTEL")."""
+
     conditions: Optional[list[dict[str, Any]]] = None
     """Komponierbare Bedingungen (UND). Mindestens ein Eintrag, wenn rule_type/pattern nicht gesetzt sind."""
     rule_type: Optional[CategoryRuleTypeSchema] = None
     pattern: Optional[str] = Field(None, max_length=512)
     """Nur mit rule_type: einzelne Textbedingung (Legacy-API)."""
+
+
+def parse_category_rule_conditions_body(body: CategoryRuleConditionsBody) -> list:
+    """Validiert dieselbe Payload wie beim Anlegen von Kategorie-Regeln (conditions ODER rule_type+pattern)."""
+    if body.conditions is not None:
+        return validate_conditions_list(body.conditions)
+    if body.rule_type is not None and body.pattern and body.pattern.strip():
+        return conditions_from_legacy_api_type(body.rule_type.value, body.pattern)
+    raise ValueError(
+        "Entweder „conditions“ (nicht-leere Liste) oder „rule_type“ mit nicht-leerem „pattern“ angeben.",
+    )
 
 
 class CategoryRuleCreate(CategoryRuleConditionsBody):
@@ -55,6 +71,8 @@ class CategoryRuleOut(BaseModel):
     applies_to_household: bool = True
     rule_type: str
     pattern: str
+    normalize_dot_space: bool = False
+    """True: '.' und Whitespace gleich behandeln."""
     display_name: str
     """Effektiver Anzeigename (Override oder Mustertext in Großbuchstaben)."""
     display_name_override: Optional[str] = None

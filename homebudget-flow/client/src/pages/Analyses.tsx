@@ -47,6 +47,7 @@ import TransactionBookingsTable from '../components/transactions/TransactionBook
 import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
 import { getAppTimeZone, isoDateInAppTimezone, todayIsoInAppTimezone } from '../lib/appTimeZone';
 import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
+import MoneyFlow from './MoneyFlow';
 import {
   addMonthsToIsoDate,
   collectDescendantCategoryIds,
@@ -524,7 +525,7 @@ function buildVerlaufPickOptions(roots: CategoryOut[], noneOption: VerlaufCatego
   return rows;
 }
 
-type AnalysisTab = 'tagesbilanz' | 'kategorien' | 'kategorieverlauf' | 'regelcluster';
+type AnalysisTab = 'tagesbilanz' | 'kategorien' | 'kategorieverlauf' | 'regelcluster' | 'geldfluss';
 
 type CategorySliceSelection = { flow: 'income' | 'expense'; categoryKey: string };
 
@@ -1611,6 +1612,7 @@ export default function Analyses() {
         <Tab value="kategorien" label="Kategorien" />
         <Tab value="kategorieverlauf" label="Kategorieverlauf" />
         <Tab value="regelcluster" label="Anzeigeregeln" />
+        <Tab value="geldfluss" label="Geldfluss" />
       </Tabs>
 
       <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
@@ -1799,6 +1801,8 @@ export default function Analyses() {
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
           <CircularProgress />
         </Box>
+      ) : tab === 'geldfluss' ? (
+        <MoneyFlow embedded from={from} to={to} includedAccountIds={includedAccountIds} />
       ) : tab === 'tagesbilanz' ? (
         <>
           {daily.length === 0 ? (

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 from sqlalchemy import desc, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,13 +13,18 @@ from app.db.models import (
     BankAccount,
     BankAccountBalanceSnapshot,
     BankCredential,
+    CategoryRule,
 )
 from app.db.session import get_session
 from app.schemas.balance_snapshot import BalanceSnapshotOut, BalanceSnapshotUpdate, balance_snapshot_to_out
+from app.schemas.category_rule import parse_category_rule_conditions_body
 from app.schemas.household import BankAccountOut, BankAccountUpdate, bank_account_to_out
+from app.schemas.tag_zero_rule import TagZeroRuleOut, TagZeroRuleUpsert
 from app.services.access import user_can_access_account_group, user_can_access_bank_account
 from app.services.bank_account_provision import normalize_iban
 from app.services.salary_cache import refresh_salary_cache_for_bank_account
+from app.schemas.category_rule_conditions import conditions_to_json, parse_conditions_json
+from app.services.tag_zero_rule import apply_tag_zero_rule_for_account
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -58,6 +64,105 @@ async def refresh_salary_cache_for_my_bank_account(
     st_r = await session.execute(select(AccountSyncState).where(AccountSyncState.bank_account_id == row.id))
     sync = st_r.scalar_one_or_none()
     return bank_account_to_out(row, sync)
+
+
+@router.get("/{bank_account_id}/tag-zero-rule", response_model=TagZeroRuleOut)
+async def get_tag_zero_rule(
+    bank_account_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> TagZeroRuleOut:
+    if not await user_can_access_bank_account(session, user.id, bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this bank account")
+    acc = await session.get(BankAccount, bank_account_id)
+    if acc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bank account not found")
+
+    if acc.tag_zero_rule_category_rule_id is not None:
+        return TagZeroRuleOut(
+            source="category_rule",
+            category_rule_id=acc.tag_zero_rule_category_rule_id,
+        )
+    if acc.tag_zero_rule_conditions_json and acc.tag_zero_rule_conditions_json.strip():
+        return TagZeroRuleOut(
+            source="custom",
+            category_rule_id=None,
+            display_name_override=acc.tag_zero_rule_display_name_override,
+            normalize_dot_space=bool(acc.tag_zero_rule_normalize_dot_space),
+            conditions=[c.model_dump(mode="json") for c in parse_conditions_json(acc.tag_zero_rule_conditions_json)],
+        )
+    return TagZeroRuleOut(source="none")
+
+
+@router.put("/{bank_account_id}/tag-zero-rule", response_model=TagZeroRuleOut)
+async def upsert_tag_zero_rule(
+    bank_account_id: int,
+    body: TagZeroRuleUpsert,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> TagZeroRuleOut:
+    if not await user_can_access_bank_account(session, user.id, bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this bank account")
+    acc_r = await session.execute(
+        select(BankAccount)
+        .where(BankAccount.id == bank_account_id)
+        .options(joinedload(BankAccount.account_group)),
+    )
+    acc = acc_r.unique().scalar_one_or_none()
+    if acc is None or acc.account_group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bank account not found")
+    household_id = acc.account_group.household_id
+
+    if body.source == "none":
+        acc.tag_zero_rule_category_rule_id = None
+        acc.tag_zero_rule_conditions_json = None
+        acc.tag_zero_rule_normalize_dot_space = False
+        acc.tag_zero_rule_display_name_override = None
+        # Kein Regel-Match mehr -> Tag Null zurücksetzen.
+        acc.last_salary_booking_date = None
+        acc.last_salary_amount = None
+        await session.commit()
+        return TagZeroRuleOut(source="none")
+
+    if body.source == "category_rule":
+        if body.category_rule_id is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "category_rule_id ist erforderlich.")
+        r = await session.execute(
+            select(CategoryRule).where(
+                CategoryRule.id == body.category_rule_id,
+                CategoryRule.household_id == household_id,
+            ),
+        )
+        rule = r.scalar_one_or_none()
+        if rule is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Kategorie-Regel nicht gefunden.")
+        acc.tag_zero_rule_category_rule_id = rule.id
+        acc.tag_zero_rule_conditions_json = None
+        acc.tag_zero_rule_normalize_dot_space = False
+        acc.tag_zero_rule_display_name_override = None
+        await apply_tag_zero_rule_for_account(session, account=acc, household_id=int(household_id))
+        await session.commit()
+        return TagZeroRuleOut(source="category_rule", category_rule_id=rule.id)
+
+    # custom — gleiche Bedingungs-Payload wie Kategorie-Regeln
+    try:
+        conds = parse_category_rule_conditions_body(body)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    except ValidationError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=e.errors()) from e
+    acc.tag_zero_rule_category_rule_id = None
+    acc.tag_zero_rule_conditions_json = conditions_to_json(conds)
+    acc.tag_zero_rule_normalize_dot_space = bool(body.normalize_dot_space)
+    acc.tag_zero_rule_display_name_override = (body.display_name_override or "").strip()[:512] or None
+    await apply_tag_zero_rule_for_account(session, account=acc, household_id=int(household_id))
+    await session.commit()
+    return TagZeroRuleOut(
+        source="custom",
+        display_name_override=acc.tag_zero_rule_display_name_override,
+        normalize_dot_space=bool(acc.tag_zero_rule_normalize_dot_space),
+        conditions=[c.model_dump(mode="json") for c in conds],
+    )
 
 
 @router.get("/{bank_account_id}/balance-snapshots", response_model=list[BalanceSnapshotOut])

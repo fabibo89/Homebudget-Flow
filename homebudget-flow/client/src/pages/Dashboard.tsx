@@ -71,7 +71,7 @@ function lastSalaryDropdownSecondary(a: BankAccount): string | undefined {
   const amt = a.last_salary_amount?.trim();
   if (!d && !amt) return undefined;
   const parts: string[] = [];
-  if (d) parts.push(`Gehalt zuletzt: ${formatDate(d)}`);
+  if (d) parts.push(`Tag Null: ${formatDate(d)}`);
   if (amt) parts.push(formatMoney(amt, a.currency));
   return parts.join(' · ');
 }
@@ -475,23 +475,23 @@ export default function Dashboard() {
             >
               {accounts.map((a: BankAccount) => (
                 <Card key={a.id} elevation={0} sx={{ height: '100%', border: 1, borderColor: 'divider' }}>
-                  <CardContent>
-                    <Typography variant="subtitle2" color="text.secondary">
+                  <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                       {a.provider}
                     </Typography>
-                    <Typography variant="h6" fontWeight={700} sx={{ mt: 0.5 }} noWrap title={a.name}>
+                    <Typography variant="subtitle1" fontWeight={750} sx={{ mt: 0.25 }} noWrap title={a.name}>
                       {a.name}
                     </Typography>
                     {a.iban ? (
-                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
                         {a.iban}
                       </Typography>
                     ) : null}
                     <Typography
-                      variant="h5"
+                      variant="h6"
                       fontWeight={700}
                       color={moneyIsNegative(a.balance) ? 'error.main' : 'primary.main'}
-                      sx={{ my: 1 }}
+                      sx={{ my: 0.75, fontVariantNumeric: 'tabular-nums' }}
                     >
                       {formatMoney(a.balance, a.currency)}
                     </Typography>
@@ -504,11 +504,11 @@ export default function Dashboard() {
                           disableGutters
                           elevation={0}
                           sx={{
-                            mt: 0.5,
+                            mt: 0.25,
                             bgcolor: 'transparent',
                             '&:before': { display: 'none' },
                             '& .MuiAccordionSummary-root': { px: 0, minHeight: 0 },
-                            '& .MuiAccordionSummary-content': { my: 0.5, margin: 0 },
+                            '& .MuiAccordionSummary-content': { my: 0.25, margin: 0 },
                           }}
                         >
                           <AccordionSummary expandIcon={<ExpandMoreIcon sx={{ fontSize: '1.1rem' }} />}>
@@ -527,7 +527,7 @@ export default function Dashboard() {
                             </Box>
                           </AccordionSummary>
                           <AccordionDetails sx={{ px: 0, pt: 0 }}>
-                            <Stack spacing={0.35}>
+                            <Stack spacing={0.25}>
                               <Typography variant="caption" color="text.secondary" display="block">
                                 Saldo (Versuch): {formatDateTime(a.balance_attempt_at)}
                               </Typography>
@@ -545,14 +545,14 @@ export default function Dashboard() {
                               <Typography variant="caption" color="text.secondary" display="block">
                                 Umsätze (OK): {formatDateTime(a.transactions_success_at)}
                               </Typography>
-                              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>
-                                Gehalt zuletzt (Datum):{' '}
+                              <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
+                                Tag Null (Datum):{' '}
                                 {a.last_salary_booking_date?.trim()
                                   ? formatDate(a.last_salary_booking_date.trim())
                                   : '—'}
                               </Typography>
                               <Typography variant="caption" color="text.secondary" display="block">
-                                Gehalt zuletzt (Betrag):{' '}
+                                Tag Null (Betrag):{' '}
                                 {a.last_salary_amount != null && String(a.last_salary_amount).trim() !== ''
                                   ? formatMoney(String(a.last_salary_amount), a.currency)
                                   : '—'}
@@ -562,7 +562,7 @@ export default function Dashboard() {
                         </Accordion>
                       );
                     })()}
-                    <Box sx={{ mt: 2 }}>
+                    <Box sx={{ mt: 1.25 }}>
                       <Button
                         size="small"
                         variant="outlined"

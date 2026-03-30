@@ -10,6 +10,13 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function normalizeDotSpaceText(s: string): string {
+  return (s || '')
+    .replace(/\./g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Wie Backend: Groß-/Kleinschreibung ignorieren; durch Leerzeichen getrennte Token als ganze Wörter. */
 function textMatchesWholeWords(hay: string, pattern: string): boolean {
   const hayL = (hay || '').toLowerCase();
@@ -55,7 +62,11 @@ export function ruleEffectiveConditions(rule: CategoryRuleOut): CategoryRuleCond
   return [];
 }
 
-export function transactionMatchesConditions(tx: Transaction, conditions: CategoryRuleCondition[]): boolean {
+export function transactionMatchesConditions(
+  tx: Transaction,
+  conditions: CategoryRuleCondition[],
+  normalizeDotSpace = false,
+): boolean {
   if (!conditions.length) return false;
   let amt = Number(tx.amount);
   if (Number.isNaN(amt)) amt = 0;
@@ -67,34 +78,42 @@ export function transactionMatchesConditions(tx: Transaction, conditions: Catego
       continue;
     }
     if (c.type === 'description_contains') {
-      const needle = c.pattern.toLowerCase();
-      const h = (tx.description || '').toLowerCase();
+      const needle = (normalizeDotSpace ? normalizeDotSpaceText(c.pattern) : c.pattern).toLowerCase();
+      const h = (normalizeDotSpace ? normalizeDotSpaceText(tx.description || '') : tx.description || '').toLowerCase();
       if (!needle || !h.includes(needle)) return false;
       continue;
     }
     if (c.type === 'description_contains_word') {
-      if (!textMatchesWholeWords(tx.description || '', c.pattern)) return false;
+      const hay = normalizeDotSpace ? normalizeDotSpaceText(tx.description || '') : tx.description || '';
+      const pat = normalizeDotSpace ? normalizeDotSpaceText(c.pattern) : c.pattern;
+      if (!textMatchesWholeWords(hay, pat)) return false;
       continue;
     }
     if (c.type === 'description_equals') {
-      const d = (tx.description || '').trim().toLowerCase();
-      const pat = c.pattern.trim().toLowerCase();
+      const dRaw = tx.description || '';
+      const patRaw = c.pattern;
+      const d = (normalizeDotSpace ? normalizeDotSpaceText(dRaw) : dRaw).trim().toLowerCase();
+      const pat = (normalizeDotSpace ? normalizeDotSpaceText(patRaw) : patRaw).trim().toLowerCase();
       if (!pat || d !== pat) return false;
       continue;
     }
     if (c.type === 'counterparty_contains') {
-      const needle = c.pattern.toLowerCase();
-      const h = (tx.counterparty || '').toLowerCase();
+      const needle = (normalizeDotSpace ? normalizeDotSpaceText(c.pattern) : c.pattern).toLowerCase();
+      const h = (normalizeDotSpace ? normalizeDotSpaceText(tx.counterparty || '') : tx.counterparty || '').toLowerCase();
       if (!needle || !h.includes(needle)) return false;
       continue;
     }
     if (c.type === 'counterparty_contains_word') {
-      if (!textMatchesWholeWords(tx.counterparty || '', c.pattern)) return false;
+      const hay = normalizeDotSpace ? normalizeDotSpaceText(tx.counterparty || '') : tx.counterparty || '';
+      const pat = normalizeDotSpace ? normalizeDotSpaceText(c.pattern) : c.pattern;
+      if (!textMatchesWholeWords(hay, pat)) return false;
       continue;
     }
     if (c.type === 'counterparty_equals') {
-      const cp = (tx.counterparty || '').trim().toLowerCase();
-      const pat = c.pattern.trim().toLowerCase();
+      const cpRaw = tx.counterparty || '';
+      const patRaw = c.pattern;
+      const cp = (normalizeDotSpace ? normalizeDotSpaceText(cpRaw) : cpRaw).trim().toLowerCase();
+      const pat = (normalizeDotSpace ? normalizeDotSpaceText(patRaw) : patRaw).trim().toLowerCase();
       if (!pat || !cp || cp !== pat) return false;
       continue;
     }
@@ -125,7 +144,7 @@ export function transactionMatchesConditions(tx: Transaction, conditions: Catego
 }
 
 export function transactionMatchesCategoryRule(tx: Transaction, rule: CategoryRuleOut): boolean {
-  return transactionMatchesConditions(tx, ruleEffectiveConditions(rule));
+  return transactionMatchesConditions(tx, ruleEffectiveConditions(rule), rule.normalize_dot_space);
 }
 
 /**

@@ -210,12 +210,24 @@ class BankAccount(Base):
     currency: Mapped[str] = mapped_column(String(8), default="EUR")
     balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
     balance_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    # Cache: letzte Buchung mit Standard-Kategorie „Gehalt“ (Geldeingang); Recompute via salary_cache.
+    # Cache („Tag Null“): letzte Buchung mit Standard-Kategorie „Gehalt“ (Geldeingang); Recompute via salary_cache.
     last_salary_booking_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     last_salary_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
+    # Optional: pro Konto definierbare „Tag Null“-Regel (Kategorie-Regel referenzieren oder eigene Bedingungen).
+    tag_zero_rule_category_rule_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("category_rules.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    tag_zero_rule_conditions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tag_zero_rule_normalize_dot_space: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    tag_zero_rule_display_name_override: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     account_group: Mapped[AccountGroup] = relationship(back_populates="bank_accounts")
     credential: Mapped[BankCredential] = relationship(back_populates="bank_accounts")
+    tag_zero_rule_category_rule: Mapped[Optional["CategoryRule"]] = relationship(
+        foreign_keys=[tag_zero_rule_category_rule_id],
+        lazy="joined",
+    )
     transactions: Mapped[list[Transaction]] = relationship(
         back_populates="bank_account",
         cascade="all, delete-orphan",
@@ -324,6 +336,8 @@ class CategoryRule(Base):
     rule_type: Mapped[str] = mapped_column(String(32))
     pattern: Mapped[str] = mapped_column(String(512))
     display_name_override: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # True: '.' und Whitespace gleich behandeln (z. B. "ERNST LEBENSMITTEL" == "ERNST.LEBENSMITTEL")
+    normalize_dot_space: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     conditions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),

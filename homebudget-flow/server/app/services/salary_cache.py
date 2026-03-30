@@ -1,4 +1,4 @@
-"""Cache der letzten Gehalt-Buchung (Geldeingang → Gehalt) pro Bankkonto."""
+"""Cache „Tag Null“ (letzte Gehalt-Buchung, Geldeingang → Gehalt) pro Bankkonto."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from app.services.default_income_categories import get_gehalt_category_id
 
 
 async def refresh_salary_cache_for_bank_account(session: AsyncSession, bank_account_id: int) -> None:
-    """Setzt ``last_salary_*`` am Konto aus der DB (neueste Buchung nach Buchungsdatum, dann ID)."""
+    """Setzt „Tag Null“ (``last_salary_*``) am Konto aus der DB (neueste Buchung nach Buchungsdatum, dann ID)."""
     r = await session.execute(
         select(BankAccount)
         .where(BankAccount.id == bank_account_id)

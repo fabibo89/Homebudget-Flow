@@ -13,6 +13,7 @@ from app.db.models import (
     AccountGroup,
     AccountGroupMember,
     BankAccount,
+    Category,
     HouseholdMember,
     Transaction,
     TransferPair,
@@ -112,8 +113,8 @@ async def list_transfer_pairs(
 
     q = (
         q.options(
-            joinedload(TransferPair.out_transaction).joinedload(Transaction.category),
-            joinedload(TransferPair.in_transaction).joinedload(Transaction.category),
+            joinedload(TransferPair.out_transaction).joinedload(Transaction.category).joinedload(Category.parent),
+            joinedload(TransferPair.in_transaction).joinedload(Transaction.category).joinedload(Category.parent),
         )
         .order_by(TransferPair.id.desc())
         .limit(limit)

@@ -1,5 +1,23 @@
 import { useMemo, useState } from 'react';
-import { Alert, Box, CircularProgress, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material';
+import GroupsIcon from '@mui/icons-material/Groups';
+import PersonIcon from '@mui/icons-material/Person';
+import SyncAltIcon from '@mui/icons-material/SyncAlt';
+import {
+  Alert,
+  Box,
+  CircularProgress,
+  Paper,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TextField,
+  Tooltip,
+  Typography,
+} from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage, fetchAccounts, fetchTransferPairs, type TransferPair } from '../api/client';
 import { formatDate, formatDateTime, formatMoney } from '../lib/transactionUi';
@@ -9,6 +27,13 @@ function kindLabel(k: TransferPair['out_transaction']['transfer_kind']): string 
   if (k === 'own_to_shared') return 'Eigen → Gemeinsames Konto';
   if (k === 'own_to_other_user') return 'Eigen → Konto einer anderen Person';
   return 'Umbuchung';
+}
+
+function kindIcon(k: TransferPair['out_transaction']['transfer_kind']) {
+  if (k === 'own_internal') return { Icon: SyncAltIcon, label: 'Eigene Umbuchung' };
+  if (k === 'own_to_shared') return { Icon: GroupsIcon, label: 'Eigen → Gemeinsames Konto' };
+  if (k === 'own_to_other_user') return { Icon: PersonIcon, label: 'Eigen → Konto einer anderen Person' };
+  return null;
 }
 
 export default function Transfers() {
@@ -113,13 +138,25 @@ export default function Transfers() {
               const outTx = p.out_transaction;
               const inTx = p.in_transaction;
               const kind = outTx.transfer_kind ?? 'none';
+              const ki = kindIcon(kind);
               const fromName = accountNameById.get(outTx.bank_account_id) ?? `#${outTx.bank_account_id}`;
               const toName = accountNameById.get(inTx.bank_account_id) ?? `#${inTx.bank_account_id}`;
               const transferAmount = Math.abs(Number(outTx.amount || '0')).toFixed(2);
               return (
                 <TableRow key={p.id} hover>
                   <TableCell>{formatDate(outTx.booking_date)}</TableCell>
-                  <TableCell>{kindLabel(kind)}</TableCell>
+                  <TableCell>
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      {ki ? (
+                        <Tooltip title={ki.label} enterDelay={400}>
+                          <span>
+                            <ki.Icon fontSize="small" color="action" />
+                          </span>
+                        </Tooltip>
+                      ) : null}
+                      <span>{kindLabel(kind)}</span>
+                    </Stack>
+                  </TableCell>
                   <TableCell>
                     <Typography variant="body2" sx={{ fontWeight: 600 }}>
                       {fromName} → {toName}

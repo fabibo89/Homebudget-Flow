@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   ButtonGroup,
@@ -26,7 +27,11 @@ import {
   type CategoryOut,
 } from '../api/client';
 import { displayNameClusterForTransaction } from '../lib/categoryRuleMatching';
-import { formatMoney } from '../lib/transactionUi';
+import {
+  collectDescendantCategoryIds,
+  findCategoryById,
+  formatMoney,
+} from '../lib/transactionUi';
 import { getAppTimeZone, todayIsoInAppTimezone } from '../lib/appTimeZone';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 
@@ -183,6 +188,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
   const [localFrom, setLocalFrom] = useState(defaultFrom);
   const [localTo, setLocalTo] = useState(today);
   const [hideUncategorizedExpenses, setHideUncategorizedExpenses] = useState(false);
+  const [selectedSubcategoryIds, setSelectedSubcategoryIds] = useState<number[]>([]);
 
   const from = props.from ?? localFrom;
   const to = props.to ?? localTo;
@@ -292,6 +298,58 @@ export default function MoneyFlow(props: MoneyFlowProps) {
     return out;
   }, [categoriesByHousehold]);
 
+  const mergedCategoryRoots = useMemo(() => {
+    const out: CategoryOut[] = [];
+    for (const roots of categoriesByHousehold.values()) out.push(...roots);
+    return out;
+  }, [categoriesByHousehold]);
+
+  type CategoryFilterRow =
+    | { kind: 'root'; id: number; label: string; subtreeIds: number[]; rootName: string }
+    | { kind: 'sub'; id: number; label: string; subName: string; parentRootId: number; rootName: string };
+
+  const categoryFilterRows = useMemo<CategoryFilterRow[]>(() => {
+    const rows: CategoryFilterRow[] = [];
+    const seenRoot = new Set<number>();
+    const roots = mergedCategoryRoots
+      .filter((r) => !seenRoot.has(r.id) && (seenRoot.add(r.id), true))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const r of roots) {
+      const subtree = collectDescendantCategoryIds(r);
+      rows.push({
+        kind: 'root',
+        id: r.id,
+        label: r.name,
+        subtreeIds: subtree,
+        rootName: r.name,
+      });
+      for (const sub of r.children ?? []) {
+        rows.push({
+          kind: 'sub',
+          id: sub.id,
+          label: sub.name,
+          subName: sub.name,
+          parentRootId: r.id,
+          rootName: r.name,
+        });
+      }
+    }
+    return rows;
+  }, [mergedCategoryRoots]);
+
+  const categoryFilterIds = useMemo(() => {
+    if (selectedSubcategoryIds.length === 0) return null;
+    const ids = new Set<number>();
+
+    for (const sid of selectedSubcategoryIds) {
+      const node = findCategoryById(mergedCategoryRoots, sid);
+      if (!node) continue;
+      for (const id of collectDescendantCategoryIds(node)) ids.add(id);
+    }
+    return ids;
+  }, [mergedCategoryRoots, selectedSubcategoryIds]);
+
   const expenseGroupsAll = useMemo<ExpenseGroup[]>(() => {
     const txs = scopedTransactions;
     if (!accountsQ.data) return [];
@@ -305,6 +363,12 @@ export default function MoneyFlow(props: MoneyFlowProps) {
 
       // Exclude internal transfer outgoing legs: those have a target account set.
       if (tx.transfer_target_bank_account_id != null) continue;
+
+      // Optional category filter (root/subcategory selection).
+      if (categoryFilterIds) {
+        if (tx.category_id == null) continue;
+        if (!categoryFilterIds.has(tx.category_id)) continue;
+      }
 
       const acc = accountById.get(tx.bank_account_id);
       if (!acc) continue;
@@ -339,7 +403,14 @@ export default function MoneyFlow(props: MoneyFlowProps) {
       }
     }
     return Array.from(groups.values());
-  }, [scopedTransactions, accountsQ.data, accountById, rulesByHousehold, nodeByHousehold]);
+  }, [
+    scopedTransactions,
+    accountsQ.data,
+    accountById,
+    rulesByHousehold,
+    nodeByHousehold,
+    categoryFilterIds,
+  ]);
 
   const transferGroupsAll = useMemo<TransferGroup[]>(() => {
     const pairs = scopedTransferPairs;
@@ -685,21 +756,89 @@ export default function MoneyFlow(props: MoneyFlowProps) {
             {hiddenTransferCount > 0 ? ` ${hiddenTransferCount} weitere Umbuchungen` : ''}
             {hiddenExpenseCount > 0 ? ` · ${hiddenExpenseCount} weitere Ausgaben-Gruppen` : ''}.
           </Typography>
-          <FormControlLabel
-            sx={{ mt: 0.5 }}
-            control={
-              <Checkbox
-                size="small"
-                checked={hideUncategorizedExpenses}
-                onChange={(e) => setHideUncategorizedExpenses(e.target.checked)}
-              />
-            }
-            label={
-              <Typography variant="caption" color="text.secondary">
-                „Ohne Kategorie“ ausblenden (Umbuchungen ausgenommen)
-              </Typography>
-            }
-          />
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
+            <FormControlLabel
+              sx={{ m: 0 }}
+              control={
+                <Checkbox
+                  size="small"
+                  checked={hideUncategorizedExpenses}
+                  onChange={(e) => setHideUncategorizedExpenses(e.target.checked)}
+                />
+              }
+              label={
+                <Typography variant="caption" color="text.secondary">
+                  „Ohne Kategorie“ ausblenden (Umbuchungen ausgenommen)
+                </Typography>
+              }
+            />
+            <Autocomplete<CategoryFilterRow, true, false, false>
+              multiple
+              size="small"
+              disableCloseOnSelect
+              options={categoryFilterRows}
+              getOptionLabel={(o) => o.label}
+              isOptionEqualToValue={(a, b) => a.kind === b.kind && a.id === b.id}
+              // Only leaf (sub) rows are part of the controlled value.
+              value={categoryFilterRows.filter((r) => r.kind === 'sub' && selectedSubcategoryIds.includes(r.id))}
+              onChange={(_, vals) => {
+                const leafIds = vals.filter((v) => v.kind === 'sub').map((v) => v.id);
+                setSelectedSubcategoryIds([...new Set(leafIds)].sort((a, b) => a - b));
+              }}
+              renderOption={(props, row) => {
+                // MUI passes a stable `key` via props; keep it.
+                const { key, ...liProps } = props as any;
+                if (row.kind === 'root') {
+                  const all = row.subtreeIds.filter((id) => id !== row.id); // ignore root itself if it is also a leaf in some trees
+                  const allOn = all.length > 0 && all.every((id) => selectedSubcategoryIds.includes(id));
+                  const someOn = all.some((id) => selectedSubcategoryIds.includes(id));
+                  return (
+                    <Box
+                      key={key}
+                      component="li"
+                      {...liProps}
+                      onMouseDown={(e) => {
+                        // Toggle whole subtree (root click), prevent Autocomplete from closing.
+                        e.preventDefault();
+                        const next = new Set(selectedSubcategoryIds);
+                        if (allOn) {
+                          all.forEach((id) => next.delete(id));
+                        } else {
+                          all.forEach((id) => next.add(id));
+                        }
+                        setSelectedSubcategoryIds(Array.from(next).sort((a, b) => a - b));
+                      }}
+                    >
+                      <Checkbox size="small" checked={allOn} indeterminate={!allOn && someOn} />
+                      <Typography variant="body2" fontWeight={700}>
+                        {row.label}
+                      </Typography>
+                    </Box>
+                  );
+                }
+
+                const checked = selectedSubcategoryIds.includes(row.id);
+                return (
+                  <Box
+                    key={key}
+                    component="li"
+                    {...liProps}
+                    sx={{
+                      pl: 5,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                    }}
+                  >
+                    <Checkbox size="small" checked={checked} />
+                    <Typography variant="body2">{row.label}</Typography>
+                  </Box>
+                );
+              }}
+              renderInput={(params) => <TextField {...params} label="Kategorien" placeholder="Alle" />}
+              sx={{ minWidth: 320, flex: 2 }}
+            />
+          </Stack>
         </Stack>
 
         {sankeyCombinedData.edges.length === 0 ? (

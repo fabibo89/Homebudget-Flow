@@ -25,7 +25,13 @@ from app.services.bank.transaction_tan_channel import (
     remove_job,
     take_job,
 )
-from app.services.sync_service import sync_all_configured_accounts, sync_bank_account
+from app.services.sync_service import (
+    backfill_missing_transaction_fields_for_account,
+    backfill_missing_transaction_fields_for_user,
+    recheck_transfer_pairs_for_user,
+    sync_all_configured_accounts,
+    sync_bank_account,
+)
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -152,6 +158,85 @@ async def sync_one(
             "challenge_hint": hint or None,
         },
     )
+
+
+@router.post("/accounts/{bank_account_id}/backfill-transactions")
+async def backfill_transactions_one(
+    bank_account_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+):
+    """Temporär: Holt alle Buchungen erneut und füllt fehlende Detailfelder nach (ggf. mit TAN-Dialog)."""
+    if not await user_can_access_bank_account(session, user.id, bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No access")
+
+    channel = TransactionTanChannel()
+    job_id = new_job_id()
+
+    async def runner() -> None:
+        async with SessionLocal() as s:
+            res = await backfill_missing_transaction_fields_for_account(
+                s,
+                bank_account_id=bank_account_id,
+                tx_tan_channel=channel,
+            )
+            job = take_job(job_id, user.id)
+            if job is not None:
+                job.result_payload = res
+
+    task = asyncio.create_task(runner())
+    register_job(
+        PendingSyncJob(
+            job_id=job_id,
+            channel=channel,
+            task=task,
+            user_id=user.id,
+            bank_account_id=bank_account_id,
+            created_at=time.time(),
+        )
+    )
+
+    if await poll_until_tan_needed_or_task_done(task, channel):
+        exc = task.exception()
+        remove_job(job_id)
+        if exc is not None:
+            if isinstance(exc, asyncio.CancelledError):
+                raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT, "Abgebrochen")
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=repr(exc))
+        return {"ok": True, "status": "completed", "job_id": None, "bank_account_id": bank_account_id}
+
+    peek = channel.peek_challenge()
+    assert peek is not None
+    mime, data, hint = peek
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "needs_transaction_tan",
+            "job_id": job_id,
+            "bank_account_id": bank_account_id,
+            "challenge_mime": mime,
+            "challenge_image_base64": base64.b64encode(data).decode("ascii") if data else "",
+            "challenge_hint": hint or None,
+        },
+    )
+
+
+@router.post("/backfill-transactions")
+async def backfill_transactions_all(
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Temporär: Backfill für alle Konten des Users (ohne TAN-Dialog, TAN-erforderliche Konten können fehlschlagen)."""
+    return await backfill_missing_transaction_fields_for_user(session, user_id=int(user.id))
+
+
+@router.post("/recheck-transfer-pairs")
+async def recheck_transfer_pairs_all(
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Temporär: prüft TransferPair-Umbuchungen für alle Konten des Users nach."""
+    return await recheck_transfer_pairs_for_user(session, user_id=int(user.id))
 
 
 class TransactionTanBody(BaseModel):

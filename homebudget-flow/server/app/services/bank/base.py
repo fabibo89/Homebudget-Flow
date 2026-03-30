@@ -15,6 +15,9 @@ class FetchedTransaction:
     booking_date: date
     value_date: date | None
     description: str
+    counterparty_name: str | None = None
+    counterparty_iban: str | None = None
+    counterparty_partner_name: str | None = None
     counterparty: str | None = None
     raw: dict[str, Any] | None = None
 

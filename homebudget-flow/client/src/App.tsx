@@ -6,6 +6,7 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import Analyses from './pages/Analyses';
+import Transfers from './pages/Transfers';
 import Setup from './pages/Setup';
 import Integration from './pages/Integration';
 import BankFintsSettings from './pages/BankFintsSettings';
@@ -30,6 +31,7 @@ export default function App() {
         >
           <Route index element={<Dashboard />} />
           <Route path="analysen" element={<Analyses />} />
+          <Route path="umbuchungen" element={<Transfers />} />
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<Navigate to="profile" replace />} />
             <Route path="profile" element={<UserSettings />} />

@@ -56,6 +56,15 @@ def booking_flow_from_amount(amount: Decimal) -> BookingFlow:
     return BookingFlow.neutral
 
 
+class TransferKind(str, Enum):
+    """Klassifikation aus Sicht des angemeldeten Nutzers (nicht in der DB gespeichert)."""
+
+    none = "none"
+    own_internal = "own_internal"
+    own_to_shared = "own_to_shared"
+    own_to_other_user = "own_to_other_user"
+
+
 class TransactionOut(BaseModel):
     id: int
     bank_account_id: int
@@ -66,11 +75,24 @@ class TransactionOut(BaseModel):
     value_date: Optional[date]
     description: str
     counterparty: Optional[str]
+    counterparty_name: Optional[str] = None
+    counterparty_iban: Optional[str] = None
+    counterparty_partner_name: Optional[str] = None
+    counterparty_bic: Optional[str] = None
+    raw_json: Optional[str] = None
+    sepa_end_to_end_id: Optional[str] = None
+    sepa_mandate_reference: Optional[str] = None
+    sepa_creditor_id: Optional[str] = None
+    bank_reference: Optional[str] = None
+    customer_reference: Optional[str] = None
+    prima_nota: Optional[str] = None
     imported_at: datetime
     category_id: Optional[int] = None
     category_name: Optional[str] = None
     category_color_hex: Optional[str] = None
     booking_flow: BookingFlow
+    transfer_target_bank_account_id: Optional[int] = None
+    transfer_kind: TransferKind = TransferKind.none
     # Externe Positionsbeschreibungen (z. B. alle Amazon-Produkte) für die Listenansicht
     enrichment_preview_lines: list[str] = Field(default_factory=list)
 
@@ -86,6 +108,7 @@ def transaction_to_out(
     row: TransactionRow,
     *,
     enrichment_preview_lines: list[str] | None = None,
+    transfer_kind: TransferKind = TransferKind.none,
 ) -> TransactionOut:
     """ORM → API inkl. Kategoriename (Relationship ``category``)."""
     cat = row.category
@@ -99,11 +122,24 @@ def transaction_to_out(
         value_date=row.value_date,
         description=row.description,
         counterparty=row.counterparty,
+        counterparty_name=getattr(row, "counterparty_name", None),
+        counterparty_iban=getattr(row, "counterparty_iban", None),
+        counterparty_partner_name=getattr(row, "counterparty_partner_name", None),
+        counterparty_bic=getattr(row, "counterparty_bic", None),
+        raw_json=getattr(row, "raw_json", None),
+        sepa_end_to_end_id=getattr(row, "sepa_end_to_end_id", None),
+        sepa_mandate_reference=getattr(row, "sepa_mandate_reference", None),
+        sepa_creditor_id=getattr(row, "sepa_creditor_id", None),
+        bank_reference=getattr(row, "bank_reference", None),
+        customer_reference=getattr(row, "customer_reference", None),
+        prima_nota=getattr(row, "prima_nota", None),
         imported_at=row.imported_at,
         category_id=row.category_id,
         category_name=cat.name if cat is not None else None,
         category_color_hex=_effective_hex_for_category(cat),
         booking_flow=booking_flow_from_amount(row.amount),
+        transfer_target_bank_account_id=row.transfer_target_bank_account_id,
+        transfer_kind=transfer_kind,
         enrichment_preview_lines=list(enrichment_preview_lines or []),
     )
 

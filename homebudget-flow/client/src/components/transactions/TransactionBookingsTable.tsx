@@ -47,9 +47,19 @@ import {
   formatMoney,
 } from '../../lib/transactionUi';
 import TransactionDetailFields from './TransactionDetailFields';
+import GroupsIcon from '@mui/icons-material/Groups';
+import PersonIcon from '@mui/icons-material/Person';
+import SyncAltIcon from '@mui/icons-material/SyncAlt';
 
 const CATEGORY_COLUMN_HINT =
   'Linksklick: Kategorie ändern oder Regel anlegen (wenn noch keine Kategorie). Rechtsklick: Kategorieliste öffnet sich sofort zur manuellen Auswahl (ohne Regel).';
+
+function transferIcon(kind: Transaction['transfer_kind'] | undefined) {
+  if (kind === 'own_internal') return { Icon: SyncAltIcon, label: 'Umbuchung (eigene)' };
+  if (kind === 'own_to_shared') return { Icon: GroupsIcon, label: 'Umbuchung (eigen → gemeinsam)' };
+  if (kind === 'own_to_other_user') return { Icon: PersonIcon, label: 'Umbuchung (eigen → andere Person)' };
+  return null;
+}
 
 function clipText(s: string, max = 64): string {
   const t = s.trim();
@@ -458,7 +468,21 @@ export default function TransactionBookingsTable({
                         whiteSpace: 'nowrap',
                       }}
                     >
-                      {formatMoney(t.amount, t.currency)}
+                      {(() => {
+                        const ti = transferIcon(t.transfer_kind);
+                        return (
+                          <Stack direction="row" alignItems="center" spacing={0.75} justifyContent="flex-end">
+                            {ti ? (
+                              <Tooltip title={ti.label} enterDelay={400}>
+                                <span>
+                                  <ti.Icon fontSize="small" color="action" />
+                                </span>
+                              </Tooltip>
+                            ) : null}
+                            <span>{formatMoney(t.amount, t.currency)}</span>
+                          </Stack>
+                        );
+                      })()}
                     </Typography>
                   </Stack>
 
@@ -575,7 +599,21 @@ export default function TransactionBookingsTable({
                         color: amountSxColorFromTransaction(t),
                       }}
                     >
-                      {formatMoney(t.amount, t.currency)}
+                      {(() => {
+                        const ti = transferIcon(t.transfer_kind);
+                        return (
+                          <Stack direction="row" alignItems="center" spacing={0.75} justifyContent="flex-end">
+                            {ti ? (
+                              <Tooltip title={ti.label} enterDelay={400}>
+                                <span>
+                                  <ti.Icon fontSize="small" color="action" />
+                                </span>
+                              </Tooltip>
+                            ) : null}
+                            <span>{formatMoney(t.amount, t.currency)}</span>
+                          </Stack>
+                        );
+                      })()}
                     </TableCell>
                     <TableCell
                       sx={{

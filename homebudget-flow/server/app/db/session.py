@@ -133,6 +133,84 @@ async def _ensure_bank_accounts_last_salary_cache(conn) -> None:
         )
 
 
+async def _ensure_transactions_transfer_target(conn) -> None:
+    """Umbuchungs-Markierung: Verweis auf Zielkonto (optional, household-intern)."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(transactions)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "transfer_target_bank_account_id" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE transactions ADD COLUMN transfer_target_bank_account_id "
+                    "INTEGER REFERENCES bank_accounts(id)",
+                ),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_target_bank_account_id "
+                "INTEGER REFERENCES bank_accounts(id) ON DELETE SET NULL",
+            ),
+        )
+
+
+async def _ensure_transactions_counterparty_fields(conn) -> None:
+    """Zusätzliche Gegenpartei-Felder (Name/IBAN/Partnername) getrennt speichern."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(transactions)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "counterparty_name" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN counterparty_name VARCHAR(512)"))
+        if cols and "counterparty_iban" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN counterparty_iban VARCHAR(64)"))
+        if cols and "counterparty_partner_name" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN counterparty_partner_name VARCHAR(512)"))
+        return
+    if "postgresql" in url:
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty_name VARCHAR(512)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty_iban VARCHAR(64)"))
+        await conn.execute(
+            text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty_partner_name VARCHAR(512)")
+        )
+
+
+async def _ensure_transactions_fints_raw_and_reference_fields(conn) -> None:
+    """Persistiere FinTS-Rohdaten + häufige Referenzen als Spalten."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(transactions)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "counterparty_bic" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN counterparty_bic VARCHAR(32)"))
+        if cols and "raw_json" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN raw_json TEXT NOT NULL DEFAULT '{}'"))
+        if cols and "sepa_end_to_end_id" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN sepa_end_to_end_id VARCHAR(128)"))
+        if cols and "sepa_mandate_reference" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN sepa_mandate_reference VARCHAR(128)"))
+        if cols and "sepa_creditor_id" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN sepa_creditor_id VARCHAR(64)"))
+        if cols and "bank_reference" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN bank_reference VARCHAR(128)"))
+        if cols and "customer_reference" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN customer_reference VARCHAR(128)"))
+        if cols and "prima_nota" not in cols:
+            await conn.execute(text("ALTER TABLE transactions ADD COLUMN prima_nota VARCHAR(64)"))
+        return
+    if "postgresql" in url:
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty_bic VARCHAR(32)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS raw_json TEXT NOT NULL DEFAULT '{}'"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sepa_end_to_end_id VARCHAR(128)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sepa_mandate_reference VARCHAR(128)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS sepa_creditor_id VARCHAR(64)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS bank_reference VARCHAR(128)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS customer_reference VARCHAR(128)"))
+        await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS prima_nota VARCHAR(64)"))
+
+
 async def _ensure_category_rules_conditions_json(conn) -> None:
     """JSON-Liste der Regelbedingungen (komponierbar); Legacy-Zeilen haben NULL."""
     url = settings.database_url.lower()
@@ -444,6 +522,9 @@ async def init_db() -> None:
         await _ensure_category_rules_missing_nullable_category(conn)
         await _ensure_category_rules_display_name_override(conn)
         await _ensure_bank_accounts_last_salary_cache(conn)
+        await _ensure_transactions_transfer_target(conn)
+        await _ensure_transactions_counterparty_fields(conn)
+        await _ensure_transactions_fints_raw_and_reference_fields(conn)
         await _ensure_bank_credentials_fints_verification(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)
 

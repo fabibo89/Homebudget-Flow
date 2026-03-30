@@ -333,12 +333,21 @@ def _extract_description(d: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_counterparty_fields(d: dict[str, Any]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """Extrahiert (Name, IBAN, Partner-Name) — FinTS liefert je nach Bank unterschiedlich."""
+    name = d.get("applicant_name")
+    iban = d.get("applicant_iban")
+    partner = d.get("partner_name")
+    name_s = str(name)[:512] if name else None
+    iban_s = str(iban)[:512] if iban else None
+    partner_s = str(partner)[:512] if partner else None
+    return name_s, iban_s, partner_s
+
+
 def _extract_counterparty(d: dict[str, Any]) -> Optional[str]:
-    for k in ("applicant_name", "applicant_iban", "partner_name"):
-        v = d.get(k)
-        if v:
-            return str(v)[:512]
-    return None
+    """Legacy/Anzeige-Feld: erster sinnvoller Wert."""
+    name, iban, partner = _extract_counterparty_fields(d)
+    return name or iban or partner
 
 
 def _normalize_one_tx(tx: Any, iban: str) -> FetchedTransaction:
@@ -346,7 +355,8 @@ def _normalize_one_tx(tx: Any, iban: str) -> FetchedTransaction:
     booking, value_d = _extract_date(d)
     amount, currency = _extract_amount_currency(d)
     desc = _extract_description(d)
-    cp = _extract_counterparty(d)
+    cp_name, cp_iban, cp_partner = _extract_counterparty_fields(d)
+    cp = cp_name or cp_iban or cp_partner
     ext = compute_stable_transaction_external_id(
         iban, booking, value_d, amount, desc, cp
     )
@@ -357,6 +367,9 @@ def _normalize_one_tx(tx: Any, iban: str) -> FetchedTransaction:
         booking_date=booking,
         value_date=value_d,
         description=desc,
+        counterparty_name=cp_name,
+        counterparty_iban=cp_iban,
+        counterparty_partner_name=cp_partner,
         counterparty=cp,
         raw=dict(d) if d else None,
     )

@@ -38,6 +38,7 @@ from app.api.routes import (
     health,
     households,
     sync,
+    transfers,
     transactions,
     user_settings,
 )
@@ -81,6 +82,7 @@ app.include_router(categories.router, prefix="/api")
 app.include_router(category_rules.router, prefix="/api")
 app.include_router(bank_credentials.router, prefix="/api")
 app.include_router(transactions.router, prefix="/api")
+app.include_router(transfers.router, prefix="/api")
 app.include_router(accounts.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.include_router(ha.router, prefix="/api")

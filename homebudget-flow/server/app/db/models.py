@@ -219,6 +219,7 @@ class BankAccount(Base):
     transactions: Mapped[list[Transaction]] = relationship(
         back_populates="bank_account",
         cascade="all, delete-orphan",
+        foreign_keys="Transaction.bank_account_id",
     )
     sync_state: Mapped[Optional["AccountSyncState"]] = relationship(
         back_populates="bank_account",
@@ -371,6 +372,10 @@ class Transaction(Base):
     __tablename__ = "transactions"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
+    transfer_target_bank_account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("bank_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     external_id: Mapped[str] = mapped_column(String(512))
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 2))
     currency: Mapped[str] = mapped_column(String(8), default="EUR")
@@ -378,10 +383,30 @@ class Transaction(Base):
     value_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
     counterparty: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    counterparty_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    counterparty_iban: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    counterparty_partner_name: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    counterparty_bic: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # Persistiere Rohdaten, damit wir später weitere Felder nachziehen können.
+    raw_json: Mapped[str] = mapped_column(Text, default="{}")
+    # Häufige SEPA/Bank-Referenzen (je nach Bank/FinTS-Provider ggf. leer).
+    sepa_end_to_end_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sepa_mandate_reference: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    sepa_creditor_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    bank_reference: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    customer_reference: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    prima_nota: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     category_id: Mapped[Optional[int]] = mapped_column(ForeignKey("categories.id"), nullable=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    bank_account: Mapped[BankAccount] = relationship(back_populates="transactions")
+    bank_account: Mapped[BankAccount] = relationship(
+        back_populates="transactions",
+        foreign_keys=[bank_account_id],
+    )
+    transfer_target_bank_account: Mapped[Optional[BankAccount]] = relationship(
+        foreign_keys=[transfer_target_bank_account_id],
+        lazy="joined",
+    )
     category: Mapped[Optional["Category"]] = relationship(back_populates="tagged_transactions")
     enrichments: Mapped[list["TransactionEnrichment"]] = relationship(
         back_populates="transaction",
@@ -389,6 +414,27 @@ class Transaction(Base):
     )
 
     __table_args__ = (UniqueConstraint("bank_account_id", "external_id", name="uq_tx_account_ext"),)
+
+
+class TransferPair(Base):
+    """Verknüpft zwei interne Umbuchungs-Buchungen (Ausgang + Eingang) als Paar."""
+
+    __tablename__ = "transfer_pairs"
+    __table_args__ = (
+        UniqueConstraint("out_transaction_id", name="uq_transfer_pairs_out_tx"),
+        UniqueConstraint("in_transaction_id", name="uq_transfer_pairs_in_tx"),
+        UniqueConstraint("out_transaction_id", "in_transaction_id", name="uq_transfer_pairs_out_in"),
+        Index("ix_transfer_pairs_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    out_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id", ondelete="CASCADE"))
+    in_transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    out_transaction: Mapped[Transaction] = relationship(foreign_keys=[out_transaction_id], lazy="joined")
+    in_transaction: Mapped[Transaction] = relationship(foreign_keys=[in_transaction_id], lazy="joined")
 
 
 class ExternalTransactionRecord(Base):

@@ -625,9 +625,22 @@ export type Transaction = {
   value_date: string | null;
   description: string;
   counterparty: string | null;
+  counterparty_name?: string | null;
+  counterparty_iban?: string | null;
+  counterparty_partner_name?: string | null;
+  counterparty_bic?: string | null;
+  raw_json?: string | null;
+  sepa_end_to_end_id?: string | null;
+  sepa_mandate_reference?: string | null;
+  sepa_creditor_id?: string | null;
+  bank_reference?: string | null;
+  customer_reference?: string | null;
+  prima_nota?: string | null;
   imported_at: string;
   category_id: number | null;
   category_name: string | null;
+  transfer_target_bank_account_id?: number | null;
+  transfer_kind?: 'none' | 'own_internal' | 'own_to_shared' | 'own_to_other_user';
   /** Effektive Anzeigefarbe der Kategorie (#rrggbb), wie in den Kategorieeinstellungen. */
   category_color_hex?: string | null;
   /** Vom Server aus `amount` berechnet; optional für ältere gecachte Antworten. */
@@ -776,6 +789,35 @@ export async function fetchAllTransactions(params: {
   return all;
 }
 
+// --- Umbuchungen (Paare) ---
+
+export type TransferPair = {
+  id: number;
+  household_id: number;
+  created_at: string;
+  out_transaction: Transaction;
+  in_transaction: Transaction;
+};
+
+export async function fetchTransferPairs(params: {
+  from?: string;
+  to?: string;
+  bank_account_id?: number;
+  limit?: number;
+  offset?: number;
+}): Promise<TransferPair[]> {
+  const { data } = await api.get<TransferPair[]>('/api/transfers', {
+    params: {
+      from: params.from,
+      to: params.to,
+      bank_account_id: params.bank_account_id,
+      limit: params.limit ?? 200,
+      offset: params.offset ?? 0,
+    },
+  });
+  return data;
+}
+
 // --- Sync ---
 
 export type SyncOverviewRow = {
@@ -849,6 +891,54 @@ export async function submitSyncTransactionTan(jobId: string, tan: string): Prom
 
 export async function syncAll(): Promise<{ ok: boolean }> {
   const { data } = await api.post<{ ok: boolean }>('/api/sync/all');
+  return data;
+}
+
+// --- Temporär: Backfill fehlender Felder ---
+
+export type BackfillAllAccountsResult = {
+  ok: boolean;
+  accounts: Array<{
+    bank_account_id: number;
+    ok: boolean;
+    from_date?: string | null;
+    scanned_fetched?: number;
+    matched_existing?: number;
+    updated_rows?: number;
+    error?: string;
+  }>;
+};
+
+export async function backfillTransactionsAll(): Promise<BackfillAllAccountsResult> {
+  const { data } = await api.post<BackfillAllAccountsResult>('/api/sync/backfill-transactions');
+  return data;
+}
+
+export async function backfillTransactionsAccount(bankAccountId: number): Promise<SyncAccountResponse> {
+  const res = await api.post<unknown>(`/api/sync/accounts/${bankAccountId}/backfill-transactions`, undefined, {
+    validateStatus: (s) => s === 200 || s === 202,
+  });
+  const data = res.data as Record<string, unknown>;
+  if (res.status === 202 || data.status === 'needs_transaction_tan') {
+    return data as SyncAccountNeedsTan;
+  }
+  return {
+    ok: true,
+    status: 'completed',
+    bank_account_id: Number(data.bank_account_id ?? bankAccountId),
+    job_id: null,
+  };
+}
+
+export type RecheckTransferPairsResult = {
+  ok: boolean;
+  accounts: number;
+  candidates: number;
+  pair_attempts: number;
+};
+
+export async function recheckTransferPairsAll(): Promise<RecheckTransferPairsResult> {
+  const { data } = await api.post<RecheckTransferPairsResult>('/api/sync/recheck-transfer-pairs');
   return data;
 }
 

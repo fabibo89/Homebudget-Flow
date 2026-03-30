@@ -19,6 +19,7 @@ import {
 import {
   AccountBalance as AccountBalanceIcon,
   BarChart as BarChartIcon,
+  CompareArrows as CompareArrowsIcon,
   AccountBalanceWallet as AccountBalanceWalletIcon,
   DarkMode as DarkModeIcon,
   Hub as HubIcon,
@@ -41,6 +42,7 @@ const drawerWidth = 260;
 function resolveTitle(pathname: string): string {
   if (pathname === '/') return 'Übersicht';
   if (pathname.startsWith('/analysen')) return 'Analysen';
+  if (pathname.startsWith('/umbuchungen')) return 'Umbuchungen';
   if (pathname.startsWith('/settings')) return 'Einstellungen';
   return 'HomeBudget Flow';
 }
@@ -134,6 +136,17 @@ export default function Layout() {
               <BarChartIcon />
             </ListItemIcon>
             <ListItemText primary="Analysen" secondary="Diagramme & Auswertungen" />
+          </ListItemButton>
+        </ListItem>
+        <ListItem disablePadding>
+          <ListItemButton
+            selected={location.pathname.startsWith('/umbuchungen')}
+            onClick={() => go('/umbuchungen')}
+          >
+            <ListItemIcon>
+              <CompareArrowsIcon />
+            </ListItemIcon>
+            <ListItemText primary="Umbuchungen" secondary="Ausgang & Eingang als Paar" />
           </ListItemButton>
         </ListItem>
       </List>

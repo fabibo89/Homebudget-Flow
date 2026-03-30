@@ -31,6 +31,7 @@ from app.schemas.transaction import (
     BulkTransactionCategoryResult,
     TransactionCategoryUpdate,
     TransactionOut,
+  TransferKind,
     transaction_to_out,
 )
 from app.schemas.transaction_enrichment import (
@@ -76,16 +77,83 @@ def _transactions_base_query(user: User):
         household_ids = select(HouseholdMember.household_id).where(HouseholdMember.user_id == user.id)
         return (
             select(Transaction)
-            .join(BankAccount)
+            .join(BankAccount, BankAccount.id == Transaction.bank_account_id)
             .join(AccountGroup, AccountGroup.id == BankAccount.account_group_id)
             .where(AccountGroup.household_id.in_(household_ids))
         )
     return (
         select(Transaction)
-        .join(BankAccount)
+        .join(BankAccount, BankAccount.id == Transaction.bank_account_id)
         .join(AccountGroupMember, AccountGroupMember.account_group_id == BankAccount.account_group_id)
         .where(AccountGroupMember.user_id == user.id)
     )
+
+
+def _transfer_kind_for_memberships(
+    *,
+    current_user_id: int,
+    source_members: set[int] | None,
+    target_members: set[int] | None,
+) -> TransferKind:
+    if not source_members or not target_members:
+        return TransferKind.none
+    # "eigene Umbuchungen" beziehen sich auf private Kontengruppe (nur der User).
+    if source_members != {current_user_id}:
+        return TransferKind.none
+    if target_members == {current_user_id}:
+        return TransferKind.own_internal
+    if current_user_id in target_members and len(target_members) > 1:
+        return TransferKind.own_to_shared
+    if len(target_members) == 1 and current_user_id not in target_members:
+        return TransferKind.own_to_other_user
+    return TransferKind.none
+
+
+async def _transfer_kind_map_for_transactions(
+    session: AsyncSession,
+    *,
+    current_user_id: int,
+    rows: list[Transaction],
+) -> dict[int, TransferKind]:
+    bank_account_ids: set[int] = set()
+    for tx in rows:
+        bank_account_ids.add(int(tx.bank_account_id))
+        if tx.transfer_target_bank_account_id is not None:
+            bank_account_ids.add(int(tx.transfer_target_bank_account_id))
+    if not bank_account_ids:
+        return {}
+
+    r_acc = await session.execute(
+        select(BankAccount.id, BankAccount.account_group_id).where(BankAccount.id.in_(bank_account_ids))
+    )
+    acc_to_group: dict[int, int] = {int(aid): int(gid) for aid, gid in r_acc.fetchall()}
+    group_ids = set(acc_to_group.values())
+    if not group_ids:
+        return {int(tx.id): TransferKind.none for tx in rows}
+
+    r_mem = await session.execute(
+        select(AccountGroupMember.account_group_id, AccountGroupMember.user_id).where(
+            AccountGroupMember.account_group_id.in_(group_ids)
+        )
+    )
+    group_to_members: dict[int, set[int]] = {}
+    for gid, uid in r_mem.fetchall():
+        group_to_members.setdefault(int(gid), set()).add(int(uid))
+
+    out: dict[int, TransferKind] = {}
+    for tx in rows:
+        tgt = tx.transfer_target_bank_account_id
+        if tgt is None:
+            out[int(tx.id)] = TransferKind.none
+            continue
+        src_gid = acc_to_group.get(int(tx.bank_account_id))
+        tgt_gid = acc_to_group.get(int(tgt))
+        out[int(tx.id)] = _transfer_kind_for_memberships(
+            current_user_id=current_user_id,
+            source_members=group_to_members.get(int(src_gid)) if src_gid is not None else None,
+            target_members=group_to_members.get(int(tgt_gid)) if tgt_gid is not None else None,
+        )
+    return out
 
 
 @router.get("", response_model=list[TransactionOut])
@@ -140,10 +208,16 @@ async def list_transactions(
     rows = r.unique().scalars().all()
     ids = [x.id for x in rows]
     meta_map = await enrichment_list_meta_for_transactions(session, ids)
+    transfer_kind_map = await _transfer_kind_map_for_transactions(
+        session,
+        current_user_id=user.id,
+        rows=rows,
+    )
     return [
         transaction_to_out(
             x,
             enrichment_preview_lines=meta_map[x.id].preview_lines,
+            transfer_kind=transfer_kind_map.get(x.id, TransferKind.none),
         )
         for x in rows
     ]
@@ -414,9 +488,15 @@ async def patch_transaction_category(
     tx2 = r2.unique().scalar_one()
     meta_map = await enrichment_list_meta_for_transactions(session, [tx2.id])
     m = meta_map[tx2.id]
+    transfer_kind_map = await _transfer_kind_map_for_transactions(
+        session,
+        current_user_id=user.id,
+        rows=[tx2],
+    )
     return transaction_to_out(
         tx2,
         enrichment_preview_lines=m.preview_lines,
+        transfer_kind=transfer_kind_map.get(tx2.id, TransferKind.none),
     )
 
 

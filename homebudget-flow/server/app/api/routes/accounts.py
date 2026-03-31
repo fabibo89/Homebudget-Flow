@@ -198,6 +198,7 @@ async def dayzero_meltdown_for_account(
     return DayZeroMeltdownOut(
         bank_account_id=acc.id,
         tag_zero_date=acc.last_salary_booking_date,
+        tag_zero_amount=str(acc.last_salary_amount) if acc.last_salary_amount is not None else None,
         period_start=inputs.start,
         period_end_exclusive=inputs.end_exclusive,
         currency=inputs.currency,

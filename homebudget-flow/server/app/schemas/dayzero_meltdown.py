@@ -12,6 +12,10 @@ class DayZeroMeltdownDay(BaseModel):
     balance_actual: str = Field(..., description="Ist-Saldo (Betrag als String).")
     balance_target: str = Field(..., description="Soll-Saldo (linearer Burn-down auf 0).")
 
+    net_actual: str = Field(
+        ...,
+        description="Tages-Netto (Summe aller Buchungen des Tages, Transfers ausgeschlossen; Vorzeichen wie Buchungen).",
+    )
     spend_actual: str = Field(..., description="Ist-Ausgaben des Tages (Summe negativer Beträge, Transfers ausgeschlossen).")
     spend_target_fixed: str = Field(..., description="Soll-Ausgaben pro Tag (fix, an Tag Null berechnet).")
     spend_target_dynamic: str = Field(
@@ -25,6 +29,7 @@ class DayZeroMeltdownDay(BaseModel):
 class DayZeroMeltdownOut(BaseModel):
     bank_account_id: int
     tag_zero_date: date
+    tag_zero_amount: Optional[str] = None
     period_start: date
     period_end_exclusive: date
     currency: str

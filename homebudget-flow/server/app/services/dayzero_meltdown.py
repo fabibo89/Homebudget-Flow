@@ -147,7 +147,7 @@ async def compute_dayzero_meltdown_for_account(
     )
     txs = list(tx_r.scalars().all())
 
-    # Tagesnetto für balances
+    # Tagesnetto (alle) für balances
     net_by_day: dict[date, Decimal] = {d: Decimal("0") for d in days}
     for tx in txs:
         bd = tx.booking_date
@@ -170,13 +170,14 @@ async def compute_dayzero_meltdown_for_account(
     # anchor_balance gilt für anchor_day (Tagesende). Transformiere auf start.
     start_balance = anchor_balance + sum_net(anchor_day, start)
 
-    # Ausgaben: nur negative Beträge, Transfers raus.
+    # Ausgaben/Netto ohne Transfers.
     transfer_ids = await _transfer_tx_ids_for_account(
         session,
         account.id,
         from_day=start,
         to_day_exclusive=end_exclusive,
     )
+    net_excl_transfers_by_day: dict[date, Decimal] = {d: Decimal("0") for d in days}
     spend_by_day: dict[date, Decimal] = {d: Decimal("0") for d in days}
     for tx in txs:
         bd = tx.booking_date
@@ -185,6 +186,7 @@ async def compute_dayzero_meltdown_for_account(
         if tx.id in transfer_ids:
             continue
         amt = Decimal(str(tx.amount))
+        net_excl_transfers_by_day[bd] += amt
         if amt < 0:
             spend_by_day[bd] += (-amt)
 
@@ -199,13 +201,16 @@ async def compute_dayzero_meltdown_for_account(
             running_balance += net_by_day.get(d, Decimal("0"))
         bal_actual = running_balance
         bal_target = (start_balance * (Decimal(1) - (Decimal(i) / Decimal(denom)))) if denom else Decimal("0")
-        days_left = max(0, (n - 1) - i)
+        # Dynamische Tagesrate: Restbudget / verbleibende Tage inkl. heute.
+        # Dadurch ist der Wert am letzten Tag nicht 0 (erst außerhalb des Zeitraums).
+        days_left = max(0, n - i)
         per_day_dyn = (bal_actual / Decimal(days_left)) if days_left > 0 else Decimal("0")
         out.append(
             {
                 "day": d.isoformat(),
                 "balance_actual": str(bal_actual.quantize(Decimal("0.01"))),
                 "balance_target": str(bal_target.quantize(Decimal("0.01"))),
+                "net_actual": str(net_excl_transfers_by_day.get(d, Decimal("0")).quantize(Decimal("0.01"))),
                 "spend_actual": str(spend_by_day.get(d, Decimal("0")).quantize(Decimal("0.01"))),
                 "spend_target_fixed": str(per_day_fixed.quantize(Decimal("0.01"))),
                 "spend_target_dynamic": str(per_day_dyn.quantize(Decimal("0.01"))),

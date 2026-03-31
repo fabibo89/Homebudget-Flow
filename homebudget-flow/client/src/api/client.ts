@@ -615,6 +615,7 @@ export type DayZeroMeltdownDay = {
   day: string;
   balance_actual: string;
   balance_target: string;
+  net_actual: string;
   spend_actual: string;
   spend_target_fixed: string;
   spend_target_dynamic: string;
@@ -624,6 +625,7 @@ export type DayZeroMeltdownDay = {
 export type DayZeroMeltdownOut = {
   bank_account_id: number;
   tag_zero_date: string;
+  tag_zero_amount?: string | null;
   period_start: string;
   period_end_exclusive: string;
   currency: string;

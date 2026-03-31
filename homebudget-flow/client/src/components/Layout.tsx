@@ -20,6 +20,7 @@ import {
   AccountBalance as AccountBalanceIcon,
   BarChart as BarChartIcon,
   CompareArrows as CompareArrowsIcon,
+  Whatshot as WhatshotIcon,
   AccountBalanceWallet as AccountBalanceWalletIcon,
   DarkMode as DarkModeIcon,
   Hub as HubIcon,
@@ -136,6 +137,14 @@ export default function Layout() {
               <BarChartIcon />
             </ListItemIcon>
             <ListItemText primary="Analysen" secondary="Diagramme & Auswertungen" />
+          </ListItemButton>
+        </ListItem>
+        <ListItem disablePadding>
+          <ListItemButton selected={location.pathname.startsWith('/dayzero')} onClick={() => go('/dayzero')}>
+            <ListItemIcon>
+              <WhatshotIcon />
+            </ListItemIcon>
+            <ListItemText primary="Day Zero" secondary="Meltdown-Budget (Saldo & Tagesrate)" />
           </ListItemButton>
         </ListItem>
         <ListItem disablePadding>

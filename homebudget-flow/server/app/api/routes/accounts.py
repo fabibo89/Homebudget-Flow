@@ -25,6 +25,8 @@ from app.services.bank_account_provision import normalize_iban
 from app.services.salary_cache import refresh_salary_cache_for_bank_account
 from app.schemas.category_rule_conditions import conditions_to_json, parse_conditions_json
 from app.services.tag_zero_rule import apply_tag_zero_rule_for_account
+from app.services.dayzero_meltdown import compute_dayzero_meltdown_for_account
+from app.schemas.dayzero_meltdown import DayZeroMeltdownDay, DayZeroMeltdownOut
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
 
@@ -162,6 +164,44 @@ async def upsert_tag_zero_rule(
         display_name_override=acc.tag_zero_rule_display_name_override,
         normalize_dot_space=bool(acc.tag_zero_rule_normalize_dot_space),
         conditions=[c.model_dump(mode="json") for c in conds],
+    )
+
+
+@router.get("/{bank_account_id}/dayzero-meltdown", response_model=DayZeroMeltdownOut)
+async def dayzero_meltdown_for_account(
+    bank_account_id: int,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+    months: int = Query(1, ge=1, le=3),
+) -> DayZeroMeltdownOut:
+    if not await user_can_access_bank_account(session, user.id, bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this bank account")
+    acc_r = await session.execute(
+        select(BankAccount)
+        .where(BankAccount.id == bank_account_id)
+        .options(joinedload(BankAccount.account_group)),
+    )
+    acc = acc_r.unique().scalar_one_or_none()
+    if acc is None or acc.account_group is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bank account not found")
+    if acc.last_salary_booking_date is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Kein Tag-Null-Datum am Konto gesetzt (Regel anlegen/ausführen).",
+        )
+    inputs, days = await compute_dayzero_meltdown_for_account(
+        session,
+        account=acc,
+        tag_zero_date=acc.last_salary_booking_date,
+        months=months,
+    )
+    return DayZeroMeltdownOut(
+        bank_account_id=acc.id,
+        tag_zero_date=acc.last_salary_booking_date,
+        period_start=inputs.start,
+        period_end_exclusive=inputs.end_exclusive,
+        currency=inputs.currency,
+        days=[DayZeroMeltdownDay(**d) for d in days],
     )
 
 

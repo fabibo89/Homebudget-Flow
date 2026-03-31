@@ -611,6 +611,32 @@ export async function upsertTagZeroRule(
   return data;
 }
 
+export type DayZeroMeltdownDay = {
+  day: string;
+  balance_actual: string;
+  balance_target: string;
+  spend_actual: string;
+  spend_target_fixed: string;
+  spend_target_dynamic: string;
+  remaining: string;
+};
+
+export type DayZeroMeltdownOut = {
+  bank_account_id: number;
+  tag_zero_date: string;
+  period_start: string;
+  period_end_exclusive: string;
+  currency: string;
+  days: DayZeroMeltdownDay[];
+};
+
+export async function fetchDayZeroMeltdown(bankAccountId: number, months = 1): Promise<DayZeroMeltdownOut> {
+  const { data } = await api.get<DayZeroMeltdownOut>(`/api/accounts/${bankAccountId}/dayzero-meltdown`, {
+    params: { months },
+  });
+  return data;
+}
+
 export type BalanceSnapshotOut = {
   id: number;
   bank_account_id: number;

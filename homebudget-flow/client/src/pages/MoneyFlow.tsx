@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type HTMLAttributes, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Autocomplete,
@@ -6,13 +6,14 @@ import {
   Button,
   ButtonGroup,
   Checkbox,
+  Chip,
   CircularProgress,
-  FormControlLabel,
   Paper,
   Stack,
   TextField,
   Typography,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import { useQueries, useQuery } from '@tanstack/react-query';
 import '@svgdotjs/svg.js';
 import { ApexSankey } from 'apexsankey';
@@ -34,6 +35,7 @@ import {
 } from '../lib/transactionUi';
 import { getAppTimeZone, todayIsoInAppTimezone } from '../lib/appTimeZone';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
+import { CategorySymbolDisplay } from '../components/CategorySymbol';
 
 function ensureCryptoRandomUUID() {
   const g: any = globalThis as any;
@@ -93,6 +95,93 @@ function includedAccountsKey(ids: number[] | null | undefined): string {
   if (ids == null) return 'all';
   if (ids.length === 0) return 'none';
   return [...ids].sort((a, b) => a - b).join(',');
+}
+
+type VerlaufCategoryOption = {
+  key: string;
+  label: string;
+  colorHex: string;
+  iconEmoji: string | null;
+};
+
+/** Alle Kategorie-Schlüssel im Teilbaum (Wurzel inkl.). */
+function collectSubtreeKeys(node: CategoryOut): string[] {
+  const keys = [`c${node.id}`];
+  for (const ch of node.children ?? []) keys.push(...collectSubtreeKeys(ch));
+  return keys;
+}
+
+type VerlaufPickOption =
+  | { rowKind: 'none'; option: VerlaufCategoryOption }
+  | { rowKind: 'parent'; option: VerlaufCategoryOption; subtreeKeys: string[] }
+  | { rowKind: 'leaf'; option: VerlaufCategoryOption };
+
+function verlaufPickRowListKey(row: VerlaufPickOption): string {
+  if (row.rowKind === 'none') return '__none__';
+  if (row.rowKind === 'parent') return `__parent__:${row.option.key}`;
+  return row.option.key;
+}
+
+function walkCategoryPickChildren(rows: VerlaufPickOption[], node: CategoryOut, pathPrefix: string) {
+  const label = pathPrefix ? `${pathPrefix} › ${node.name}` : node.name;
+  const children = node.children ?? [];
+  if (children.length === 0) {
+    rows.push({
+      rowKind: 'leaf',
+      option: {
+        key: `c${node.id}`,
+        label,
+        colorHex: node.effective_color_hex,
+        iconEmoji: node.icon_emoji,
+      },
+    });
+    return;
+  }
+  rows.push({
+    rowKind: 'parent',
+    option: {
+      key: `c${node.id}`,
+      label,
+      colorHex: node.effective_color_hex,
+      iconEmoji: node.icon_emoji,
+    },
+    subtreeKeys: collectSubtreeKeys(node),
+  });
+  const sorted = [...children].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  for (const ch of sorted) walkCategoryPickChildren(rows, ch, label);
+}
+
+function buildVerlaufPickOptions(roots: CategoryOut[], noneOption: VerlaufCategoryOption): VerlaufPickOption[] {
+  const rows: VerlaufPickOption[] = [{ rowKind: 'none', option: noneOption }];
+  const sortedRoots = [...roots].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+  for (const root of sortedRoots) {
+    const children = root.children ?? [];
+    if (children.length === 0) {
+      rows.push({
+        rowKind: 'leaf',
+        option: {
+          key: `c${root.id}`,
+          label: root.name,
+          colorHex: root.effective_color_hex,
+          iconEmoji: root.icon_emoji,
+        },
+      });
+      continue;
+    }
+    rows.push({
+      rowKind: 'parent',
+      option: {
+        key: `c${root.id}`,
+        label: root.name,
+        colorHex: root.effective_color_hex,
+        iconEmoji: root.icon_emoji,
+      },
+      subtreeKeys: collectSubtreeKeys(root),
+    });
+    const sorted = [...children].sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    for (const ch of sorted) walkCategoryPickChildren(rows, ch, root.name);
+  }
+  return rows;
 }
 
 function parseIsoDate(s: string): Date {
@@ -187,8 +276,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
   const defaultFrom = useMemo(() => addDays(today, -30), [today]);
   const [localFrom, setLocalFrom] = useState(defaultFrom);
   const [localTo, setLocalTo] = useState(today);
-  const [hideUncategorizedExpenses, setHideUncategorizedExpenses] = useState(false);
-  const [selectedSubcategoryIds, setSelectedSubcategoryIds] = useState<number[]>([]);
+  const [kategorienSelectedKeys, setKategorienSelectedKeys] = useState<string[]>([]);
 
   const from = props.from ?? localFrom;
   const to = props.to ?? localTo;
@@ -304,51 +392,66 @@ export default function MoneyFlow(props: MoneyFlowProps) {
     return out;
   }, [categoriesByHousehold]);
 
-  type CategoryFilterRow =
-    | { kind: 'root'; id: number; label: string; subtreeIds: number[]; rootName: string }
-    | { kind: 'sub'; id: number; label: string; subName: string; parentRootId: number; rootName: string };
-
-  const categoryFilterRows = useMemo<CategoryFilterRow[]>(() => {
-    const rows: CategoryFilterRow[] = [];
-    const seenRoot = new Set<number>();
-    const roots = mergedCategoryRoots
-      .filter((r) => !seenRoot.has(r.id) && (seenRoot.add(r.id), true))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    for (const r of roots) {
-      const subtree = collectDescendantCategoryIds(r);
-      rows.push({
-        kind: 'root',
-        id: r.id,
-        label: r.name,
-        subtreeIds: subtree,
-        rootName: r.name,
-      });
-      for (const sub of r.children ?? []) {
-        rows.push({
-          kind: 'sub',
-          id: sub.id,
-          label: sub.name,
-          subName: sub.name,
-          parentRootId: r.id,
-          rootName: r.name,
-        });
-      }
-    }
-    return rows;
+  const verlaufPickOptions = useMemo(() => {
+    const noneOpt: VerlaufCategoryOption = {
+      key: '__none__',
+      label: 'Ohne Kategorie',
+      colorHex: '#6b7280',
+      iconEmoji: null,
+    };
+    return buildVerlaufPickOptions(mergedCategoryRoots, noneOpt);
   }, [mergedCategoryRoots]);
 
-  const categoryFilterIds = useMemo(() => {
-    if (selectedSubcategoryIds.length === 0) return null;
-    const ids = new Set<number>();
+  const kategorienAutocompletePickValue = useMemo(() => {
+    if (kategorienSelectedKeys.length === 0) return [] as VerlaufPickOption[];
+    const out: VerlaufPickOption[] = [];
+    for (const row of verlaufPickOptions) {
+      if (row.rowKind === 'parent') continue;
+      if (row.rowKind === 'none') {
+        if (kategorienSelectedKeys.includes('__none__')) out.push(row);
+      } else if (kategorienSelectedKeys.includes(row.option.key)) {
+        out.push(row);
+      }
+    }
+    return out;
+  }, [verlaufPickOptions, kategorienSelectedKeys]);
 
-    for (const sid of selectedSubcategoryIds) {
-      const node = findCategoryById(mergedCategoryRoots, sid);
+  const keysWithSpendInMoneyFlow = useMemo(() => {
+    const out = new Set<string>();
+    for (const tx of scopedTransactions ?? []) {
+      const amt = Number(tx.amount);
+      if (!Number.isFinite(amt) || amt >= 0) continue;
+      // Exclude internal transfer outgoing legs (those are shown as account→account edges).
+      if (tx.transfer_target_bank_account_id != null) continue;
+      if (tx.category_id == null) out.add('__none__');
+      else out.add(`c${tx.category_id}`);
+    }
+    return Array.from(out).sort();
+  }, [scopedTransactions]);
+
+  const categoryFilterIds = useMemo(() => {
+    // Empty selection => no filter (show all)
+    if (kategorienSelectedKeys.length === 0) return null;
+    const ids = new Set<number>();
+    for (const k of kategorienSelectedKeys) {
+      if (!k.startsWith('c')) continue;
+      const id = Number(k.slice(1));
+      if (!Number.isFinite(id)) continue;
+      const node = findCategoryById(mergedCategoryRoots, id);
       if (!node) continue;
-      for (const id of collectDescendantCategoryIds(node)) ids.add(id);
+      for (const cid of collectDescendantCategoryIds(node)) ids.add(cid);
     }
     return ids;
-  }, [mergedCategoryRoots, selectedSubcategoryIds]);
+  }, [mergedCategoryRoots, kategorienSelectedKeys]);
+
+  function toggleKategorienSubtree(subtreeKeys: string[]) {
+    if (!subtreeKeys.length) return;
+    const allOn = subtreeKeys.every((k) => kategorienSelectedKeys.includes(k));
+    const next = new Set(kategorienSelectedKeys);
+    if (allOn) subtreeKeys.forEach((k) => next.delete(k));
+    else subtreeKeys.forEach((k) => next.add(k));
+    setKategorienSelectedKeys([...next].sort());
+  }
 
   const expenseGroupsAll = useMemo<ExpenseGroup[]>(() => {
     const txs = scopedTransactions;
@@ -366,8 +469,10 @@ export default function MoneyFlow(props: MoneyFlowProps) {
 
       // Optional category filter (root/subcategory selection).
       if (categoryFilterIds) {
-        if (tx.category_id == null) continue;
-        if (!categoryFilterIds.has(tx.category_id)) continue;
+        if (tx.category_id == null) {
+          if (!kategorienSelectedKeys.includes('__none__')) continue;
+          // keep uncategorized
+        } else if (!categoryFilterIds.has(tx.category_id)) continue;
       }
 
       const acc = accountById.get(tx.bank_account_id);
@@ -410,6 +515,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
     rulesByHousehold,
     nodeByHousehold,
     categoryFilterIds,
+    kategorienSelectedKeys,
   ]);
 
   const transferGroupsAll = useMemo<TransferGroup[]>(() => {
@@ -444,16 +550,12 @@ export default function MoneyFlow(props: MoneyFlowProps) {
   }, [transferGroupsAll]);
 
   const expenseGroupsTop = useMemo(() => {
-    const base = hideUncategorizedExpenses ? expenseGroupsAll.filter((g) => g.categoryId != null) : expenseGroupsAll;
-    const sorted = base.slice().sort((a, b) => b.totalAbs - a.totalAbs);
+    const sorted = expenseGroupsAll.slice().sort((a, b) => b.totalAbs - a.totalAbs);
     return sorted.slice(0, MAX_EXPENSE_EDGES);
-  }, [expenseGroupsAll, hideUncategorizedExpenses]);
+  }, [expenseGroupsAll]);
 
   const hiddenTransferCount = Math.max(0, transferGroupsAll.length - transferGroupsTop.length);
-  const expenseGroupsVisibleCount = hideUncategorizedExpenses
-    ? expenseGroupsAll.filter((g) => g.categoryId != null).length
-    : expenseGroupsAll.length;
-  const hiddenExpenseCount = Math.max(0, expenseGroupsVisibleCount - expenseGroupsTop.length);
+  const hiddenExpenseCount = Math.max(0, expenseGroupsAll.length - expenseGroupsTop.length);
 
   const [selected, setSelected] = useState<{
     kind: EdgeKind;
@@ -538,18 +640,37 @@ export default function MoneyFlow(props: MoneyFlowProps) {
 
     expenseGroupsTop.forEach((g, i) => {
       const aId = accNodeId(g.fromAccountId);
-      const rootId = `root:${g.categoryRoot}`;
-      const subId = `sub:${g.categoryRoot}>>${g.categorySub}`;
+      const isUncategorized = g.categoryId == null;
+      // For "Ohne Kategorie", keep nodes account-specific (no aggregation across accounts).
+      // And: no subcategory / no rule layer. Path ends at "Keine Kategorie".
+      const rootId = isUncategorized ? `root:uncat:${g.fromAccountId}` : `root:${g.categoryRoot}`;
+      const subId = isUncategorized ? `sub:uncat:${g.fromAccountId}` : `sub:${g.categoryRoot}>>${g.categorySub}`;
       const ruleId = `rule:${g.ruleClusterKey}>>${g.ruleLabel}`;
       nodes.set(aId, { id: aId, title: `🏦 ${accountLabel(g.fromAccountId)}`, color: '#4aa3ff' });
-      nodes.set(rootId, { id: rootId, title: `📁 ${g.categoryRoot}`, color: '#22c55e' });
-      nodes.set(subId, { id: subId, title: `🏷️ ${g.categorySub}`, color: '#a3e635' });
-      nodes.set(ruleId, { id: ruleId, title: `🔎 ${g.ruleLabel}`, color: '#c084fc' });
+      nodes.set(rootId, {
+        id: rootId,
+        title: isUncategorized ? '📁 Keine Kategorie' : `📁 ${g.categoryRoot}`,
+        color: '#22c55e',
+      });
+      if (!isUncategorized) {
+        nodes.set(subId, {
+          id: subId,
+          title: `🏷️ ${g.categorySub}`,
+          color: '#a3e635',
+        });
+        nodes.set(ruleId, {
+          id: ruleId,
+          title: `🔎 ${g.ruleLabel}`,
+          color: '#c084fc',
+        });
+      }
       const v = Number(g.totalAbs.toFixed(2));
       const groupKey = `expense|${g.fromAccountId}|${g.categoryId ?? '__none__'}|${g.ruleClusterKey}`;
       edges.push({ source: aId, target: rootId, value: v, type: `ex|${groupKey}|a|${i}` });
-      edges.push({ source: rootId, target: subId, value: v, type: `ex|${groupKey}|b|${i}` });
-      edges.push({ source: subId, target: ruleId, value: v, type: `ex|${groupKey}|c|${i}` });
+      if (!isUncategorized) {
+        edges.push({ source: rootId, target: subId, value: v, type: `ex|${groupKey}|b|${i}` });
+        edges.push({ source: subId, target: ruleId, value: v, type: `ex|${groupKey}|c|${i}` });
+      }
     });
 
     return {
@@ -757,87 +878,157 @@ export default function MoneyFlow(props: MoneyFlowProps) {
             {hiddenExpenseCount > 0 ? ` · ${hiddenExpenseCount} weitere Ausgaben-Gruppen` : ''}.
           </Typography>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5} alignItems={{ md: 'center' }}>
-            <FormControlLabel
-              sx={{ m: 0 }}
-              control={
-                <Checkbox
-                  size="small"
-                  checked={hideUncategorizedExpenses}
-                  onChange={(e) => setHideUncategorizedExpenses(e.target.checked)}
-                />
-              }
-              label={
-                <Typography variant="caption" color="text.secondary">
-                  „Ohne Kategorie“ ausblenden (Umbuchungen ausgenommen)
-                </Typography>
-              }
-            />
-            <Autocomplete<CategoryFilterRow, true, false, false>
+            <Autocomplete<VerlaufPickOption, true, false, false>
               multiple
               size="small"
               disableCloseOnSelect
-              options={categoryFilterRows}
-              getOptionLabel={(o) => o.label}
-              isOptionEqualToValue={(a, b) => a.kind === b.kind && a.id === b.id}
-              // Only leaf (sub) rows are part of the controlled value.
-              value={categoryFilterRows.filter((r) => r.kind === 'sub' && selectedSubcategoryIds.includes(r.id))}
-              onChange={(_, vals) => {
-                const leafIds = vals.filter((v) => v.kind === 'sub').map((v) => v.id);
-                setSelectedSubcategoryIds([...new Set(leafIds)].sort((a, b) => a - b));
+              options={verlaufPickOptions}
+              getOptionLabel={(row) => row.option.label}
+              isOptionEqualToValue={(opt, val) => verlaufPickRowListKey(opt) === verlaufPickRowListKey(val)}
+              value={kategorienAutocompletePickValue}
+              onChange={(_, newRows) => {
+                const keys = newRows
+                  .filter((r) => r.rowKind === 'none' || r.rowKind === 'leaf')
+                  .map((r) => r.option.key)
+                  .filter((k) => typeof k === 'string' && k.length > 0);
+                setKategorienSelectedKeys([...new Set(keys)].sort());
               }}
-              renderOption={(props, row) => {
-                // MUI passes a stable `key` via props; keep it.
-                const { key, ...liProps } = props as any;
-                if (row.kind === 'root') {
-                  const all = row.subtreeIds.filter((id) => id !== row.id); // ignore root itself if it is also a leaf in some trees
-                  const allOn = all.length > 0 && all.every((id) => selectedSubcategoryIds.includes(id));
-                  const someOn = all.some((id) => selectedSubcategoryIds.includes(id));
+              renderOption={(props, row, { selected }) => {
+                if (row.rowKind === 'parent') {
+                  const sk = row.subtreeKeys;
+                  const allOn = sk.length > 0 && sk.every((k) => kategorienSelectedKeys.includes(k));
+                  const someOn = sk.some((k) => kategorienSelectedKeys.includes(k));
+                  const { key: _liKey, onMouseDown: _omd, ...liProps } = props as HTMLAttributes<HTMLLIElement> & {
+                    key?: string;
+                  };
                   return (
                     <Box
-                      key={key}
+                      key={verlaufPickRowListKey(row)}
                       component="li"
                       {...liProps}
                       onMouseDown={(e) => {
-                        // Toggle whole subtree (root click), prevent Autocomplete from closing.
                         e.preventDefault();
-                        const next = new Set(selectedSubcategoryIds);
-                        if (allOn) {
-                          all.forEach((id) => next.delete(id));
-                        } else {
-                          all.forEach((id) => next.add(id));
-                        }
-                        setSelectedSubcategoryIds(Array.from(next).sort((a, b) => a - b));
+                        e.stopPropagation();
+                        toggleKategorienSubtree(sk);
+                      }}
+                      sx={{
+                        ...((liProps as { sx?: object }).sx as object),
+                        cursor: 'pointer',
+                        listStyle: 'none',
                       }}
                     >
-                      <Checkbox size="small" checked={allOn} indeterminate={!allOn && someOn} />
-                      <Typography variant="body2" fontWeight={700}>
-                        {row.label}
-                      </Typography>
+                      <Stack direction="row" alignItems="center" spacing={1} sx={{ width: '100%', py: 0.25, pl: 0.5 }}>
+                        <Checkbox
+                          size="small"
+                          checked={allOn}
+                          indeterminate={someOn && !allOn}
+                          tabIndex={-1}
+                          sx={{ p: 0.25, pointerEvents: 'none' }}
+                        />
+                        <Box
+                          sx={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: '50%',
+                            bgcolor: row.option.colorHex,
+                            flexShrink: 0,
+                            border: 1,
+                            borderColor: 'divider',
+                          }}
+                        />
+                        <CategorySymbolDisplay value={row.option.iconEmoji} fontSize="1.15rem" />
+                        <Typography variant="subtitle2" fontWeight={600}>
+                          {row.option.label}
+                        </Typography>
+                        {someOn && !allOn ? (
+                          <Typography variant="caption" color="text.secondary" sx={{ ml: 0.5 }}>
+                            (Teilauswahl)
+                          </Typography>
+                        ) : null}
+                      </Stack>
                     </Box>
                   );
                 }
-
-                const checked = selectedSubcategoryIds.includes(row.id);
+                const opt = row.option;
+                const leafSelected =
+                  selected ||
+                  (row.rowKind === 'none'
+                    ? kategorienSelectedKeys.includes('__none__')
+                    : kategorienSelectedKeys.includes(opt.key));
+                const { key: _lk, ...leafLiProps } = props as HTMLAttributes<HTMLLIElement> & { key?: string };
+                const indentSub = row.rowKind === 'leaf' && row.option.label.includes(' › ');
                 return (
-                  <Box
-                    key={key}
-                    component="li"
-                    {...liProps}
-                    sx={{
-                      pl: 5,
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                    }}
-                  >
-                    <Checkbox size="small" checked={checked} />
-                    <Typography variant="body2">{row.label}</Typography>
-                  </Box>
+                  <li key={verlaufPickRowListKey(row)} {...leafLiProps}>
+                    <Stack
+                      direction="row"
+                      alignItems="center"
+                      spacing={1}
+                      sx={{ width: '100%', pl: indentSub ? 2.5 : 0.5 }}
+                    >
+                      <Checkbox size="small" checked={leafSelected} sx={{ p: 0.25 }} />
+                      <Box
+                        sx={{
+                          width: 10,
+                          height: 10,
+                          borderRadius: '50%',
+                          bgcolor: opt.colorHex,
+                          flexShrink: 0,
+                          border: 1,
+                          borderColor: 'divider',
+                        }}
+                      />
+                      <CategorySymbolDisplay value={opt.iconEmoji} fontSize="1.15rem" />
+                      <Typography variant="body2">{opt.label}</Typography>
+                    </Stack>
+                  </li>
                 );
               }}
-              renderInput={(params) => <TextField {...params} label="Kategorien" placeholder="Alle" />}
+              renderTags={(tagValue, getTagProps) =>
+                tagValue.map((row, index) => {
+                  const option = row.option;
+                  return (
+                    <Chip
+                      {...getTagProps({ index })}
+                      key={verlaufPickRowListKey(row)}
+                      size="small"
+                      variant="outlined"
+                      sx={{
+                        borderColor: option.colorHex,
+                        bgcolor: alpha(option.colorHex, 0.14),
+                        '& .MuiChip-label': { px: 0.75 },
+                      }}
+                      label={
+                        <Stack direction="row" alignItems="center" spacing={0.5}>
+                          <Box
+                            sx={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              bgcolor: option.colorHex,
+                              flexShrink: 0,
+                              border: 1,
+                              borderColor: 'divider',
+                            }}
+                          />
+                          <CategorySymbolDisplay value={option.iconEmoji} fontSize="1.0rem" />
+                          <span>{option.label}</span>
+                        </Stack>
+                      }
+                    />
+                  );
+                })
+              }
+              renderInput={(params) => <TextField {...params} label="Kategorien im Diagramm" placeholder="Alle" />}
               sx={{ minWidth: 320, flex: 2 }}
             />
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => setKategorienSelectedKeys(keysWithSpendInMoneyFlow)}
+              disabled={keysWithSpendInMoneyFlow.length === 0}
+            >
+              Alle mit Ausgaben
+            </Button>
           </Stack>
         </Stack>
 

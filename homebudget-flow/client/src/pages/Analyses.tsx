@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { HTMLAttributes } from 'react';
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Autocomplete,
   Box,
   Button,
@@ -28,6 +31,7 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import type { Theme } from '@mui/material/styles';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { ApexOptions } from 'apexcharts';
 import Chart from 'react-apexcharts';
 import { useQueries, useQuery } from '@tanstack/react-query';
@@ -1139,6 +1143,220 @@ export default function Analyses() {
     return buildVerlaufPickOptions(roots, noneOpt);
   }, [categoryQueries, categoryQueriesTick, verlaufCategoryOptions, verlaufUncategorizedColor]);
 
+  // --- Kategorien: zeitlicher Verlauf (Income/Expense), nutzt dieselben Farben/Labels wie Kategorieverlauf ---
+
+  const kategorienIncomeDailyMatrix = useMemo(() => {
+    if (!scopedTransactions.length) return { days: [] as string[], byKey: new Map<string, number[]>() };
+    const start = parseIsoDate(from);
+    const end = parseIsoDate(to);
+    const days: string[] = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) days.push(isoDateInAppTimezone(d));
+    const byKey = new Map<string, number[]>();
+    const ensure = (key: string) => {
+      if (!byKey.has(key)) byKey.set(key, new Array(days.length).fill(0));
+      return byKey.get(key)!;
+    };
+    const allowed = kategorienSelectedKeys.length ? new Set(kategorienSelectedKeys) : null;
+    for (const t of scopedTransactions) {
+      const amt = Number(t.amount);
+      if (!Number.isFinite(amt) || amt <= 0) continue;
+      const dayStr = t.booking_date.slice(0, 10);
+      const di = days.indexOf(dayStr);
+      if (di < 0) continue;
+      const key = t.category_id == null ? '__none__' : `c${t.category_id}`;
+      if (allowed && !allowed.has(key)) continue;
+      ensure(key)[di] += Math.abs(amt);
+    }
+    return { days, byKey };
+  }, [scopedTransactions, from, to, kategorienSelectedKeys]);
+
+  const kategorienExpenseDailyMatrix = useMemo(() => {
+    if (!scopedTransactions.length) return { days: [] as string[], byKey: new Map<string, number[]>() };
+    const start = parseIsoDate(from);
+    const end = parseIsoDate(to);
+    const days: string[] = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) days.push(isoDateInAppTimezone(d));
+    const byKey = new Map<string, number[]>();
+    const ensure = (key: string) => {
+      if (!byKey.has(key)) byKey.set(key, new Array(days.length).fill(0));
+      return byKey.get(key)!;
+    };
+    const allowed = kategorienSelectedKeys.length ? new Set(kategorienSelectedKeys) : null;
+    for (const t of scopedTransactions) {
+      const amt = Number(t.amount);
+      if (!Number.isFinite(amt) || amt >= 0) continue;
+      const dayStr = t.booking_date.slice(0, 10);
+      const di = days.indexOf(dayStr);
+      if (di < 0) continue;
+      const key = t.category_id == null ? '__none__' : `c${t.category_id}`;
+      if (allowed && !allowed.has(key)) continue;
+      ensure(key)[di] += Math.abs(amt);
+    }
+    return { days, byKey };
+  }, [scopedTransactions, from, to, kategorienSelectedKeys]);
+
+  const kategorienIncomePeriodMatrix = useMemo(
+    () => rollupVerlaufFromDaily(kategorienIncomeDailyMatrix, verlaufBucket),
+    [kategorienIncomeDailyMatrix, verlaufBucket],
+  );
+
+  const kategorienExpensePeriodMatrix = useMemo(
+    () => rollupVerlaufFromDaily(kategorienExpenseDailyMatrix, verlaufBucket),
+    [kategorienExpenseDailyMatrix, verlaufBucket],
+  );
+
+  const kategorienIncomeTimeChart = useMemo(() => {
+    const { periodLabels, byKey } = kategorienIncomePeriodMatrix;
+    const n = periodLabels.length;
+    const keys = [...byKey.keys()];
+    keys.sort(
+      (a, b) =>
+        totalSpendForKey(kategorienIncomeDailyMatrix, b) - totalSpendForKey(kategorienIncomeDailyMatrix, a),
+    );
+    const series = keys.map((key) => {
+      const opt = resolveVerlaufOption(
+        key,
+        verlaufCategoryOptions,
+        categoryAggsIncome,
+        verlaufUncategorizedColor,
+        piePalette,
+        0,
+      );
+      return {
+        name: opt.label,
+        data: Array.from({ length: n }, (_, i) => byKey.get(key)?.[i] ?? 0),
+      };
+    });
+    const colors = keys.map((key, si) =>
+      resolveVerlaufOption(
+        key,
+        verlaufCategoryOptions,
+        categoryAggsIncome,
+        verlaufUncategorizedColor,
+        piePalette,
+        si,
+      ).colorHex,
+    );
+    const options: ApexOptions = {
+      chart: {
+        type: 'area',
+        stacked: true,
+        toolbar: { show: true },
+        zoom: { enabled: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+      },
+      colors,
+      stroke: { curve: 'smooth', width: 2 },
+      fill: { type: 'solid', opacity: 0.55 },
+      xaxis: {
+        categories: periodLabels,
+        labels: {
+          rotate: n > 14 ? -45 : 0,
+          rotateAlways: n > 14,
+          style: { fontSize: '11px' },
+        },
+      },
+      yaxis: { labels: { formatter: (val) => formatMoneyShort(Number(val), defaultCurrency) } },
+      dataLabels: { enabled: false },
+      legend: { position: 'bottom', fontSize: '12px', markers: { size: 12 } },
+      tooltip: {
+        theme: theme.palette.mode,
+        shared: true,
+        intersect: false,
+        y: { formatter: (val) => formatMoneyFull(Number(val), defaultCurrency) },
+      },
+      grid: { borderColor: theme.palette.divider, strokeDashArray: 4 },
+    };
+    return { options, series };
+  }, [
+    kategorienIncomePeriodMatrix,
+    kategorienIncomeDailyMatrix,
+    verlaufCategoryOptions,
+    categoryAggsIncome,
+    verlaufUncategorizedColor,
+    theme,
+    defaultCurrency,
+    piePalette,
+  ]);
+
+  const kategorienExpenseTimeChart = useMemo(() => {
+    const { periodLabels, byKey } = kategorienExpensePeriodMatrix;
+    const n = periodLabels.length;
+    const keys = [...byKey.keys()];
+    keys.sort(
+      (a, b) =>
+        totalSpendForKey(kategorienExpenseDailyMatrix, b) - totalSpendForKey(kategorienExpenseDailyMatrix, a),
+    );
+    const series = keys.map((key) => {
+      const opt = resolveVerlaufOption(
+        key,
+        verlaufCategoryOptions,
+        categoryAggsExpense,
+        verlaufUncategorizedColor,
+        piePalette,
+        0,
+      );
+      return {
+        name: opt.label,
+        data: Array.from({ length: n }, (_, i) => byKey.get(key)?.[i] ?? 0),
+      };
+    });
+    const colors = keys.map((key, si) =>
+      resolveVerlaufOption(
+        key,
+        verlaufCategoryOptions,
+        categoryAggsExpense,
+        verlaufUncategorizedColor,
+        piePalette,
+        si,
+      ).colorHex,
+    );
+    const options: ApexOptions = {
+      chart: {
+        type: 'area',
+        stacked: true,
+        toolbar: { show: true },
+        zoom: { enabled: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+      },
+      colors,
+      stroke: { curve: 'smooth', width: 2 },
+      fill: { type: 'solid', opacity: 0.55 },
+      xaxis: {
+        categories: periodLabels,
+        labels: {
+          rotate: n > 14 ? -45 : 0,
+          rotateAlways: n > 14,
+          style: { fontSize: '11px' },
+        },
+      },
+      yaxis: { labels: { formatter: (val) => formatMoneyShort(Number(val), defaultCurrency) } },
+      dataLabels: { enabled: false },
+      legend: { position: 'bottom', fontSize: '12px', markers: { size: 12 } },
+      tooltip: {
+        theme: theme.palette.mode,
+        shared: true,
+        intersect: false,
+        y: { formatter: (val) => formatMoneyFull(Number(val), defaultCurrency) },
+      },
+      grid: { borderColor: theme.palette.divider, strokeDashArray: 4 },
+    };
+    return { options, series };
+  }, [
+    kategorienExpensePeriodMatrix,
+    kategorienExpenseDailyMatrix,
+    verlaufCategoryOptions,
+    categoryAggsExpense,
+    verlaufUncategorizedColor,
+    theme,
+    defaultCurrency,
+    piePalette,
+  ]);
+
   /** Muss dieselben `VerlaufPickOption`-Referenzen wie `verlaufPickOptions` nutzen (nicht `VerlaufCategoryOption[]`). */
   const verlaufAutocompletePickValue = useMemo(() => {
     const out: VerlaufPickOption[] = [];
@@ -1415,6 +1633,229 @@ export default function Analyses() {
       .sort((a, b) => b.id - a.id);
   }, [scopedTransactions, regelClusterBarClusterKey, regelClusterSubtreeIds, allRulesSorted]);
 
+  const [regelClusterCounterpartyKey, setRegelClusterCounterpartyKey] = useState<string | null>(null);
+
+  const regelClusterCounterpartyAgg = useMemo(() => {
+    const rows = transactionsForRegelClusterBarSelection;
+    const by = new Map<string, { label: string; totalAbs: number; count: number }>();
+    for (const t of rows) {
+      const label =
+        t.counterparty_partner_name ??
+        t.counterparty_name ??
+        t.counterparty ??
+        'Unbekannt';
+      const key = label.trim() || 'Unbekannt';
+      const amt = Math.abs(Number(t.amount));
+      const prev = by.get(key);
+      if (prev) {
+        prev.totalAbs += Number.isFinite(amt) ? amt : 0;
+        prev.count += 1;
+      } else {
+        by.set(key, { label: key, totalAbs: Number.isFinite(amt) ? amt : 0, count: 1 });
+      }
+    }
+    const sorted = Array.from(by.values()).sort((a, b) => b.totalAbs - a.totalAbs);
+    const top = sorted.slice(0, 14);
+    const rest = sorted.slice(14);
+    if (rest.length) {
+      top.push({
+        label: `Weitere (${rest.length})`,
+        totalAbs: rest.reduce((s, r) => s + r.totalAbs, 0),
+        count: rest.reduce((s, r) => s + r.count, 0),
+      });
+    }
+    return top;
+  }, [transactionsForRegelClusterBarSelection]);
+
+  const regelClusterCounterpartyChart = useMemo(() => {
+    const rows = regelClusterCounterpartyAgg;
+    const labels = rows.map((r) => r.label);
+    const data = rows.map((r) => r.totalAbs);
+    const colors = rows.map((_, si) => piePalette[si % piePalette.length]);
+    const options: ApexOptions = {
+      chart: {
+        type: 'bar',
+        toolbar: { show: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+        events: {
+          dataPointSelection: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= rows.length) return;
+            const key = rows[i]?.label ?? null;
+            if (!key || key.startsWith('Weitere')) return;
+            setRegelClusterCounterpartyKey(key);
+          },
+          click: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= rows.length) return;
+            const key = rows[i]?.label ?? null;
+            if (!key || key.startsWith('Weitere')) return;
+            setRegelClusterCounterpartyKey(key);
+          },
+        },
+      },
+      plotOptions: {
+        bar: {
+          horizontal: true,
+          borderRadius: 2,
+          distributed: true,
+          dataLabels: { position: 'right' },
+        },
+      },
+      dataLabels: {
+        enabled: true,
+        formatter: (val: string | number) => formatMoneyShort(Number(val), defaultCurrency),
+        style: { fontSize: '11px' },
+      },
+      xaxis: {
+        categories: labels,
+        labels: {
+          formatter: (val: string | number) => {
+            const n = typeof val === 'number' ? val : Number(val);
+            if (Number.isFinite(n)) return formatMoneyShort(n, defaultCurrency);
+            return String(val);
+          },
+          style: { fontSize: '11px' },
+        },
+      },
+      yaxis: {
+        labels: {
+          maxWidth: 260,
+          style: { fontSize: '11px' },
+          formatter: (val: string | number) => String(val),
+        },
+      },
+      colors,
+      grid: { borderColor: theme.palette.divider, strokeDashArray: 4 },
+      tooltip: {
+        theme: theme.palette.mode,
+        y: { formatter: (val: number) => formatMoneyFull(val, defaultCurrency) },
+      },
+      legend: { show: false },
+    };
+    return { options, series: [{ name: 'Ausgaben', data }] };
+  }, [regelClusterCounterpartyAgg, piePalette, theme, defaultCurrency]);
+
+  const transactionsForRegelClusterCounterpartySelection = useMemo(() => {
+    if (!regelClusterCounterpartyKey) return transactionsForRegelClusterBarSelection;
+    return transactionsForRegelClusterBarSelection.filter((t) => {
+      const label =
+        t.counterparty_partner_name ??
+        t.counterparty_name ??
+        t.counterparty ??
+        'Unbekannt';
+      const key = label.trim() || 'Unbekannt';
+      return key === regelClusterCounterpartyKey;
+    });
+  }, [transactionsForRegelClusterBarSelection, regelClusterCounterpartyKey]);
+
+  const regelClusterCounterpartyDailyMatrix = useMemo(() => {
+    if (regelClusterBarClusterKey == null || !regelClusterSubtreeIds) {
+      return { days: [] as string[], byKey: new Map<string, number[]>() };
+    }
+    const rules = allRulesSorted;
+    const allowedKeys = new Set(
+      regelClusterCounterpartyAgg
+        .map((r) => r.label)
+        .filter((k) => k && !k.startsWith('Weitere')),
+    );
+    return buildDailyExpenseMatrixClustered(scopedTransactions, from, to, (t) => {
+      if (Number(t.amount) >= 0) return null;
+      if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return null;
+      if (displayNameClusterForTransaction(t, rules).clusterKey !== regelClusterBarClusterKey) return null;
+      const label =
+        t.counterparty_partner_name ??
+        t.counterparty_name ??
+        t.counterparty ??
+        'Unbekannt';
+      const key = label.trim() || 'Unbekannt';
+      if (!allowedKeys.has(key)) return null;
+      return key;
+    });
+  }, [
+    scopedTransactions,
+    from,
+    to,
+    regelClusterSubtreeIds,
+    allRulesSorted,
+    regelClusterBarClusterKey,
+    regelClusterCounterpartyAgg,
+  ]);
+
+  const regelClusterCounterpartyPeriodMatrix = useMemo(
+    () => rollupVerlaufFromDaily(regelClusterCounterpartyDailyMatrix, regelClusterBucket),
+    [regelClusterCounterpartyDailyMatrix, regelClusterBucket],
+  );
+
+  const regelClusterCounterpartyTimeChart = useMemo(() => {
+    const { periodLabels, byKey } = regelClusterCounterpartyPeriodMatrix;
+    const n = periodLabels.length;
+    const keys = Array.from(byKey.keys());
+    keys.sort((a, b) => (regelClusterCounterpartyAgg.find((x) => x.label === b)?.totalAbs ?? 0) - (regelClusterCounterpartyAgg.find((x) => x.label === a)?.totalAbs ?? 0));
+    const series = keys.map((key) => ({
+      name: key,
+      data: Array.from({ length: n }, (_, i) => {
+        const arr = byKey.get(key);
+        return arr ? (arr[i] ?? 0) : 0;
+      }),
+    }));
+    const colors = keys.map((_, si) => piePalette[si % piePalette.length]);
+    const options: ApexOptions = {
+      chart: {
+        type: 'area',
+        stacked: true,
+        toolbar: { show: true },
+        zoom: { enabled: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+      },
+      colors,
+      stroke: { curve: 'smooth', width: 2 },
+      fill: { type: 'solid', opacity: 0.55 },
+      xaxis: {
+        categories: periodLabels,
+        labels: {
+          rotate: n > 14 ? -45 : 0,
+          rotateAlways: n > 14,
+          style: { fontSize: '11px' },
+        },
+      },
+      yaxis: {
+        labels: {
+          formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
+        },
+      },
+      dataLabels: { enabled: false },
+      legend: {
+        position: 'bottom',
+        fontSize: '12px',
+        markers: { size: 12 },
+      },
+      tooltip: {
+        theme: theme.palette.mode,
+        shared: true,
+        intersect: false,
+        y: {
+          formatter: (val) => formatMoneyFull(Number(val), defaultCurrency),
+        },
+      },
+      grid: {
+        borderColor: theme.palette.divider,
+        strokeDashArray: 4,
+      },
+    };
+    return { options, series };
+  }, [
+    regelClusterCounterpartyPeriodMatrix,
+    regelClusterCounterpartyAgg,
+    theme,
+    defaultCurrency,
+    piePalette,
+  ]);
+
   const regelClusterBarSelectionTitle = useMemo(() => {
     if (regelClusterBarClusterKey == null) return '';
     return regelClusterLabelForKey(regelClusterBarClusterKey);
@@ -1503,6 +1944,72 @@ export default function Analyses() {
       legend: { show: false },
     };
     return { options, series: [{ name: 'Ausgaben', data }] };
+  }, [regelClusterSortedKeys, regelClusterDailyMatrix, theme, defaultCurrency, piePalette]);
+
+  const regelClusterPieChart = useMemo(() => {
+    const keys = regelClusterSortedKeys;
+    const labels = keys.map((k) => regelClusterLabelForKey(k));
+    const data = keys.map((k) => totalSpendForKey(regelClusterDailyMatrix, k));
+    const colors = keys.map((_, si) => piePalette[si % piePalette.length]);
+    const options: ApexOptions = {
+      chart: {
+        type: 'donut',
+        toolbar: { show: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+        events: {
+          dataPointSelection: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= keys.length) return;
+            setRegelClusterBarClusterKey(keys[i]);
+            setRegelClusterPeriodIndex(null);
+          },
+          click: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0 || i >= keys.length) return;
+            setRegelClusterBarClusterKey(keys[i]);
+            setRegelClusterPeriodIndex(null);
+          },
+        },
+      },
+      labels,
+      colors,
+      legend: {
+        position: 'bottom',
+        fontSize: '12px',
+        markers: { size: 10 },
+      },
+      dataLabels: { enabled: false },
+      tooltip: {
+        theme: theme.palette.mode,
+        y: { formatter: (val: number) => formatMoneyFull(val, defaultCurrency) },
+      },
+      plotOptions: {
+        pie: {
+          donut: {
+            size: '62%',
+            labels: {
+              show: true,
+              total: {
+                show: true,
+                label: 'Summe',
+                formatter: (w: any) => {
+                  const totals = w?.globals?.seriesTotals as number[] | undefined;
+                  const sum = Array.isArray(totals) ? totals.reduce((a, b) => a + (Number(b) || 0), 0) : 0;
+                  return formatMoneyShort(sum, defaultCurrency);
+                },
+              },
+              value: {
+                formatter: (val: string) => formatMoneyShort(Number(val), defaultCurrency),
+              },
+            },
+          },
+        },
+      },
+      stroke: { width: 1, colors: [theme.palette.background.paper] as any },
+    };
+    return { options, series: data };
   }, [regelClusterSortedKeys, regelClusterDailyMatrix, theme, defaultCurrency, piePalette]);
 
   const regelClusterTimeChart = useMemo(() => {
@@ -2072,6 +2579,83 @@ export default function Analyses() {
               )}
             </Paper>
           )}
+          {kategorienSelectedKeys.length > 0 ? (
+            <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+              <Accordion elevation={0} sx={{ border: 1, borderColor: 'divider', '&:before': { display: 'none' } }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography variant="subtitle2" fontWeight={600}>
+                    Verlauf über die Zeit
+                  </Typography>
+                </AccordionSummary>
+                <AccordionDetails sx={{ pt: 0 }}>
+                  <Stack
+                    direction={{ xs: 'column', md: 'row' }}
+                    spacing={2}
+                    alignItems={{ xs: 'stretch', md: 'center' }}
+                    sx={{ mb: 2, mt: 0.5 }}
+                    flexWrap="wrap"
+                    useFlexGap
+                  >
+                    <FormControl size="small" sx={{ minWidth: 200 }}>
+                      <InputLabel id="analyses-kategorien-bucket">Aggregierung</InputLabel>
+                      <Select
+                        labelId="analyses-kategorien-bucket"
+                        label="Aggregierung"
+                        value={verlaufBucket}
+                        onChange={(e) => setVerlaufBucket(e.target.value as VerlaufBucket)}
+                      >
+                        <MenuItem value="day">Tag</MenuItem>
+                        <MenuItem value="week">Woche</MenuItem>
+                        <MenuItem value="month">Monat</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Stack>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={3} alignItems="stretch">
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="subtitle2" fontWeight={700} color="success.main" gutterBottom textAlign="center">
+                        Einnahmen
+                      </Typography>
+                      {kategorienIncomeTimeChart.series.length === 0 ? (
+                        <Alert severity="info" sx={{ mt: 1 }}>
+                          Keine Einnahmen im Verlauf für die gewählten Kategorien.
+                        </Alert>
+                      ) : (
+                        <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                          <Chart
+                            options={kategorienIncomeTimeChart.options}
+                            series={kategorienIncomeTimeChart.series}
+                            type="area"
+                            height={isXs ? 340 : 420}
+                            width="100%"
+                          />
+                        </Box>
+                      )}
+                    </Box>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="subtitle2" fontWeight={700} color="error.main" gutterBottom textAlign="center">
+                        Ausgaben
+                      </Typography>
+                      {kategorienExpenseTimeChart.series.length === 0 ? (
+                        <Alert severity="info" sx={{ mt: 1 }}>
+                          Keine Ausgaben im Verlauf für die gewählten Kategorien.
+                        </Alert>
+                      ) : (
+                        <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                          <Chart
+                            options={kategorienExpenseTimeChart.options}
+                            series={kategorienExpenseTimeChart.series}
+                            type="area"
+                            height={isXs ? 340 : 420}
+                            width="100%"
+                          />
+                        </Box>
+                      )}
+                    </Box>
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+            </Paper>
+          ) : null}
           {selectedCategorySlice && sharedDataReady && scopedTransactions.length ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
@@ -2435,30 +3019,54 @@ export default function Analyses() {
                 <Alert severity="info">Keine Ausgaben in dieser Unterkategorie im gewählten Zeitraum.</Alert>
               ) : (
                 <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
-                  <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1 }}>
-                    Summen je Anzeigename
-                  </Typography>
-                  <Box sx={{ width: '100%', minHeight: isXs ? 260 : 320, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                    <Chart
-                      options={regelClusterBarChart.options}
-                      series={regelClusterBarChart.series}
-                      type="bar"
-                      height={isXs ? 280 : Math.min(120 + regelClusterSortedKeys.length * 36, 520)}
-                      width="100%"
-                    />
-                  </Box>
-                  <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1, mt: 2 }}>
-                    Verlauf über die Zeit
-                  </Typography>
-                  <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                    <Chart
-                      options={regelClusterTimeChart.options}
-                      series={regelClusterTimeChart.series}
-                      type="area"
-                      height={isXs ? 340 : 440}
-                      width="100%"
-                    />
-                  </Box>
+                  <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'stretch' }}>
+                    <Box sx={{ flex: 3, minWidth: 320 }}>
+                      <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1 }}>
+                        Summen je Anzeigename
+                      </Typography>
+                      <Box sx={{ width: '100%', minHeight: isXs ? 260 : 320, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                        <Chart
+                          options={regelClusterBarChart.options}
+                          series={regelClusterBarChart.series}
+                          type="bar"
+                          height={isXs ? 280 : Math.min(120 + regelClusterSortedKeys.length * 36, 520)}
+                          width="100%"
+                        />
+                      </Box>
+                    </Box>
+                    <Box sx={{ flex: 2, minWidth: 280 }}>
+                      <Typography variant="subtitle2" fontWeight={600} sx={{ mb: 1 }}>
+                        Anteile (Torte)
+                      </Typography>
+                      <Box sx={{ width: '100%', minHeight: isXs ? 320 : 320, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                        <Chart
+                          options={regelClusterPieChart.options}
+                          series={regelClusterPieChart.series}
+                          type="donut"
+                          height={isXs ? 360 : 360}
+                          width="100%"
+                        />
+                      </Box>
+                    </Box>
+                  </Stack>
+                  <Accordion elevation={0} sx={{ mt: 2, border: 1, borderColor: 'divider', '&:before': { display: 'none' } }}>
+                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                      <Typography variant="subtitle2" fontWeight={600}>
+                        Verlauf über die Zeit
+                      </Typography>
+                    </AccordionSummary>
+                    <AccordionDetails sx={{ pt: 0 }}>
+                      <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                        <Chart
+                          options={regelClusterTimeChart.options}
+                          series={regelClusterTimeChart.series}
+                          type="area"
+                          height={isXs ? 340 : 440}
+                          width="100%"
+                        />
+                      </Box>
+                    </AccordionDetails>
+                  </Accordion>
                 </Paper>
               )}
             </Stack>
@@ -2476,8 +3084,62 @@ export default function Analyses() {
                   Auswahl aufheben
                 </Button>
               </Stack>
+              {transactionsForRegelClusterBarSelection.length ? (
+                <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider', mb: 2 }}>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    spacing={2}
+                    alignItems={{ sm: 'center' }}
+                    justifyContent="space-between"
+                    sx={{ mb: 1 }}
+                  >
+                    <Typography variant="subtitle2" fontWeight={600}>
+                      Buchungsempfänger / Gegenparteien
+                    </Typography>
+                    {regelClusterCounterpartyKey ? (
+                      <Button size="small" variant="outlined" onClick={() => setRegelClusterCounterpartyKey(null)}>
+                        Filter zurücksetzen
+                      </Button>
+                    ) : null}
+                  </Stack>
+                  <Box sx={{ width: '100%', minHeight: isXs ? 260 : 320, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                    <Chart
+                      options={regelClusterCounterpartyChart.options}
+                      series={regelClusterCounterpartyChart.series}
+                      type="bar"
+                      height={isXs ? 280 : Math.min(140 + regelClusterCounterpartyAgg.length * 34, 520)}
+                      width="100%"
+                    />
+                  </Box>
+                  {regelClusterCounterpartyKey ? (
+                    <Typography variant="caption" color="text.secondary">
+                      Aktiver Filter: <strong>{regelClusterCounterpartyKey}</strong>
+                    </Typography>
+                  ) : null}
+                  {regelClusterCounterpartyAgg.length ? (
+                    <Accordion elevation={0} sx={{ mt: 2, border: 1, borderColor: 'divider', '&:before': { display: 'none' } }}>
+                      <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                        <Typography variant="subtitle2" fontWeight={600}>
+                          Verlauf (Gegenparteien)
+                        </Typography>
+                      </AccordionSummary>
+                      <AccordionDetails sx={{ pt: 0 }}>
+                        <Box sx={{ width: '100%', minHeight: isXs ? 320 : 420, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                          <Chart
+                            options={regelClusterCounterpartyTimeChart.options}
+                            series={regelClusterCounterpartyTimeChart.series}
+                            type="area"
+                            height={isXs ? 340 : 420}
+                            width="100%"
+                          />
+                        </Box>
+                      </AccordionDetails>
+                    </Accordion>
+                  ) : null}
+                </Paper>
+              ) : null}
               <TransactionBookingsTable
-                rows={transactionsForRegelClusterBarSelection}
+                rows={transactionsForRegelClusterCounterpartySelection}
                 accounts={accounts}
                 emptyMessage="Keine Buchungen für diesen Anzeigenamen (im gewählten Filter)."
                 hideInlineHint

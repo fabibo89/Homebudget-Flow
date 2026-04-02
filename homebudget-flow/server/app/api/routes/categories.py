@@ -15,7 +15,7 @@ from app.schemas.category import CategoryCreate, CategoryOut, CategoryUpdate
 from app.services.access import user_has_household
 from app.services.category_colors import effective_color, normalize_hex
 from app.services.default_income_categories import ensure_income_category_tree
-from app.services.salary_cache import refresh_salary_cache_for_household
+from app.services.day_zero_refresh import refresh_day_zero_for_household
 
 router = APIRouter(prefix="/households", tags=["categories"])
 
@@ -326,7 +326,7 @@ async def delete_category(
         .values(category_id=None, category_missing=True),
     )
     await session.execute(update(Transaction).where(Transaction.category_id.in_(clear_ids)).values(category_id=None))
-    await refresh_salary_cache_for_household(session, household_id)
+    await refresh_day_zero_for_household(session, household_id)
     for sub in subs:
         await session.delete(sub)
     await session.delete(row)

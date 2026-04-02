@@ -8,7 +8,8 @@ from typing import Iterable, Optional
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import BankAccount, BankAccountBalanceSnapshot, Transaction, TransferPair
+from app.db.models import AccountGroup, BankAccount, BankAccountBalanceSnapshot, Transaction, TransferPair
+from app.services.tag_zero_rule import bank_account_has_tag_zero_rule, find_tag_zero_matching_transaction
 
 
 def _add_months(d: date, months: int) -> date:
@@ -38,6 +39,40 @@ class DayZeroInputs:
     end_exclusive: date
     currency: str
     start_balance: Decimal
+    #: Kontostand unmittelbar nach der Tag-Null-Regel-Buchung (None → nicht ermittelbar).
+    tag_zero_konto_after_rule: Optional[Decimal] = None
+
+
+async def _household_id_for_bank_account(session: AsyncSession, account: BankAccount) -> int:
+    if account.account_group is not None:
+        return int(account.account_group.household_id)
+    ag = await session.get(AccountGroup, account.account_group_id)
+    if ag is None:
+        raise ValueError("BankAccount ohne AccountGroup")
+    return int(ag.household_id)
+
+
+async def _konto_balance_after_rule_booking(
+    session: AsyncSession,
+    *,
+    account: BankAccount,
+    tag_zero_date: date,
+    opening_balance: Decimal,
+    txs: list[Transaction],
+) -> Optional[Decimal]:
+    """Saldo nach Anwendung der Regel-Buchung: Tagesanfangssaldo + Buchungen am Tag bis einschließlich Regel-Tx (Sortierung: id)."""
+    hid = await _household_id_for_bank_account(session, account)
+    rule_tx = await find_tag_zero_matching_transaction(session, account=account, household_id=hid)
+    if rule_tx is None or rule_tx.booking_date != tag_zero_date:
+        return None
+    day_txs = [t for t in txs if t.booking_date == tag_zero_date]
+    day_txs.sort(key=lambda t: t.id)
+    cum = opening_balance
+    for t in day_txs:
+        cum += Decimal(str(t.amount))
+        if t.id == rule_tx.id:
+            return cum.quantize(Decimal("0.01"))
+    return (opening_balance + Decimal(str(rule_tx.amount))).quantize(Decimal("0.01"))
 
 
 async def _transfer_tx_ids_for_account(
@@ -129,7 +164,16 @@ async def compute_dayzero_meltdown_for_account(
     end_exclusive = _add_months(start, months)
     days = _date_range(start, end_exclusive)
     if not days:
-        return DayZeroInputs(start=start, end_exclusive=end_exclusive, currency=account.currency, start_balance=Decimal("0")), []
+        return (
+            DayZeroInputs(
+                start=start,
+                end_exclusive=end_exclusive,
+                currency=account.currency,
+                start_balance=Decimal("0"),
+                tag_zero_konto_after_rule=None,
+            ),
+            [],
+        )
 
     anchor_balance, anchor_day = await _anchor_balance_near_start(session, account, start=start)
 
@@ -169,6 +213,14 @@ async def compute_dayzero_meltdown_for_account(
 
     # anchor_balance gilt für anchor_day (Tagesende). Transformiere auf start.
     start_balance = anchor_balance + sum_net(anchor_day, start)
+
+    tag_zero_konto_after_rule = await _konto_balance_after_rule_booking(
+        session,
+        account=account,
+        tag_zero_date=start,
+        opening_balance=start_balance,
+        txs=txs,
+    )
 
     # Ausgaben/Netto ohne Transfers.
     transfer_ids = await _transfer_tx_ids_for_account(
@@ -218,23 +270,18 @@ async def compute_dayzero_meltdown_for_account(
             }
         )
 
-    return DayZeroInputs(
-        start=start,
-        end_exclusive=end_exclusive,
-        currency=account.currency,
-        start_balance=start_balance,
-    ), out
+    return (
+        DayZeroInputs(
+            start=start,
+            end_exclusive=end_exclusive,
+            currency=account.currency,
+            start_balance=start_balance,
+            tag_zero_konto_after_rule=tag_zero_konto_after_rule,
+        ),
+        out,
+    )
 
 
 def eligible_accounts_with_tag_zero_rule(accounts: Iterable[BankAccount]) -> list[BankAccount]:
-    out: list[BankAccount] = []
-    for a in accounts:
-        if getattr(a, "tag_zero_rule_category_rule_id", None) is not None:
-            out.append(a)
-            continue
-        raw = getattr(a, "tag_zero_rule_conditions_json", None)
-        if raw and str(raw).strip():
-            out.append(a)
-            continue
-    return out
+    return [a for a in accounts if bank_account_has_tag_zero_rule(a)]
 

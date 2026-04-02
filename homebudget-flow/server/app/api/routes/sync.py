@@ -56,8 +56,7 @@ class SyncOverviewRow(BaseModel):
     transactions_attempt_at: Optional[str]
     transactions_success_at: Optional[str]
     last_error: Optional[str]
-    last_salary_booking_date: Optional[str] = None
-    last_salary_amount: Optional[str] = None
+    day_zero_date: Optional[str] = None
 
 
 class SyncOverviewOut(BaseModel):
@@ -92,10 +91,7 @@ async def sync_overview_for_user(
                 transactions_attempt_at=_iso(sync.transactions_attempt_at) if sync else None,
                 transactions_success_at=_iso(sync.transactions_success_at) if sync else None,
                 last_error=sync.last_error if sync else None,
-                last_salary_booking_date=_iso_date(acc.last_salary_booking_date),
-                last_salary_amount=(
-                    str(acc.last_salary_amount) if acc.last_salary_amount is not None else None
-                ),
+                day_zero_date=_iso_date(acc.day_zero_date),
             )
         )
     return SyncOverviewOut(accounts=out)

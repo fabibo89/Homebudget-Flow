@@ -46,9 +46,8 @@ class HaAccountSnapshot(BaseModel):
     transactions_attempt_at: Optional[str]
     transactions_success_at: Optional[str]
     last_error: Optional[str]
-    # Tag Null (umbenannt von last_salary_*): Datum + Betrag der letzten Tag-Null-Buchung
+    # Tag Null: Datum aus Tag-Null-Regel (kein gespeicherter Betrag am Konto).
     tag_zero_date: Optional[str] = None
-    tag_zero_amount: Optional[str] = None
 
 
 class HaSnapshot(BaseModel):
@@ -90,8 +89,7 @@ async def ha_snapshot(
                 transactions_attempt_at=_iso(sync.transactions_attempt_at) if sync else None,
                 transactions_success_at=_iso(sync.transactions_success_at) if sync else None,
                 last_error=sync.last_error if sync else None,
-                tag_zero_date=_iso_date(acc.last_salary_booking_date),
-                tag_zero_amount=str(acc.last_salary_amount) if acc.last_salary_amount is not None else None,
+                tag_zero_date=_iso_date(acc.day_zero_date),
             )
         )
     return HaSnapshot(accounts=out)
@@ -107,7 +105,7 @@ async def ha_dayzero_meltdown(
 
     out: list[HaDayZeroAccountToday] = []
     for acc in accounts:
-        d0 = acc.last_salary_booking_date
+        d0 = acc.day_zero_date
         if d0 is None:
             out.append(
                 HaDayZeroAccountToday(

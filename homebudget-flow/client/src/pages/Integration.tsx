@@ -180,8 +180,7 @@ export default function Integration() {
                 <TableCell>Saldo OK</TableCell>
                 <TableCell>Umsätze-Abruf</TableCell>
                 <TableCell>Umsätze OK</TableCell>
-                <TableCell>Gehalt (Datum)</TableCell>
-                <TableCell align="right">Gehalt (Betrag)</TableCell>
+                <TableCell>Tag Null</TableCell>
                 <TableCell align="right">Aktionen</TableCell>
                 <TableCell>Fehler</TableCell>
               </TableRow>
@@ -189,7 +188,7 @@ export default function Integration() {
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={12}>
+                  <TableCell colSpan={11}>
                     <Typography color="text.secondary" sx={{ py: 2 }}>
                       Keine Konten – zuerst unter „Einrichtung“ anlegen.
                     </Typography>
@@ -206,12 +205,7 @@ export default function Integration() {
                     <TableCell>{formatDateTime(r.balance_success_at)}</TableCell>
                     <TableCell>{formatDateTime(r.transactions_attempt_at)}</TableCell>
                     <TableCell>{formatDateTime(r.transactions_success_at)}</TableCell>
-                    <TableCell>{formatSalaryDate(r.last_salary_booking_date)}</TableCell>
-                    <TableCell align="right">
-                      {r.last_salary_amount != null && r.last_salary_amount !== ''
-                        ? formatMoney(r.last_salary_amount, r.currency)
-                        : '—'}
-                    </TableCell>
+                    <TableCell>{formatSalaryDate(r.day_zero_date)}</TableCell>
                     <TableCell align="right">
                       <Button size="small" onClick={() => void handleBackfillOne(r.bank_account_id)}>
                         Backfill

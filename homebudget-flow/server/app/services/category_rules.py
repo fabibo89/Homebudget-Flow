@@ -11,7 +11,7 @@ from sqlalchemy.orm import joinedload
 from app.db.models import AccountGroup, BankAccount, Category, CategoryRule, Transaction, User
 from app.schemas.category_rule_conditions import rule_effective_conditions, transaction_matches_conditions
 from app.services.access import bank_account_ids_visible_for_user_in_household
-from app.services.salary_cache import refresh_salary_cache_for_household
+from app.services.day_zero_refresh import refresh_day_zero_for_household
 
 _OVERWRITE_CANDIDATE_LIMIT = 500
 
@@ -214,7 +214,7 @@ async def apply_category_rules_to_uncategorized(
                 tx.category_id = rule.category_id
                 updated += 1
                 break
-    await refresh_salary_cache_for_household(session, household_id)
+    await refresh_day_zero_for_household(session, household_id)
     return updated
 
 
@@ -256,5 +256,5 @@ async def reverse_category_rule_assignments(
             tx.category_id = None
             updated += 1
 
-    await refresh_salary_cache_for_household(session, household_id)
+    await refresh_day_zero_for_household(session, household_id)
     return updated

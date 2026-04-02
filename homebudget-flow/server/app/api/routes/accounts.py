@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy import desc, select
@@ -22,9 +24,9 @@ from app.schemas.household import BankAccountOut, BankAccountUpdate, bank_accoun
 from app.schemas.tag_zero_rule import TagZeroRuleOut, TagZeroRuleUpsert
 from app.services.access import user_can_access_account_group, user_can_access_bank_account
 from app.services.bank_account_provision import normalize_iban
-from app.services.salary_cache import refresh_salary_cache_for_bank_account
+from app.services.day_zero_refresh import refresh_day_zero_for_bank_account
 from app.schemas.category_rule_conditions import conditions_to_json, parse_conditions_json
-from app.services.tag_zero_rule import apply_tag_zero_rule_for_account
+from app.services.tag_zero_rule import apply_tag_zero_rule_for_account, find_tag_zero_matching_transaction
 from app.services.dayzero_meltdown import compute_dayzero_meltdown_for_account
 from app.schemas.dayzero_meltdown import DayZeroMeltdownDay, DayZeroMeltdownOut
 
@@ -46,16 +48,16 @@ async def list_my_accounts(
     return [bank_account_to_out(a, a.sync_state) for a in rows]
 
 
-@router.post("/{bank_account_id}/salary-cache/refresh", response_model=BankAccountOut)
-async def refresh_salary_cache_for_my_bank_account(
+@router.post("/{bank_account_id}/day-zero/refresh", response_model=BankAccountOut)
+async def refresh_day_zero_for_my_bank_account(
     bank_account_id: int,
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
 ) -> BankAccountOut:
-    """Gehalt-Cache (letztes Datum/Betrag) aus Buchungen neu berechnen."""
+    """Tag-Null-Datum aus konfigurierter Regel und Buchungen neu berechnen."""
     if not await user_can_access_bank_account(session, user.id, bank_account_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this bank account")
-    await refresh_salary_cache_for_bank_account(session, bank_account_id)
+    await refresh_day_zero_for_bank_account(session, bank_account_id)
     await session.commit()
     r_acc = await session.execute(
         select(BankAccount)
@@ -121,8 +123,7 @@ async def upsert_tag_zero_rule(
         acc.tag_zero_rule_normalize_dot_space = False
         acc.tag_zero_rule_display_name_override = None
         # Kein Regel-Match mehr -> Tag Null zurücksetzen.
-        acc.last_salary_booking_date = None
-        acc.last_salary_amount = None
+        acc.day_zero_date = None
         await session.commit()
         return TagZeroRuleOut(source="none")
 
@@ -184,7 +185,7 @@ async def dayzero_meltdown_for_account(
     acc = acc_r.unique().scalar_one_or_none()
     if acc is None or acc.account_group is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Bank account not found")
-    if acc.last_salary_booking_date is None:
+    if acc.day_zero_date is None:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Kein Tag-Null-Datum am Konto gesetzt (Regel anlegen/ausführen).",
@@ -192,13 +193,27 @@ async def dayzero_meltdown_for_account(
     inputs, days = await compute_dayzero_meltdown_for_account(
         session,
         account=acc,
-        tag_zero_date=acc.last_salary_booking_date,
+        tag_zero_date=acc.day_zero_date,
         months=months,
+    )
+    sb = (
+        inputs.tag_zero_konto_after_rule
+        if inputs.tag_zero_konto_after_rule is not None
+        else inputs.start_balance
+    ).quantize(Decimal("0.01"))
+    tx_match = await find_tag_zero_matching_transaction(
+        session,
+        account=acc,
+        household_id=int(acc.account_group.household_id),
+    )
+    rule_booking = (
+        str(tx_match.amount.quantize(Decimal("0.01"))) if tx_match is not None else None
     )
     return DayZeroMeltdownOut(
         bank_account_id=acc.id,
-        tag_zero_date=acc.last_salary_booking_date,
-        tag_zero_amount=str(acc.last_salary_amount) if acc.last_salary_amount is not None else None,
+        tag_zero_date=acc.day_zero_date,
+        tag_zero_amount=str(sb),
+        tag_zero_rule_booking_amount=rule_booking,
         period_start=inputs.start,
         period_end_exclusive=inputs.end_exclusive,
         currency=inputs.currency,

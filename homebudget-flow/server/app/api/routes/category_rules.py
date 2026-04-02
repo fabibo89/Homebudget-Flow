@@ -55,7 +55,7 @@ from app.services.category_rules import (
     list_category_rule_overwrite_candidates,
     reverse_category_rule_assignments,
 )
-from app.services.salary_cache import refresh_salary_cache_for_household
+from app.services.day_zero_refresh import refresh_day_zero_for_household
 from app.services.default_income_categories import (
     ensure_income_category_tree,
     get_gehalt_category_id,
@@ -519,7 +519,7 @@ async def create_category_rule(
         tx.category_id = body.category_id
 
     if body.also_assign_transaction_id is not None:
-        await refresh_salary_cache_for_household(session, household_id)
+        await refresh_day_zero_for_household(session, household_id)
 
     await session.commit()
     await session.refresh(row)

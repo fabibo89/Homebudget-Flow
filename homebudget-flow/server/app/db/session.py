@@ -111,26 +111,51 @@ async def _ensure_bank_credentials_fints_verification(conn) -> None:
         )
 
 
-async def _ensure_bank_accounts_last_salary_cache(conn) -> None:
-    """Cache-Spalten („Tag Null“) für letzte Gehalt-Buchung (Standardkategorie)."""
+async def _migrate_bank_accounts_day_zero_date(conn) -> None:
+    """Spalte ``day_zero_date``; Migration von ``last_salary_*``; alte Spalten entfernen (PostgreSQL)."""
     url = settings.database_url.lower()
     if "sqlite" in url:
         r = await conn.execute(text("PRAGMA table_info(bank_accounts)"))
         cols = [row[1] for row in r.fetchall()]
-        if cols and "last_salary_booking_date" not in cols:
-            await conn.execute(text("ALTER TABLE bank_accounts ADD COLUMN last_salary_booking_date DATE"))
-        if cols and "last_salary_amount" not in cols:
-            await conn.execute(text("ALTER TABLE bank_accounts ADD COLUMN last_salary_amount NUMERIC(18, 2)"))
+        if cols and "day_zero_date" not in cols:
+            await conn.execute(text("ALTER TABLE bank_accounts ADD COLUMN day_zero_date DATE"))
+        r2 = await conn.execute(text("PRAGMA table_info(bank_accounts)"))
+        cols2 = [row[1] for row in r2.fetchall()]
+        if "last_salary_booking_date" in cols2:
+            await conn.execute(
+                text(
+                    "UPDATE bank_accounts SET day_zero_date = last_salary_booking_date "
+                    "WHERE day_zero_date IS NULL AND last_salary_booking_date IS NOT NULL",
+                ),
+            )
+            try:
+                await conn.execute(text("ALTER TABLE bank_accounts DROP COLUMN last_salary_booking_date"))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE bank_accounts DROP COLUMN last_salary_amount"))
+            except Exception:
+                pass
         return
     if "postgresql" in url:
-        await conn.execute(
-            text("ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS last_salary_booking_date DATE"),
-        )
-        await conn.execute(
+        await conn.execute(text("ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS day_zero_date DATE"))
+        # Backfill nur, wenn Legacy-Spalte noch existiert (sonst schlägt UPDATE fehl).
+        r_chk = await conn.execute(
             text(
-                "ALTER TABLE bank_accounts ADD COLUMN IF NOT EXISTS last_salary_amount NUMERIC(18, 2)",
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'bank_accounts' "
+                "AND column_name = 'last_salary_booking_date')",
             ),
         )
+        if r_chk.scalar():
+            await conn.execute(
+                text(
+                    "UPDATE bank_accounts SET day_zero_date = last_salary_booking_date "
+                    "WHERE day_zero_date IS NULL AND last_salary_booking_date IS NOT NULL",
+                ),
+            )
+        await conn.execute(text("ALTER TABLE bank_accounts DROP COLUMN IF EXISTS last_salary_booking_date"))
+        await conn.execute(text("ALTER TABLE bank_accounts DROP COLUMN IF EXISTS last_salary_amount"))
 
 
 async def _ensure_bank_accounts_tag_zero_rule(conn) -> None:
@@ -598,7 +623,7 @@ async def init_db() -> None:
         await _ensure_category_rules_missing_nullable_category(conn)
         await _ensure_category_rules_display_name_override(conn)
         await _ensure_category_rules_normalize_dot_space(conn)
-        await _ensure_bank_accounts_last_salary_cache(conn)
+        await _migrate_bank_accounts_day_zero_date(conn)
         await _ensure_bank_accounts_tag_zero_rule(conn)
         await _ensure_transactions_transfer_target(conn)
         await _ensure_transactions_counterparty_fields(conn)

@@ -25,7 +25,7 @@ from app.db.models import (
 )
 from app.db.session import get_session
 from app.services.category_assignment import ensure_category_is_subcategory_for_assignment
-from app.services.salary_cache import refresh_salary_cache_for_bank_account, refresh_salary_cache_for_bank_accounts
+from app.services.day_zero_refresh import refresh_day_zero_for_bank_account, refresh_day_zero_for_bank_accounts
 from app.schemas.transaction import (
     BulkTransactionCategoryBody,
     BulkTransactionCategoryResult,
@@ -474,7 +474,7 @@ async def patch_transaction_category(
             )
         ensure_category_is_subcategory_for_assignment(cat)
         tx.category_id = body.category_id
-    await refresh_salary_cache_for_bank_account(session, tx.bank_account_id)
+    await refresh_day_zero_for_bank_account(session, tx.bank_account_id)
     await session.commit()
     r2 = await session.execute(
         select(Transaction)
@@ -542,7 +542,7 @@ async def bulk_patch_transaction_categories(
         updated += 1
 
     if affected_bank_account_ids:
-        await refresh_salary_cache_for_bank_accounts(session, affected_bank_account_ids)
+        await refresh_day_zero_for_bank_accounts(session, list(affected_bank_account_ids))
 
     await session.commit()
     return BulkTransactionCategoryResult(updated=updated)

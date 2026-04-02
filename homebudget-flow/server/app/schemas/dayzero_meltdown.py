@@ -29,7 +29,18 @@ class DayZeroMeltdownDay(BaseModel):
 class DayZeroMeltdownOut(BaseModel):
     bank_account_id: int
     tag_zero_date: date
-    tag_zero_amount: Optional[str] = None
+    tag_zero_amount: Optional[str] = Field(
+        default=None,
+        description=(
+            "Kontostand unmittelbar nach der Tag-Null-Regel-Buchung am Tag Null "
+            "(Tageseröffnung + Buchungen desselben Tages bis einschließlich Regel-Tx, Reihenfolge id); "
+            "Fallback: Eröffnungssaldo Tag Null."
+        ),
+    )
+    tag_zero_rule_booking_amount: Optional[str] = Field(
+        default=None,
+        description="Betrag der neuesten Buchung, die der Tag-Null-Kontoregel entspricht.",
+    )
     period_start: date
     period_end_exclusive: date
     currency: str

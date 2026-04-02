@@ -528,9 +528,8 @@ export type BankAccount = {
   balance_success_at: string | null;
   transactions_attempt_at: string | null;
   transactions_success_at: string | null;
-  /** Cache: letzte Buchung mit Kategorie „Gehalt“ (Geldeingang) */
-  last_salary_booking_date?: string | null;
-  last_salary_amount?: string | null;
+  /** Tag Null: Datum der letzten passenden Buchung (Tag-Null-Regel); kein Betrag in der DB */
+  day_zero_date?: string | null;
 };
 
 export async function fetchAccounts(): Promise<BankAccount[]> {
@@ -573,8 +572,8 @@ export async function updateBankAccount(
   return data;
 }
 
-export async function refreshBankAccountSalaryCache(id: number): Promise<BankAccount> {
-  const { data } = await api.post<BankAccount>(`/api/accounts/${id}/salary-cache/refresh`);
+export async function refreshBankAccountDayZero(id: number): Promise<BankAccount> {
+  const { data } = await api.post<BankAccount>(`/api/accounts/${id}/day-zero/refresh`);
   return data;
 }
 
@@ -625,7 +624,10 @@ export type DayZeroMeltdownDay = {
 export type DayZeroMeltdownOut = {
   bank_account_id: number;
   tag_zero_date: string;
+  /** Kontostand am Tag Null (berechnet). */
   tag_zero_amount?: string | null;
+  /** Betrag der neuesten Buchung, die der Tag-Null-Regel entspricht. */
+  tag_zero_rule_booking_amount?: string | null;
   period_start: string;
   period_end_exclusive: string;
   currency: string;
@@ -897,8 +899,7 @@ export type SyncOverviewRow = {
   transactions_attempt_at: string | null;
   transactions_success_at: string | null;
   last_error: string | null;
-  last_salary_booking_date?: string | null;
-  last_salary_amount?: string | null;
+  day_zero_date?: string | null;
 };
 
 export async function fetchSyncOverview(): Promise<SyncOverviewRow[]> {

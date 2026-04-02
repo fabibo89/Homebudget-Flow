@@ -65,15 +65,11 @@ import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import { todayIsoInAppTimezone } from '../lib/appTimeZone';
 import { addMonthsToIsoDate, formatDate, formatDateTime, formatMoney } from '../lib/transactionUi';
 
-/** Eine Zeile für Konto-Dropdown: Buchungsdatum + Betrag der letzten Gehalt-Buchung (Cache). */
+/** Eine Zeile für Konto-Dropdown: Tag-Null-Datum (aus Regel). */
 function lastSalaryDropdownSecondary(a: BankAccount): string | undefined {
-  const d = a.last_salary_booking_date?.trim();
-  const amt = a.last_salary_amount?.trim();
-  if (!d && !amt) return undefined;
-  const parts: string[] = [];
-  if (d) parts.push(`Tag Null: ${formatDate(d)}`);
-  if (amt) parts.push(formatMoney(amt, a.currency));
-  return parts.join(' · ');
+  const d = a.day_zero_date?.trim();
+  if (!d) return undefined;
+  return `Tag Null: ${formatDate(d)}`;
 }
 
 /** Letzter Zeitpunkt, zu dem Saldo und Umsätze beide erfolgreich waren (Ende des vollständigen Syncs). */
@@ -546,16 +542,8 @@ export default function Dashboard() {
                                 Umsätze (OK): {formatDateTime(a.transactions_success_at)}
                               </Typography>
                               <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.75 }}>
-                                Tag Null (Datum):{' '}
-                                {a.last_salary_booking_date?.trim()
-                                  ? formatDate(a.last_salary_booking_date.trim())
-                                  : '—'}
-                              </Typography>
-                              <Typography variant="caption" color="text.secondary" display="block">
-                                Tag Null (Betrag):{' '}
-                                {a.last_salary_amount != null && String(a.last_salary_amount).trim() !== ''
-                                  ? formatMoney(String(a.last_salary_amount), a.currency)
-                                  : '—'}
+                                Tag Null:{' '}
+                                {a.day_zero_date?.trim() ? formatDate(a.day_zero_date.trim()) : '—'}
                               </Typography>
                             </Stack>
                           </AccordionDetails>

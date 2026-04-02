@@ -701,10 +701,9 @@ async def sync_bank_account(
                 if tag_zero_conds:
                     try:
                         if transaction_matches_conditions(row, tag_zero_conds, normalize_dot_space=tag_zero_norm):
-                            cur_d = acc.last_salary_booking_date
+                            cur_d = acc.day_zero_date
                             if cur_d is None or row.booking_date >= cur_d:
-                                acc.last_salary_booking_date = row.booking_date
-                                acc.last_salary_amount = row.amount
+                                acc.day_zero_date = row.booking_date
                     except Exception:
                         # Matching darf Sync nicht abbrechen (z. B. kaputte Regel-Konfiguration).
                         pass

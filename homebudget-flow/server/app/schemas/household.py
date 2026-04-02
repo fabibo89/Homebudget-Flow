@@ -135,8 +135,7 @@ class BankAccountOut(BaseModel):
     balance_success_at: Optional[datetime] = None
     transactions_attempt_at: Optional[datetime] = None
     transactions_success_at: Optional[datetime] = None
-    last_salary_booking_date: Optional[date] = None
-    last_salary_amount: Optional[str] = None
+    day_zero_date: Optional[date] = None
 
     model_config = {"from_attributes": True}
 
@@ -168,10 +167,7 @@ def bank_account_to_out(
         balance_success_at=sync.balance_success_at if sync else None,
         transactions_attempt_at=sync.transactions_attempt_at if sync else None,
         transactions_success_at=sync.transactions_success_at if sync else None,
-        last_salary_booking_date=acc.last_salary_booking_date,
-        last_salary_amount=(
-            str(acc.last_salary_amount) if acc.last_salary_amount is not None else None
-        ),
+        day_zero_date=acc.day_zero_date,
     )
 
 

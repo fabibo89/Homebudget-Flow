@@ -39,8 +39,10 @@ import {
   apiErrorMessage,
   fetchAccounts,
   fetchAllTransactions,
+  fetchBalanceSnapshots,
   fetchCategories,
   fetchCategoryRules,
+  type BalanceSnapshotOut,
   type CategoryOut,
   type CategoryRuleOut,
   type Transaction,
@@ -725,6 +727,25 @@ export default function Analyses() {
     [accounts],
   );
 
+  /** Konten für Saldo-DB-Verlauf (wie Transaktionsfilter: alle / explizite Auswahl). */
+  const saldoSnapshotAccountIds = useMemo(() => {
+    if (includedAccountIds !== null && includedAccountIds.length === 0) return [];
+    if (includedAccountIds === null) return allAccountIdsSorted;
+    return [...includedAccountIds].sort((a, b) => a - b);
+  }, [includedAccountIds, allAccountIdsSorted]);
+
+  const saldoSnapshotQueries = useQueries({
+    queries: saldoSnapshotAccountIds.map((id) => ({
+      queryKey: ['balance-snapshots', 'analyses', id, includedAccountsQueryKey] as const,
+      queryFn: () => fetchBalanceSnapshots(id, 500),
+      enabled:
+        tab === 'tagesbilanz' &&
+        rangeOk &&
+        saldoSnapshotAccountIds.length > 0 &&
+        (includedAccountIds === null || includedAccountIds.length > 0),
+    })),
+  });
+
   const includedSet = useMemo(() => {
     if (includedAccountIds === null) return new Set(allAccountIdsSorted);
     return new Set(includedAccountIds);
@@ -1050,6 +1071,104 @@ export default function Analyses() {
       series: [{ name: 'Kumuliert', data: rangeData }],
     };
   }, [daily, cumulative, theme, defaultCurrency, posColor, negColor]);
+
+  const saldoDbChartPoints = useMemo(() => {
+    const merged: BalanceSnapshotOut[] = [];
+    for (const q of saldoSnapshotQueries) {
+      if (q.data?.length) merged.push(...q.data);
+    }
+    merged.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
+    const balances = new Map<number, number>();
+    const points: { x: number; y: number; day: string }[] = [];
+    for (const s of merged) {
+      if (!saldoSnapshotAccountIds.includes(s.bank_account_id)) continue;
+      balances.set(s.bank_account_id, Number(s.balance));
+      const day = isoDateInAppTimezone(new Date(s.recorded_at));
+      if (day < from || day > to) continue;
+      let total = 0;
+      for (const id of saldoSnapshotAccountIds) {
+        total += balances.get(id) ?? 0;
+      }
+      points.push({ x: new Date(s.recorded_at).getTime(), y: total, day });
+    }
+    return points;
+  }, [saldoSnapshotQueries, saldoSnapshotAccountIds, from, to]);
+
+  const { saldoVerlaufOptions, saldoVerlaufSeries } = useMemo(() => {
+    const tz = getAppTimeZone();
+    const lineColor = theme.palette.primary.main;
+    const options: ApexOptions = {
+      chart: {
+        type: 'line',
+        toolbar: { show: true },
+        zoom: { enabled: true },
+        foreColor: theme.palette.text.secondary,
+        background: 'transparent',
+        fontFamily: theme.typography.fontFamily,
+        events: {
+          click: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0) return;
+            const day = saldoDbChartPoints[i]?.day;
+            if (day) setSelectedBarDay(day);
+          },
+          markerClick: (_e, _chart, opts) => {
+            const i = opts?.dataPointIndex;
+            if (typeof i !== 'number' || i < 0) return;
+            const day = saldoDbChartPoints[i]?.day;
+            if (day) setSelectedBarDay(day);
+          },
+        },
+      },
+      stroke: { curve: 'smooth', width: 2, colors: [lineColor] },
+      colors: [lineColor],
+      markers: {
+        size: 5,
+        strokeWidth: 2,
+        strokeColors: [lineColor],
+        colors: [theme.palette.background.paper],
+        hover: { size: 7 },
+      },
+      grid: {
+        borderColor: theme.palette.divider,
+        strokeDashArray: 4,
+      },
+      xaxis: {
+        type: 'datetime',
+        title: { text: 'Zeitpunkt (Saldo-DB)' },
+      },
+      yaxis: {
+        title: { text: 'Saldo (Summe Konten)' },
+        labels: {
+          formatter: (val) => formatMoneyShort(Number(val), defaultCurrency),
+        },
+      },
+      tooltip: {
+        theme: theme.palette.mode,
+        x: {
+          formatter: (val) =>
+            new Intl.DateTimeFormat('de-DE', {
+              dateStyle: 'medium',
+              timeStyle: 'short',
+              timeZone: tz,
+            }).format(Number(val)),
+        },
+        y: {
+          formatter: (val) => formatMoneyFull(Number(val), defaultCurrency),
+        },
+      },
+      legend: { show: false },
+    };
+    return {
+      saldoVerlaufOptions: options,
+      saldoVerlaufSeries: [
+        {
+          name: 'Saldo (Summe)',
+          data: saldoDbChartPoints.map((p) => ({ x: p.x, y: p.y })),
+        },
+      ],
+    };
+  }, [saldoDbChartPoints, theme, defaultCurrency]);
 
   const piePalette = useMemo(
     () => [
@@ -1531,6 +1650,11 @@ export default function Analyses() {
 
   const sharedLoading = txQuery.isLoading;
   const sharedError = txQuery.isError;
+  const saldoSnapshotsLoading =
+    tab === 'tagesbilanz' &&
+    saldoSnapshotAccountIds.length > 0 &&
+    saldoSnapshotQueries.some((q) => q.isLoading);
+  const saldoSnapshotError = saldoSnapshotQueries.find((q) => q.isError)?.error;
   const noAccountsSelected = includedAccountIds !== null && includedAccountIds.length === 0;
   const sharedDataReady =
     rangeOk &&
@@ -2315,16 +2439,52 @@ export default function Analyses() {
           {daily.length === 0 ? (
             <Alert severity="info">Keine Tage im Zeitraum.</Alert>
           ) : (
-            <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
-              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                Jeder Balken reicht vom kumulierten Stand des Vortags bis zum Stand nach diesem Tag (Wasserfall /
-                Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
-                <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
-              </Typography>
-              <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
-                <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
-              </Box>
-            </Paper>
+            <Stack spacing={2}>
+              <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                <Typography variant="subtitle1" fontWeight={600} gutterBottom>
+                  Saldoverlauf
+                </Typography>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  Werte aus der Saldo-Datenbank (Snapshots je erfolgreichem Konten-Sync). Bei mehreren Konten wird die
+                  Summe der zuletzt bekannten Salden je Zeitpunkt gebildet (gleiche Währung vorausgesetzt). Jeder
+                  Eintrag = ein Punkt; <strong>Punkt anklicken</strong>, um die Buchungen des zugehörigen Kalendertags
+                  darunter zu filtern.
+                </Typography>
+                {saldoSnapshotError ? (
+                  <Alert severity="error" sx={{ mt: 1 }}>
+                    {apiErrorMessage(saldoSnapshotError)}
+                  </Alert>
+                ) : saldoSnapshotsLoading ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                    <CircularProgress size={32} />
+                  </Box>
+                ) : saldoDbChartPoints.length === 0 ? (
+                  <Alert severity="info" sx={{ mt: 1 }}>
+                    Im gewählten Zeitraum liegen keine Saldo-Snapshots für die ausgewählten Konten vor.
+                  </Alert>
+                ) : (
+                  <Box sx={{ width: '100%', minHeight: isXs ? 260 : 300, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                    <Chart
+                      options={saldoVerlaufOptions}
+                      series={saldoVerlaufSeries}
+                      type="line"
+                      height={isXs ? 280 : 320}
+                      width="100%"
+                    />
+                  </Box>
+                )}
+              </Paper>
+              <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  Jeder Balken reicht vom kumulierten Stand des Vortags bis zum Stand nach diesem Tag (Wasserfall /
+                  Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
+                  <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
+                </Typography>
+                <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
+                  <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
+                </Box>
+              </Paper>
+            </Stack>
           )}
           {selectedBarDay && sharedDataReady ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>

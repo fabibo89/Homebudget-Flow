@@ -210,9 +210,8 @@ class BankAccount(Base):
     currency: Mapped[str] = mapped_column(String(8), default="EUR")
     balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), default=Decimal("0"))
     balance_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    # Cache („Tag Null“): letzte Buchung mit Standard-Kategorie „Gehalt“ (Geldeingang); Recompute via salary_cache.
-    last_salary_booking_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    last_salary_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
+    # Tag Null: Datum der letzten Buchung, die der Tag-Null-Regel entspricht (kein Betrag in der DB).
+    day_zero_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     # Optional: pro Konto definierbare „Tag Null“-Regel (Kategorie-Regel referenzieren oder eigene Bedingungen).
     tag_zero_rule_category_rule_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("category_rules.id", ondelete="SET NULL"),

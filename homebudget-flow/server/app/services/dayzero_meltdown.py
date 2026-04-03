@@ -153,6 +153,27 @@ async def _anchor_balance_near_start(
     return Decimal(str(account.balance)), anchor_day
 
 
+async def _latest_balance_snapshot_for_day(
+    session: AsyncSession,
+    *,
+    account: BankAccount,
+    day: date,
+) -> Optional[BankAccountBalanceSnapshot]:
+    """Neuester (recorded_at) Snapshot exakt an ``day`` (gleicher Kalendertag), falls vorhanden."""
+    day_start = datetime.combine(day, datetime.min.time())
+    day_end_exclusive = datetime.combine(day + timedelta(days=1), datetime.min.time())
+    r = await session.execute(
+        select(BankAccountBalanceSnapshot)
+        .where(BankAccountBalanceSnapshot.bank_account_id == account.id)
+        .where(BankAccountBalanceSnapshot.recorded_at >= day_start)
+        .where(BankAccountBalanceSnapshot.recorded_at < day_end_exclusive)
+        .order_by(desc(BankAccountBalanceSnapshot.recorded_at))
+        .limit(1)
+    )
+    row = r.scalars().first()
+    return row
+
+
 async def compute_dayzero_meltdown_for_account(
     session: AsyncSession,
     *,
@@ -214,13 +235,38 @@ async def compute_dayzero_meltdown_for_account(
     # anchor_balance gilt für anchor_day (Tagesende). Transformiere auf start.
     start_balance = anchor_balance + sum_net(anchor_day, start)
 
-    tag_zero_konto_after_rule = await _konto_balance_after_rule_booking(
-        session,
-        account=account,
-        tag_zero_date=start,
-        opening_balance=start_balance,
-        txs=txs,
-    )
+    # Priorität: Wenn es für den Tag Null einen expliziten Saldo-Snapshot gibt, nutze diesen.
+    # Wenn der Snapshot die Tag-Null-Regelbuchung noch nicht enthält, addieren wir den Regelbetrag nachträglich.
+    tag_zero_konto_after_rule: Optional[Decimal] = None
+    latest_snapshot = await _latest_balance_snapshot_for_day(session, account=account, day=start)
+    if latest_snapshot is not None:
+        hid = await _household_id_for_bank_account(session, account)
+        rule_tx = await find_tag_zero_matching_transaction(session, account=account, household_id=hid)
+        base = Decimal(str(latest_snapshot.balance)).quantize(Decimal("0.01"))
+        if rule_tx is not None and rule_tx.booking_date == start:
+            # Heuristik: Wenn der Snapshot nach der (Import-)Zeit der Regelbuchung entstanden ist,
+            # gehen wir davon aus, dass die Buchung bereits im Snapshot steckt.
+            # Andernfalls fehlt sie -> base + rule_amount.
+            recorded_ok = (
+                latest_snapshot.recorded_at is not None
+                and rule_tx.imported_at is not None
+                and latest_snapshot.recorded_at >= rule_tx.imported_at
+            )
+            tag_zero_konto_after_rule = (
+                base if recorded_ok else (base + Decimal(str(rule_tx.amount))).quantize(Decimal("0.01"))
+            )
+        else:
+            tag_zero_konto_after_rule = base
+
+    # Fallback: keine Snapshots für den Tag Null -> bestehende Rückrechen-Logik.
+    if tag_zero_konto_after_rule is None:
+        tag_zero_konto_after_rule = await _konto_balance_after_rule_booking(
+            session,
+            account=account,
+            tag_zero_date=start,
+            opening_balance=start_balance,
+            txs=txs,
+        )
 
     # Ausgaben/Netto ohne Transfers.
     transfer_ids = await _transfer_tx_ids_for_account(

@@ -273,11 +273,13 @@ async def compute_dayzero_meltdown_for_account(
             # Heuristik: Wenn der Snapshot nach der (Import-)Zeit der Regelbuchung entstanden ist,
             # gehen wir davon aus, dass die Buchung bereits im Snapshot steckt.
             # Andernfalls fehlt sie -> base + rule_amount.
-            recorded_ok = (
-                latest_snapshot.recorded_at is not None
-                and rule_tx.imported_at is not None
-                and latest_snapshot.recorded_at >= rule_tx.imported_at
-            )
+            recorded_ok = False
+            if latest_snapshot.recorded_at is not None and rule_tx.imported_at is not None:
+                # Toleranz: Balance-Snapshot und Tx-Import können in sehr kurzem Abstand passieren
+                # (z. B. gleicher Sync-Run). Dann werten wir das als "gleichzeitig" und behandeln
+                # den Snapshot so, als ob er die Regelbuchung bereits enthält.
+                delta_s = abs((latest_snapshot.recorded_at - rule_tx.imported_at).total_seconds())
+                recorded_ok = latest_snapshot.recorded_at >= rule_tx.imported_at or delta_s < 30
             tag_zero_konto_after_rule = (
                 base if recorded_ok else (base + Decimal(str(rule_tx.amount))).quantize(Decimal("0.01"))
             )

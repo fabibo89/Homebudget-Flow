@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import logging
 from typing import Iterable, Optional
 
 from sqlalchemy import desc, select
@@ -10,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AccountGroup, BankAccount, BankAccountBalanceSnapshot, Transaction, TransferPair
 from app.services.tag_zero_rule import bank_account_has_tag_zero_rule, find_tag_zero_matching_transaction
+
+
+logger = logging.getLogger(__name__)
 
 
 def _add_months(d: date, months: int) -> date:
@@ -71,8 +75,30 @@ async def _konto_balance_after_rule_booking(
     for t in day_txs:
         cum += Decimal(str(t.amount))
         if t.id == rule_tx.id:
-            return cum.quantize(Decimal("0.01"))
-    return (opening_balance + Decimal(str(rule_tx.amount))).quantize(Decimal("0.01"))
+            out = cum.quantize(Decimal("0.01"))
+            logger.info(
+                "DayZero[%s] _konto_balance_after_rule_booking: tag_zero_date=%s opening_balance=%s rule_tx_id=%s "
+                "rule_amount=%s result=%s via_day_scan",
+                account.id,
+                tag_zero_date.isoformat(),
+                str(opening_balance),
+                getattr(rule_tx, "id", None),
+                str(getattr(rule_tx, "amount", None)),
+                str(out),
+            )
+            return out
+    out = (opening_balance + Decimal(str(rule_tx.amount))).quantize(Decimal("0.01"))
+    logger.info(
+        "DayZero[%s] _konto_balance_after_rule_booking: tag_zero_date=%s opening_balance=%s rule_tx_id=%s "
+        "rule_amount=%s result=%s via_opening_plus_rule",
+        account.id,
+        tag_zero_date.isoformat(),
+        str(opening_balance),
+        getattr(rule_tx, "id", None),
+        str(getattr(rule_tx, "amount", None)),
+        str(out),
+    )
+    return out
 
 
 async def _transfer_tx_ids_for_account(
@@ -267,6 +293,32 @@ async def compute_dayzero_meltdown_for_account(
             opening_balance=start_balance,
             txs=txs,
         )
+
+    logger.info(
+        "DayZero[%s] debug: tag_zero_date=%s anchor_day=%s "
+        "anchor_balance=%s start_balance=%s "
+        "latest_snapshot_balance=%s latest_snapshot_recorded_at=%s "
+        "rule_tx_id=%s rule_amount=%s rule_booking_date=%s rule_imported_at=%s "
+        "tag_zero_konto_after_rule=%s",
+        account.id,
+        start.isoformat(),
+        anchor_day.isoformat(),
+        str(anchor_balance),
+        str(start_balance),
+        str(getattr(latest_snapshot, "balance", None)) if latest_snapshot is not None else None,
+        getattr(latest_snapshot, "recorded_at", None).isoformat()
+        if latest_snapshot is not None and latest_snapshot.recorded_at is not None
+        else None,
+        getattr(rule_tx, "id", None) if "rule_tx" in locals() else None,
+        str(getattr(rule_tx, "amount", None)) if "rule_tx" in locals() else None,
+        getattr(rule_tx, "booking_date", None).isoformat()
+        if "rule_tx" in locals() and getattr(rule_tx, "booking_date", None) is not None
+        else None,
+        getattr(rule_tx, "imported_at", None).isoformat()
+        if "rule_tx" in locals() and getattr(rule_tx, "imported_at", None) is not None
+        else None,
+        str(tag_zero_konto_after_rule),
+    )
 
     # Ausgaben/Netto ohne Transfers.
     transfer_ids = await _transfer_tx_ids_for_account(

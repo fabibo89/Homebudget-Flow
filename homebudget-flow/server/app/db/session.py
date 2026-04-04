@@ -212,6 +212,28 @@ async def _ensure_bank_accounts_tag_zero_rule(conn) -> None:
         )
 
 
+async def _ensure_transactions_contract_id(conn) -> None:
+    """Optional: Verknüpfung Buchung → bestätigter Haushalts-Vertrag."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(transactions)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "contract_id" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE transactions ADD COLUMN contract_id INTEGER REFERENCES household_contracts(id)",
+                ),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS contract_id INTEGER "
+                "REFERENCES household_contracts(id) ON DELETE SET NULL",
+            ),
+        )
+
+
 async def _ensure_transactions_transfer_target(conn) -> None:
     """Umbuchungs-Markierung: Verweis auf Zielkonto (optional, household-intern)."""
     url = settings.database_url.lower()
@@ -626,6 +648,7 @@ async def init_db() -> None:
         await _migrate_bank_accounts_day_zero_date(conn)
         await _ensure_bank_accounts_tag_zero_rule(conn)
         await _ensure_transactions_transfer_target(conn)
+        await _ensure_transactions_contract_id(conn)
         await _ensure_transactions_counterparty_fields(conn)
         await _ensure_transactions_fints_raw_and_reference_fields(conn)
         await _ensure_bank_credentials_fints_verification(conn)

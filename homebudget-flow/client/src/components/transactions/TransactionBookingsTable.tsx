@@ -50,6 +50,7 @@ import TransactionDetailFields from './TransactionDetailFields';
 import GroupsIcon from '@mui/icons-material/Groups';
 import PersonIcon from '@mui/icons-material/Person';
 import SyncAltIcon from '@mui/icons-material/SyncAlt';
+import EventRepeatIcon from '@mui/icons-material/EventRepeat';
 
 const CATEGORY_COLUMN_HINT =
   'Linksklick: Kategorie ändern oder Regel anlegen (wenn noch keine Kategorie). Rechtsklick: Kategorieliste öffnet sich sofort zur manuellen Auswahl (ohne Regel).';
@@ -185,6 +186,7 @@ export default function TransactionBookingsTable({
   function invalidateAfterTxMutation() {
     void qc.invalidateQueries({ queryKey: ['transactions'] });
     void qc.invalidateQueries({ queryKey: ['analyses-transactions'] });
+    void qc.invalidateQueries({ queryKey: ['contracts'] });
   }
 
   const patchCategoryMut = useMutation({
@@ -469,9 +471,16 @@ export default function TransactionBookingsTable({
               >
                 <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
                   <Stack direction="row" alignItems="baseline" justifyContent="space-between" spacing={1}>
-                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
-                      {formatDate(t.booking_date)}
-                    </Typography>
+                    <Stack direction="row" alignItems="center" spacing={0.75}>
+                      {t.contract_id != null && t.contract_label ? (
+                        <Tooltip title={`Vertrag: ${t.contract_label}`}>
+                          <EventRepeatIcon fontSize="small" color="primary" />
+                        </Tooltip>
+                      ) : null}
+                      <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                        {formatDate(t.booking_date)}
+                      </Typography>
+                    </Stack>
                     <Typography
                       sx={{
                         fontVariantNumeric: 'tabular-nums',
@@ -578,6 +587,11 @@ export default function TransactionBookingsTable({
           <Table size="small">
             <TableHead>
               <TableRow>
+                <TableCell width={40} align="center">
+                  <Tooltip title="Wiederkehrende Zahlung (bestätigter Vertrag)" enterDelay={400}>
+                    <span />
+                  </Tooltip>
+                </TableCell>
                 <TableCell>Datum</TableCell>
                 <TableCell>Konto</TableCell>
                 <TableCell align="right">Betrag</TableCell>
@@ -597,7 +611,7 @@ export default function TransactionBookingsTable({
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6}>
+                  <TableCell colSpan={7}>
                     <Typography color="text.secondary" sx={{ py: 2 }}>
                       {emptyMessage}
                     </Typography>
@@ -606,6 +620,17 @@ export default function TransactionBookingsTable({
               ) : (
                 rows.map((t) => (
                   <TableRow key={t.id} hover onClick={() => setTxDetail(t)} sx={{ cursor: 'pointer' }}>
+                    <TableCell align="center" sx={{ py: 0.5 }}>
+                      {t.contract_id != null && t.contract_label ? (
+                        <Tooltip title={`Vertrag: ${t.contract_label}`} enterDelay={300}>
+                          <span>
+                            <EventRepeatIcon fontSize="small" color="primary" />
+                          </span>
+                        </Tooltip>
+                      ) : (
+                        <span />
+                      )}
+                    </TableCell>
                     <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDate(t.booking_date)}</TableCell>
                     <TableCell>
                       <Chip

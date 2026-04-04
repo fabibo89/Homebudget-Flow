@@ -21,6 +21,7 @@ import {
   BarChart as BarChartIcon,
   CompareArrows as CompareArrowsIcon,
   Whatshot as WhatshotIcon,
+  Assignment as AssignmentIcon,
   AccountBalanceWallet as AccountBalanceWalletIcon,
   DarkMode as DarkModeIcon,
   Hub as HubIcon,
@@ -44,6 +45,7 @@ function resolveTitle(pathname: string): string {
   if (pathname === '/') return 'Übersicht';
   if (pathname.startsWith('/analysen')) return 'Analysen';
   if (pathname.startsWith('/umbuchungen')) return 'Umbuchungen';
+  if (pathname.startsWith('/vertraege')) return 'Verträge';
   if (pathname.startsWith('/settings')) return 'Einstellungen';
   return 'HomeBudget Flow';
 }
@@ -145,6 +147,17 @@ export default function Layout() {
               <WhatshotIcon />
             </ListItemIcon>
             <ListItemText primary="Day Zero" secondary="Meltdown-Budget (Saldo & Tagesrate)" />
+          </ListItemButton>
+        </ListItem>
+        <ListItem disablePadding>
+          <ListItemButton
+            selected={location.pathname.startsWith('/vertraege')}
+            onClick={() => go('/vertraege')}
+          >
+            <ListItemIcon>
+              <AssignmentIcon />
+            </ListItemIcon>
+            <ListItemText primary="Verträge" secondary="Wiederkehrende Zahlungen (heuristisch)" />
           </ListItemButton>
         </ListItem>
         <ListItem disablePadding>

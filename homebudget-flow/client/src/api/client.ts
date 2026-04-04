@@ -154,6 +154,64 @@ export async function fetchHouseholds(): Promise<Household[]> {
   return data;
 }
 
+/** Persistente Verträge (Vorschlag / bestätigt / ignoriert). */
+export type ContractOut = {
+  id: number;
+  household_id: number;
+  bank_account_id: number;
+  bank_account_name: string;
+  status: 'suggested' | 'confirmed' | 'ignored';
+  label: string;
+  amount_typical: string;
+  currency: string;
+  rhythm: string;
+  rhythm_display: string;
+  occurrences: number;
+  first_booking: string | null;
+  last_booking: string | null;
+  confidence: number;
+  signature_hash: string;
+  sample_transaction_ids: number[];
+  transaction_count: number;
+};
+
+export type ContractRecognizeResult = {
+  suggestions_updated: number;
+  confirmed_links_touched: number;
+};
+
+export async function fetchContracts(
+  householdId: number,
+  status?: 'suggested' | 'confirmed' | 'ignored',
+): Promise<ContractOut[]> {
+  const { data } = await api.get<ContractOut[]>('/api/contracts', {
+    params: { household_id: householdId, ...(status ? { status } : {}) },
+  });
+  return data;
+}
+
+export async function recognizeContracts(
+  householdId: number,
+  monthsBack = 60,
+): Promise<ContractRecognizeResult> {
+  const { data } = await api.post<ContractRecognizeResult>('/api/contracts/recognize', null, {
+    params: { household_id: householdId, months_back: monthsBack },
+  });
+  return data;
+}
+
+export async function confirmContract(contractId: number): Promise<{ ok: boolean; transactions_linked: number }> {
+  const { data } = await api.post<{ ok: boolean; transactions_linked: number }>(
+    `/api/contracts/${contractId}/confirm`,
+  );
+  return data;
+}
+
+export async function ignoreContract(contractId: number): Promise<{ ok: boolean }> {
+  const { data } = await api.post<{ ok: boolean }>(`/api/contracts/${contractId}/ignore`);
+  return data;
+}
+
 export async function createHousehold(name: string): Promise<Household> {
   const { data } = await api.post<Household>('/api/households', { name });
   return data;
@@ -714,7 +772,16 @@ export type Transaction = {
   booking_flow?: BookingFlow;
   /** Externe Positionszeilen (z. B. Amazon-Produkte), für die Listenansicht */
   enrichment_preview_lines?: string[];
+  contract_id?: number | null;
+  contract_label?: string | null;
 };
+
+export async function fetchContractTransactions(contractId: number, limit = 500): Promise<Transaction[]> {
+  const { data } = await api.get<Transaction[]>(`/api/contracts/${contractId}/transactions`, {
+    params: { limit },
+  });
+  return data;
+}
 
 export type TransactionEnrichment = {
   id: number;

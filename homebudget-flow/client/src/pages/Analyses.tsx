@@ -97,6 +97,17 @@ function normalizeIncludedAccountIds(next: Set<number>, allIdsSorted: number[]):
   return [...next].sort((a, b) => a - b);
 }
 
+/** Alle Kalendertage im Intervall [from, to] (inkl.), in App-Zeitzone. */
+function enumerateIsoDays(fromIso: string, toIso: string): string[] {
+  const out: string[] = [];
+  const start = parseIsoDate(fromIso);
+  const end = parseIsoDate(toIso);
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    out.push(isoDateInAppTimezone(d));
+  }
+  return out;
+}
+
 /** Pro Kalendertag im Intervall [from, to]: Summe der Beträge (fehlende Tage = 0). */
 function dailyNetSums(transactions: Transaction[], from: string, to: string): { day: string; sum: number }[] {
   const byDay = new Map<string, number>();
@@ -130,6 +141,9 @@ function addDays(iso: string, delta: number): string {
   d.setDate(d.getDate() + delta);
   return isoDateInAppTimezone(d);
 }
+
+/** Buchungs-Historie für Saldorekonstruktion vor „Von“ (Lücke Snapshot → Filterstart). */
+const SALDO_TX_LOOKBACK_DAYS = 400;
 
 type CategoryAggregate = {
   key: string;
@@ -678,11 +692,16 @@ export default function Analyses() {
   const includedAccountsQueryKey = analysesIncludedAccountsKey(includedAccountIds);
   const singleAccountForApi =
     includedAccountIds !== null && includedAccountIds.length === 1 ? includedAccountIds[0] : undefined;
+  /** Nur Tagesbilanz: früheres „from“ für API, damit virtuelle Salden Buchungen vor dem Filter-Zeitraum einrechnen. */
+  const saldoTxFrom = useMemo(
+    () => (tab === 'tagesbilanz' ? addDays(from, -SALDO_TX_LOOKBACK_DAYS) : from),
+    [tab, from],
+  );
   const txQuery = useQuery({
-    queryKey: ['analyses-transactions', from, to, includedAccountsQueryKey],
+    queryKey: ['analyses-transactions', saldoTxFrom, to, includedAccountsQueryKey, tab],
     queryFn: () =>
       fetchAllTransactions({
-        from: from || undefined,
+        from: saldoTxFrom || undefined,
         to: to || undefined,
         bank_account_id: singleAccountForApi,
       }),
@@ -754,10 +773,21 @@ export default function Analyses() {
   const scopedTransactions = useMemo(() => {
     if (includedAccountIds !== null && includedAccountIds.length === 0) return [];
     const raw = txQuery.data ?? [];
+    let rows = includedAccountIds === null ? raw : raw.filter((t) => includedSet.has(t.bank_account_id));
+    rows = rows.filter((t) => {
+      const d = t.booking_date.slice(0, 10);
+      return d >= from && d <= to;
+    });
+    return rows;
+  }, [txQuery.data, includedAccountIds, includedSet, from, to]);
+
+  /** Wie API-Antwort, nur Kontenfilter — für Saldo-Tageswalk inkl. Lookback vor „Von“. */
+  const transactionsForSaldoWalk = useMemo(() => {
+    if (includedAccountIds !== null && includedAccountIds.length === 0) return [];
+    const raw = txQuery.data ?? [];
     if (includedAccountIds === null) return raw;
-    const set = new Set(includedAccountIds);
-    return raw.filter((t) => set.has(t.bank_account_id));
-  }, [txQuery.data, includedAccountIds, accounts]);
+    return raw.filter((t) => includedSet.has(t.bank_account_id));
+  }, [txQuery.data, includedAccountIds, includedSet]);
 
   const applyIncludedSet = useCallback(
     (next: Set<number>) => {
@@ -779,12 +809,37 @@ export default function Analyses() {
 
   const defaultCurrency = accounts[0]?.currency ?? 'EUR';
 
-  const daily = useMemo(() => {
-    if (!scopedTransactions.length) return [];
-    return dailyNetSums(scopedTransactions, from, to);
-  }, [scopedTransactions, from, to]);
+  const daily = useMemo(
+    () => dailyNetSums(scopedTransactions, from, to),
+    [scopedTransactions, from, to],
+  );
 
   const cumulative = useMemo(() => cumulativeFromDaily(daily), [daily]);
+
+  /** Gemeinsame X-Achse für Tagesbilanz-Balken und Saldoverlauf (ein Slot pro Kalendertag im Filter [von, bis]). */
+  const tagesbilanzAxisLabels = useMemo(() => {
+    const tz = getAppTimeZone();
+    return daily.map((row) =>
+      new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short', timeZone: tz }).format(
+        parseIsoDate(row.day),
+      ),
+    );
+  }, [daily]);
+
+  const tagesbilanzXAxisShared = useMemo(() => {
+    const n = tagesbilanzAxisLabels.length;
+    return {
+      type: 'category' as const,
+      categories: tagesbilanzAxisLabels,
+      tickAmount: Math.min(12, Math.max(4, Math.floor(n / 14))),
+      labels: {
+        rotate: -45,
+        rotateAlways: n > 14,
+        style: { fontSize: '11px' },
+      },
+      title: { text: 'Buchungstag' },
+    };
+  }, [tagesbilanzAxisLabels]);
 
   const categoryAggsIncome = useMemo(() => {
     if (!scopedTransactions.length) return [];
@@ -937,20 +992,13 @@ export default function Analyses() {
   const negColor = theme.palette.error.main;
 
   const { chartOptions, series } = useMemo(() => {
-    const tz = getAppTimeZone();
-    const labels = daily.map((row) =>
-      new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: 'short', timeZone: tz }).format(
-        parseIsoDate(row.day),
-      ),
-    );
-
     const rangeData = daily.map((_, i) => {
       const prev = i === 0 ? 0 : cumulative[i - 1];
       const curr = cumulative[i];
       const low = Math.min(prev, curr);
       const high = Math.max(prev, curr);
       return {
-        x: labels[i],
+        x: tagesbilanzAxisLabels[i],
         y: [low, high] as [number, number],
       };
     });
@@ -999,14 +1047,7 @@ export default function Analyses() {
         strokeDashArray: 4,
       },
       xaxis: {
-        type: 'category',
-        tickAmount: Math.min(12, Math.max(4, Math.floor(labels.length / 14))),
-        labels: {
-          rotate: -45,
-          rotateAlways: labels.length > 14,
-          style: { fontSize: '11px' },
-        },
-        title: { text: 'Buchungstag' },
+        ...tagesbilanzXAxisShared,
       },
       yaxis: {
         title: { text: 'Kumulierte Tagesbilanz' },
@@ -1070,36 +1111,105 @@ export default function Analyses() {
       chartOptions: options,
       series: [{ name: 'Kumuliert', data: rangeData }],
     };
-  }, [daily, cumulative, theme, defaultCurrency, posColor, negColor]);
+  }, [daily, cumulative, theme, defaultCurrency, posColor, negColor, tagesbilanzAxisLabels, tagesbilanzXAxisShared]);
 
-  const saldoDbChartPoints = useMemo(() => {
+  /** Pro Kalendertag: End-of-Day-Summe; `db` = mind. ein Saldo-Snapshot an dem Tag, sonst aus Buchungen fortgeführt. */
+  const saldoVerlaufDaily = useMemo(() => {
     const merged: BalanceSnapshotOut[] = [];
     for (const q of saldoSnapshotQueries) {
       if (q.data?.length) merged.push(...q.data);
     }
     merged.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
+
     const balances = new Map<number, number>();
-    const points: { x: number; y: number; day: string }[] = [];
     for (const s of merged) {
+      const day = isoDateInAppTimezone(new Date(s.recorded_at));
+      if (day >= saldoTxFrom) break;
       if (!saldoSnapshotAccountIds.includes(s.bank_account_id)) continue;
       balances.set(s.bank_account_id, Number(s.balance));
+    }
+
+    const txsByDay = new Map<string, Transaction[]>();
+    for (const t of transactionsForSaldoWalk) {
+      if (!saldoSnapshotAccountIds.includes(t.bank_account_id)) continue;
+      const d = t.booking_date.slice(0, 10);
+      if (!txsByDay.has(d)) txsByDay.set(d, []);
+      txsByDay.get(d)!.push(t);
+    }
+
+    const snapsByDay = new Map<string, BalanceSnapshotOut[]>();
+    for (const s of merged) {
+      if (!saldoSnapshotAccountIds.includes(s.bank_account_id)) continue;
       const day = isoDateInAppTimezone(new Date(s.recorded_at));
-      if (day < from || day > to) continue;
+      if (day < saldoTxFrom || day > to) continue;
+      if (!snapsByDay.has(day)) snapsByDay.set(day, []);
+      snapsByDay.get(day)!.push(s);
+    }
+    for (const arr of snapsByDay.values()) {
+      arr.sort((a, b) => new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime());
+    }
+
+    const walkDays = enumerateIsoDays(saldoTxFrom, to);
+    const points: { day: string; x: number; y: number; source: 'db' | 'computed' }[] = [];
+    for (const dayStr of walkDays) {
+      for (const t of txsByDay.get(dayStr) ?? []) {
+        const id = t.bank_account_id;
+        balances.set(id, (balances.get(id) ?? 0) + Number(t.amount));
+      }
+      const snaps = snapsByDay.get(dayStr) ?? [];
+      for (const s of snaps) {
+        balances.set(s.bank_account_id, Number(s.balance));
+      }
+      if (dayStr < from || dayStr > to) continue;
+      const hasDb = snaps.length > 0;
       let total = 0;
       for (const id of saldoSnapshotAccountIds) {
         total += balances.get(id) ?? 0;
       }
-      points.push({ x: new Date(s.recorded_at).getTime(), y: total, day });
+      points.push({
+        day: dayStr,
+        x: parseIsoDate(dayStr).getTime(),
+        y: total,
+        source: hasDb ? 'db' : 'computed',
+      });
     }
     return points;
-  }, [saldoSnapshotQueries, saldoSnapshotAccountIds, from, to]);
+  }, [
+    saldoSnapshotQueries,
+    transactionsForSaldoWalk,
+    saldoSnapshotAccountIds,
+    saldoTxFrom,
+    from,
+    to,
+  ]);
+
+  /** Gleiche Tagesreihenfolge wie `daily` / Balkendiagramm (für identische X-Achse). */
+  const saldoVerlaufAligned = useMemo(() => {
+    const byDay = new Map(saldoVerlaufDaily.map((p) => [p.day, p]));
+    return daily.map((row) => {
+      const p = byDay.get(row.day);
+      if (p) return p;
+      return {
+        day: row.day,
+        x: parseIsoDate(row.day).getTime(),
+        y: 0,
+        source: 'computed' as const,
+      };
+    });
+  }, [daily, saldoVerlaufDaily]);
 
   const { saldoVerlaufOptions, saldoVerlaufSeries } = useMemo(() => {
-    const tz = getAppTimeZone();
     const lineColor = theme.palette.primary.main;
+    const measuredColor = theme.palette.success.main;
+    const derivedColor = theme.palette.warning.main;
+    const lineData = saldoVerlaufAligned.map((p) => p.y);
+    const dbData = saldoVerlaufAligned.map((p) => (p.source === 'db' ? p.y : null));
+    const computedData = saldoVerlaufAligned.map((p) => (p.source === 'computed' ? p.y : null));
+
     const options: ApexOptions = {
       chart: {
         type: 'line',
+        stacked: false,
         toolbar: { show: true },
         zoom: { enabled: true },
         foreColor: theme.palette.text.secondary,
@@ -1109,33 +1219,37 @@ export default function Analyses() {
           click: (_e, _chart, opts) => {
             const i = opts?.dataPointIndex;
             if (typeof i !== 'number' || i < 0) return;
-            const day = saldoDbChartPoints[i]?.day;
+            const day = saldoVerlaufAligned[i]?.day;
             if (day) setSelectedBarDay(day);
           },
           markerClick: (_e, _chart, opts) => {
             const i = opts?.dataPointIndex;
             if (typeof i !== 'number' || i < 0) return;
-            const day = saldoDbChartPoints[i]?.day;
+            const day = saldoVerlaufAligned[i]?.day;
             if (day) setSelectedBarDay(day);
           },
         },
       },
-      stroke: { curve: 'smooth', width: 2, colors: [lineColor] },
-      colors: [lineColor],
+      stroke: {
+        curve: 'smooth',
+        width: [2, 0, 0],
+        colors: [lineColor, measuredColor, derivedColor],
+      },
+      colors: [lineColor, measuredColor, derivedColor],
       markers: {
-        size: 5,
-        strokeWidth: 2,
-        strokeColors: [lineColor],
-        colors: [theme.palette.background.paper],
-        hover: { size: 7 },
+        size: [0, 6, 6],
+        strokeWidth: [0, 2, 2],
+        strokeColors: [lineColor, measuredColor, derivedColor],
+        colors: [lineColor, theme.palette.background.paper, theme.palette.background.paper],
+        shape: ['circle', 'circle', 'triangle'],
+        hover: { sizeOffset: 2 },
       },
       grid: {
         borderColor: theme.palette.divider,
         strokeDashArray: 4,
       },
       xaxis: {
-        type: 'datetime',
-        title: { text: 'Zeitpunkt (Saldo-DB)' },
+        ...tagesbilanzXAxisShared,
       },
       yaxis: {
         title: { text: 'Saldo (Summe Konten)' },
@@ -1145,30 +1259,33 @@ export default function Analyses() {
       },
       tooltip: {
         theme: theme.palette.mode,
-        x: {
-          formatter: (val) =>
-            new Intl.DateTimeFormat('de-DE', {
-              dateStyle: 'medium',
-              timeStyle: 'short',
-              timeZone: tz,
-            }).format(Number(val)),
-        },
+        shared: true,
+        intersect: false,
         y: {
-          formatter: (val) => formatMoneyFull(Number(val), defaultCurrency),
+          formatter: (val, opts) => {
+            const si = opts.seriesIndex;
+            const label =
+              si === 1 ? ' (gemessen)' : si === 2 ? ' (abgeleitet)' : '';
+            return formatMoneyFull(Number(val), defaultCurrency) + label;
+          },
         },
       },
-      legend: { show: false },
+      legend: {
+        show: true,
+        position: 'top',
+        horizontalAlign: 'right',
+        fontSize: '12px',
+      },
     };
     return {
       saldoVerlaufOptions: options,
       saldoVerlaufSeries: [
-        {
-          name: 'Saldo (Summe)',
-          data: saldoDbChartPoints.map((p) => ({ x: p.x, y: p.y })),
-        },
+        { name: 'Verlauf', type: 'line', data: lineData },
+        { name: 'Gemessen (Saldo-DB)', type: 'scatter', data: dbData },
+        { name: 'Abgeleitet (Buchungen)', type: 'scatter', data: computedData },
       ],
     };
-  }, [saldoDbChartPoints, theme, defaultCurrency]);
+  }, [saldoVerlaufAligned, tagesbilanzXAxisShared, theme, defaultCurrency]);
 
   const piePalette = useMemo(
     () => [
@@ -2445,10 +2562,11 @@ export default function Analyses() {
                   Saldoverlauf
                 </Typography>
                 <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Werte aus der Saldo-Datenbank (Snapshots je erfolgreichem Konten-Sync). Bei mehreren Konten wird die
-                  Summe der zuletzt bekannten Salden je Zeitpunkt gebildet (gleiche Währung vorausgesetzt). Jeder
-                  Eintrag = ein Punkt; <strong>Punkt anklicken</strong>, um die Buchungen des zugehörigen Kalendertags
-                  darunter zu filtern.
+                  <strong>Kreis</strong>: Tag mit Saldo-Snapshot aus der Datenbank. <strong>Dreieck</strong>: Tag ohne
+                  Snapshot — der Wert wird aus dem letzten bekannten Saldo und den Buchungen bis zum Tagesende
+                  fortgerechnet (inkl. Buchungen bis zu {SALDO_TX_LOOKBACK_DAYS} Tage vor „Von“, damit der Stand zum
+                  Filterbeginn nicht „hängen bleibt“). Die Linie verbindet alle Tage.{' '}
+                  <strong>Klick auf Linie oder Marker</strong> filtert die Buchungsliste unten auf den Kalendertag.
                 </Typography>
                 {saldoSnapshotError ? (
                   <Alert severity="error" sx={{ mt: 1 }}>
@@ -2458,9 +2576,9 @@ export default function Analyses() {
                   <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
                     <CircularProgress size={32} />
                   </Box>
-                ) : saldoDbChartPoints.length === 0 ? (
+                ) : daily.length === 0 ? (
                   <Alert severity="info" sx={{ mt: 1 }}>
-                    Im gewählten Zeitraum liegen keine Saldo-Snapshots für die ausgewählten Konten vor.
+                    Keine Tage im gewählten Zeitraum.
                   </Alert>
                 ) : (
                   <Box sx={{ width: '100%', minHeight: isXs ? 260 : 300, '& .apexcharts-canvas': { mx: 'auto' } }}>

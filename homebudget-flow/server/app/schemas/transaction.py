@@ -98,6 +98,8 @@ class TransactionOut(BaseModel):
     booking_flow: BookingFlow
     transfer_target_bank_account_id: Optional[int] = None
     transfer_kind: TransferKind = TransferKind.none
+    contract_id: Optional[int] = None
+    contract_label: Optional[str] = None
     # Externe Positionsbeschreibungen (z. B. alle Amazon-Produkte) für die Listenansicht
     enrichment_preview_lines: list[str] = Field(default_factory=list)
 
@@ -145,6 +147,12 @@ def transaction_to_out(
         booking_flow=booking_flow_from_amount(row.amount),
         transfer_target_bank_account_id=row.transfer_target_bank_account_id,
         transfer_kind=transfer_kind,
+        contract_id=getattr(row, "contract_id", None),
+        contract_label=(
+            row.contract.label
+            if getattr(row, "contract", None) is not None
+            else None
+        ),
         enrichment_preview_lines=list(enrichment_preview_lines or []),
     )
 

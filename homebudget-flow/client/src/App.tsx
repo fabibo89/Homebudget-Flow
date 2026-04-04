@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import Analyses from './pages/Analyses';
 import Transfers from './pages/Transfers';
 import DayZero from './pages/DayZero';
+import Contracts from './pages/Contracts';
 import Setup from './pages/Setup';
 import Integration from './pages/Integration';
 import BankFintsSettings from './pages/BankFintsSettings';
@@ -33,6 +34,7 @@ export default function App() {
           <Route index element={<Dashboard />} />
           <Route path="analysen" element={<Analyses />} />
           <Route path="dayzero" element={<DayZero />} />
+          <Route path="vertraege" element={<Contracts />} />
           <Route path="umbuchungen" element={<Transfers />} />
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<Navigate to="profile" replace />} />

@@ -34,6 +34,7 @@ from app.api.routes import (
     bank_credentials,
     categories,
     category_rules,
+    contracts,
     ha,
     health,
     households,
@@ -84,6 +85,7 @@ app.include_router(bank_credentials.router, prefix="/api")
 app.include_router(transactions.router, prefix="/api")
 app.include_router(transfers.router, prefix="/api")
 app.include_router(accounts.router, prefix="/api")
+app.include_router(contracts.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.include_router(ha.router, prefix="/api")
 

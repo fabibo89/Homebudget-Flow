@@ -199,6 +199,7 @@ async def list_transactions(
             joinedload(Transaction.category)
             .joinedload(Category.parent)
             .selectinload(Category.children),
+            joinedload(Transaction.contract),
         )
         .order_by(Transaction.booking_date.desc(), Transaction.id.desc())
         .limit(limit)
@@ -483,6 +484,7 @@ async def patch_transaction_category(
             joinedload(Transaction.category)
             .joinedload(Category.parent)
             .selectinload(Category.children),
+            joinedload(Transaction.contract),
         )
     )
     tx2 = r2.unique().scalar_one()

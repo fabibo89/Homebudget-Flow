@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Numeric,
@@ -38,6 +39,14 @@ class SyncStatus(str, enum.Enum):
 class ExternalRecordSource(str, enum.Enum):
     paypal = "paypal"
     amazon = "amazon"
+
+
+class ContractStatus(str, enum.Enum):
+    """Persistierter Vertrag: Vorschlag aus Erkennung, bestätigt (Buchungen verknüpft), ignoriert."""
+
+    suggested = "suggested"
+    confirmed = "confirmed"
+    ignored = "ignored"
 
 
 class CategoryRuleType(str, enum.Enum):
@@ -130,6 +139,10 @@ class Household(Base):
         cascade="all, delete-orphan",
     )
     external_transaction_records: Mapped[list["ExternalTransactionRecord"]] = relationship(
+        back_populates="household",
+        cascade="all, delete-orphan",
+    )
+    contracts: Mapped[list["HouseholdContract"]] = relationship(
         back_populates="household",
         cascade="all, delete-orphan",
     )
@@ -238,6 +251,10 @@ class BankAccount(Base):
         single_parent=True,
     )
     balance_snapshots: Mapped[list["BankAccountBalanceSnapshot"]] = relationship(
+        back_populates="bank_account",
+        cascade="all, delete-orphan",
+    )
+    household_contracts: Mapped[list["HouseholdContract"]] = relationship(
         back_populates="bank_account",
         cascade="all, delete-orphan",
     )
@@ -381,6 +398,41 @@ class CategoryRuleSuggestionDismissal(Base):
     household: Mapped[Household] = relationship(back_populates="category_rule_suggestion_dismissals")
 
 
+class HouseholdContract(Base):
+    """Erkannte/bestätigte wiederkehrende Zahlung (Vertrag/Abo) mit Status und Signatur pro Haushalt."""
+
+    __tablename__ = "household_contracts"
+    __table_args__ = (
+        UniqueConstraint("household_id", "signature_hash", name="uq_hh_contract_signature"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
+    bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
+    signature_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default=ContractStatus.suggested.value)
+    party_norm: Mapped[str] = mapped_column(Text)
+    label: Mapped[str] = mapped_column(String(512))
+    amount_abs: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+    rhythm: Mapped[str] = mapped_column(String(32), default="unknown")
+    rhythm_display: Mapped[str] = mapped_column(String(64), default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    occurrences: Mapped[int] = mapped_column(default=0)
+    first_booking: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    last_booking: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    household: Mapped[Household] = relationship(back_populates="contracts")
+    bank_account: Mapped[BankAccount] = relationship(back_populates="household_contracts")
+    transactions: Mapped[list["Transaction"]] = relationship(
+        back_populates="contract",
+        foreign_keys="Transaction.contract_id",
+    )
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -411,6 +463,10 @@ class Transaction(Base):
     prima_nota: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     category_id: Mapped[Optional[int]] = mapped_column(ForeignKey("categories.id"), nullable=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    contract_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("household_contracts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     bank_account: Mapped[BankAccount] = relationship(
         back_populates="transactions",
@@ -421,6 +477,10 @@ class Transaction(Base):
         lazy="joined",
     )
     category: Mapped[Optional["Category"]] = relationship(back_populates="tagged_transactions")
+    contract: Mapped[Optional["HouseholdContract"]] = relationship(
+        back_populates="transactions",
+        foreign_keys=[contract_id],
+    )
     enrichments: Mapped[list["TransactionEnrichment"]] = relationship(
         back_populates="transaction",
         cascade="all, delete-orphan",

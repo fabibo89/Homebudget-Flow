@@ -53,6 +53,7 @@ export default function Contracts() {
   const householdsQ = useQuery({ queryKey: ['households'], queryFn: fetchHouseholds });
   const households = householdsQ.data ?? [];
   const [householdId, setHouseholdId] = useState<number | ''>('');
+  const [bankAccountId, setBankAccountId] = useState<number | null>(null);
 
   const hid = householdId === '' ? (households[0]?.id ?? null) : householdId;
 
@@ -64,9 +65,9 @@ export default function Contracts() {
   }, [tab]);
 
   const contractsQ = useQuery({
-    queryKey: ['contracts', hid],
-    queryFn: () => fetchContracts(hid as number),
-    enabled: hid != null,
+    queryKey: ['contracts', hid, bankAccountId],
+    queryFn: () => fetchContracts(hid as number, undefined, bankAccountId!),
+    enabled: hid != null && bankAccountId != null,
   });
 
   const accountsQ = useQuery({
@@ -80,6 +81,24 @@ export default function Contracts() {
     if (hid == null) return [];
     return all.filter((a) => a.household_id === hid);
   }, [accountsQ.data, hid]);
+
+  const accountsSorted = useMemo(
+    () => [...accounts].sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base' })),
+    [accounts],
+  );
+
+  useEffect(() => {
+    if (accountsSorted.length === 0) {
+      setBankAccountId(null);
+      return;
+    }
+    setBankAccountId((prev) => {
+      if (prev != null && accountsSorted.some((a) => a.id === prev)) {
+        return prev;
+      }
+      return accountsSorted[0].id;
+    });
+  }, [hid, accountsSorted]);
 
   const rowsByTab = useMemo(() => {
     const all = contractsQ.data ?? [];
@@ -99,7 +118,7 @@ export default function Contracts() {
   const currentRows = rowsByTab[tab];
 
   const recognizeMut = useMutation({
-    mutationFn: () => recognizeContracts(hid as number, 60),
+    mutationFn: () => recognizeContracts(bankAccountId!, 60),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contracts'] });
       void qc.invalidateQueries({ queryKey: ['transactions'] });
@@ -149,8 +168,8 @@ export default function Contracts() {
           Verträge und Abos
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
-          Vorschläge aus der Buchungsanalyse; bestätigte Verträge erscheinen in der Buchungsübersicht mit einem
-          Symbol. Mit „Neuerkennung“ werden alle sichtbaren Konten erneut ausgewertet.
+          Vorschläge aus der Buchungsanalyse je Konto; bestätigte Verträge erscheinen in der Buchungsübersicht mit
+          einem Symbol. „Neuerkennung“ wertet nur das gewählte Konto aus.
         </Typography>
       </Stack>
 
@@ -160,7 +179,7 @@ export default function Contracts() {
         alignItems={{ xs: 'stretch', sm: 'center' }}
         flexWrap="wrap"
       >
-        <FormControl fullWidth sx={{ minWidth: { sm: 260 }, maxWidth: { sm: 400 } }}>
+        <FormControl fullWidth sx={{ minWidth: { sm: 220 }, maxWidth: { sm: 360 } }}>
           <InputLabel id="contracts-hh">Haushalt</InputLabel>
           <Select
             labelId="contracts-hh"
@@ -175,11 +194,27 @@ export default function Contracts() {
             ))}
           </Select>
         </FormControl>
+        <FormControl fullWidth sx={{ minWidth: { sm: 220 }, maxWidth: { sm: 400 } }}>
+          <InputLabel id="contracts-acc">Konto</InputLabel>
+          <Select
+            labelId="contracts-acc"
+            label="Konto"
+            value={bankAccountId ?? ''}
+            onChange={(e) => setBankAccountId(Number(e.target.value))}
+            disabled={accountsSorted.length === 0}
+          >
+            {accountsSorted.map((a) => (
+              <MenuItem key={a.id} value={a.id}>
+                {a.name}
+              </MenuItem>
+            ))}
+          </Select>
+        </FormControl>
         <Button
           variant="contained"
           fullWidth={isMobile}
           sx={{ flexShrink: 0, py: { xs: 1.25, sm: 1 } }}
-          disabled={hid == null || recognizeMut.isPending}
+          disabled={hid == null || bankAccountId == null || recognizeMut.isPending}
           onClick={() => recognizeMut.mutate()}
         >
           {recognizeMut.isPending ? 'Analyse…' : 'Neuerkennung'}
@@ -193,6 +228,10 @@ export default function Contracts() {
       </Stack>
 
       {recognizeMut.isError ? <Alert severity="error">{apiErrorMessage(recognizeMut.error)}</Alert> : null}
+
+      {hid != null && accountsQ.isSuccess && accountsSorted.length === 0 ? (
+        <Alert severity="info">Für diesen Haushalt ist kein Konto vorhanden — Verträge sind erst nach Konten sichtbar.</Alert>
+      ) : null}
 
       <Tabs
         value={tab}

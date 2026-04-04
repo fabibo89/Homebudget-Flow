@@ -183,19 +183,25 @@ export type ContractRecognizeResult = {
 export async function fetchContracts(
   householdId: number,
   status?: 'suggested' | 'confirmed' | 'ignored',
+  bankAccountId?: number,
 ): Promise<ContractOut[]> {
   const { data } = await api.get<ContractOut[]>('/api/contracts', {
-    params: { household_id: householdId, ...(status ? { status } : {}) },
+    params: {
+      household_id: householdId,
+      ...(status ? { status } : {}),
+      ...(bankAccountId != null ? { bank_account_id: bankAccountId } : {}),
+    },
   });
   return data;
 }
 
+/** Vertragserkennung nur für ein Bankkonto (sichtbare Konten). */
 export async function recognizeContracts(
-  householdId: number,
+  bankAccountId: number,
   monthsBack = 60,
 ): Promise<ContractRecognizeResult> {
   const { data } = await api.post<ContractRecognizeResult>('/api/contracts/recognize', null, {
-    params: { household_id: householdId, months_back: monthsBack },
+    params: { bank_account_id: bankAccountId, months_back: monthsBack },
   });
   return data;
 }

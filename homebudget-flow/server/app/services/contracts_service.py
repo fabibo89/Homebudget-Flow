@@ -194,10 +194,12 @@ async def run_contract_recognition(
         suggestion_changes += 1
 
     refreshed = 0
+    acc_id_set = set(int(x) for x in acc_ids)
     r_conf = await session.execute(
         select(HouseholdContract).where(
             HouseholdContract.household_id == household_id,
             HouseholdContract.status == ContractStatus.confirmed.value,
+            HouseholdContract.bank_account_id.in_(acc_id_set),
         ),
     )
     for hc in r_conf.scalars().all():

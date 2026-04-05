@@ -92,6 +92,30 @@ async def bank_account_ids_visible_for_user_in_household(
     return [row[0] for row in r.all()]
 
 
+async def bank_account_ids_visible_to_user(session: AsyncSession, user: User) -> list[int]:
+    """Alle Bankkonto-IDs, für die ``bank_account_visible_to_user`` zutrifft (Liste/Filter „alle Konten“)."""
+    if user.all_household_transactions:
+        r = await session.execute(
+            select(BankAccount.id)
+            .select_from(BankAccount)
+            .join(AccountGroup, AccountGroup.id == BankAccount.account_group_id)
+            .join(
+                HouseholdMember,
+                (HouseholdMember.household_id == AccountGroup.household_id)
+                & (HouseholdMember.user_id == user.id),
+            )
+            .distinct(),
+        )
+        return [int(x[0]) for x in r.all()]
+    r = await session.execute(
+        select(BankAccount.id)
+        .join(AccountGroupMember, AccountGroupMember.account_group_id == BankAccount.account_group_id)
+        .where(AccountGroupMember.user_id == user.id)
+        .distinct(),
+    )
+    return [int(x[0]) for x in r.all()]
+
+
 async def bank_account_visible_to_user(session: AsyncSession, user: User, bank_account_id: int) -> bool:
     """Buchungen eines Kontos listen/bearbeiten: nach Nutzereinstellung Haushalt weit oder nur eigene Kontogruppe."""
     r = await session.execute(

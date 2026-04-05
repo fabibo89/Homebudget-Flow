@@ -212,6 +212,51 @@ async def _ensure_bank_accounts_tag_zero_rule(conn) -> None:
         )
 
 
+async def _ensure_household_contracts_bank_account_scope(conn) -> None:
+    """Legacy: Verträge waren pro Haushalt; jetzt nur noch pro Bankkonto (Unique bank_account_id + signature_hash)."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(household_contracts)"))
+        cols = [row[1] for row in r.fetchall()]
+        if not cols:
+            return
+        if "household_id" not in cols:
+            return
+        await conn.execute(text("DROP INDEX IF EXISTS uq_hh_contract_signature"))
+        try:
+            await conn.execute(text("ALTER TABLE household_contracts DROP COLUMN household_id"))
+        except Exception:
+            return
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_bank_account_contract_signature "
+                "ON household_contracts (bank_account_id, signature_hash)",
+            ),
+        )
+        return
+    if "postgresql" in url:
+        r_chk = await conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'household_contracts' "
+                "AND column_name = 'household_id')",
+            ),
+        )
+        if not r_chk.scalar():
+            return
+        await conn.execute(text("ALTER TABLE household_contracts DROP CONSTRAINT IF EXISTS uq_hh_contract_signature"))
+        await conn.execute(
+            text("ALTER TABLE household_contracts DROP CONSTRAINT IF EXISTS household_contracts_household_id_fkey"),
+        )
+        await conn.execute(text("ALTER TABLE household_contracts DROP COLUMN household_id"))
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_bank_account_contract_signature "
+                "ON household_contracts (bank_account_id, signature_hash)",
+            ),
+        )
+
+
 async def _ensure_transactions_contract_id(conn) -> None:
     """Optional: Verknüpfung Buchung → bestätigter Haushalts-Vertrag."""
     url = settings.database_url.lower()
@@ -649,6 +694,7 @@ async def init_db() -> None:
         await _ensure_bank_accounts_tag_zero_rule(conn)
         await _ensure_transactions_transfer_target(conn)
         await _ensure_transactions_contract_id(conn)
+        await _ensure_household_contracts_bank_account_scope(conn)
         await _ensure_transactions_counterparty_fields(conn)
         await _ensure_transactions_fints_raw_and_reference_fields(conn)
         await _ensure_bank_credentials_fints_verification(conn)

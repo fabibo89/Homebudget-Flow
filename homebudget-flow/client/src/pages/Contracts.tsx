@@ -46,16 +46,53 @@ import TransactionBookingsTable from '../components/transactions/TransactionBook
 
 type TabKey = 'confirmed' | 'suggested' | 'ignored';
 
+function _hexValid(h: string | null | undefined): h is string {
+  return Boolean(h && /^#[0-9A-Fa-f]{6}$/i.test(h.trim()));
+}
+
+/** Aggregierte Kategorie der Vertrags-Buchungen (einheitlich / Divers / —). */
+function ContractCategorySummary({ r }: { r: ContractOut }) {
+  const label = r.category_summary?.trim() ? r.category_summary : '—';
+  const hex = r.category_color_hex?.trim();
+  const showDot = _hexValid(hex) && label !== '—' && label !== 'Divers';
+  return (
+    <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0, justifyContent: 'flex-end' }}>
+      {showDot ? (
+        <Box
+          aria-hidden
+          sx={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            flexShrink: 0,
+            bgcolor: hex,
+            boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}`,
+          }}
+        />
+      ) : null}
+      <Typography variant="body2" noWrap component="span" fontWeight={600}>
+        {label}
+      </Typography>
+    </Stack>
+  );
+}
+
 export default function Contracts() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const qc = useQueryClient();
   const householdsQ = useQuery({ queryKey: ['households'], queryFn: fetchHouseholds });
-  const households = householdsQ.data ?? [];
-  const [householdId, setHouseholdId] = useState<number | ''>('');
-  const [bankAccountId, setBankAccountId] = useState<number | null>(null);
+  const householdNameById = useMemo(() => {
+    const m: Record<number, string> = {};
+    for (const h of householdsQ.data ?? []) {
+      m[h.id] = h.name;
+    }
+    return m;
+  }, [householdsQ.data]);
+  const multihh = (householdsQ.data?.length ?? 0) > 1;
 
-  const hid = householdId === '' ? (households[0]?.id ?? null) : householdId;
+  /** Ein Konto oder „alle sichtbaren Konten“ für die Liste; Neuerkennung nur mit Einzelkonto. */
+  const [accountFilter, setAccountFilter] = useState<number | 'all' | null>(null);
 
   const [tab, setTab] = useState<TabKey>('confirmed');
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -65,40 +102,41 @@ export default function Contracts() {
   }, [tab]);
 
   const contractsQ = useQuery({
-    queryKey: ['contracts', hid, bankAccountId],
-    queryFn: () => fetchContracts(hid as number, undefined, bankAccountId!),
-    enabled: hid != null && bankAccountId != null,
+    queryKey: ['contracts', accountFilter],
+    queryFn: () => fetchContracts(accountFilter!),
+    enabled: accountFilter != null,
   });
 
   const accountsQ = useQuery({
-    queryKey: ['accounts', hid],
+    queryKey: ['accounts'],
     queryFn: () => fetchAccounts(),
-    enabled: hid != null,
   });
 
-  const accounts: BankAccount[] = useMemo(() => {
-    const all = accountsQ.data ?? [];
-    if (hid == null) return [];
-    return all.filter((a) => a.household_id === hid);
-  }, [accountsQ.data, hid]);
+  const accounts: BankAccount[] = accountsQ.data ?? [];
 
-  const accountsSorted = useMemo(
-    () => [...accounts].sort((a, b) => a.name.localeCompare(b.name, 'de', { sensitivity: 'base' })),
-    [accounts],
-  );
+  const accountsSorted = useMemo(() => {
+    return [...accounts].sort((a, b) => {
+      if (multihh) {
+        const ha = householdNameById[a.household_id] ?? '';
+        const hb = householdNameById[b.household_id] ?? '';
+        const c = ha.localeCompare(hb, 'de', { sensitivity: 'base' });
+        if (c !== 0) return c;
+      }
+      return a.name.localeCompare(b.name, 'de', { sensitivity: 'base' });
+    });
+  }, [accounts, multihh, householdNameById]);
 
   useEffect(() => {
     if (accountsSorted.length === 0) {
-      setBankAccountId(null);
+      setAccountFilter(null);
       return;
     }
-    setBankAccountId((prev) => {
-      if (prev != null && accountsSorted.some((a) => a.id === prev)) {
-        return prev;
-      }
-      return accountsSorted[0].id;
+    setAccountFilter((prev) => {
+      if (prev === 'all') return 'all';
+      if (typeof prev === 'number' && accountsSorted.some((a) => a.id === prev)) return prev;
+      return 'all';
     });
-  }, [hid, accountsSorted]);
+  }, [accountsSorted]);
 
   const rowsByTab = useMemo(() => {
     const all = contractsQ.data ?? [];
@@ -118,7 +156,12 @@ export default function Contracts() {
   const currentRows = rowsByTab[tab];
 
   const recognizeMut = useMutation({
-    mutationFn: () => recognizeContracts(bankAccountId!, 60),
+    mutationFn: () => {
+      if (typeof accountFilter !== 'number') {
+        return Promise.reject(new Error('Bitte ein einzelnes Konto wählen.'));
+      }
+      return recognizeContracts(accountFilter, 60);
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['contracts'] });
       void qc.invalidateQueries({ queryKey: ['transactions'] });
@@ -149,16 +192,12 @@ export default function Contracts() {
     setExpandedId((prev) => (prev === c.id ? null : c.id));
   }
 
-  if (householdsQ.isLoading) {
+  if (householdsQ.isLoading || accountsQ.isLoading) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
         <CircularProgress />
       </Box>
     );
-  }
-
-  if (households.length === 0) {
-    return <Alert severity="info">Kein Haushalt vorhanden — bitte zuerst einen Haushalt anlegen.</Alert>;
   }
 
   return (
@@ -169,7 +208,8 @@ export default function Contracts() {
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
           Vorschläge aus der Buchungsanalyse je Konto; bestätigte Verträge erscheinen in der Buchungsübersicht mit
-          einem Symbol. „Neuerkennung“ wertet nur das gewählte Konto aus.
+          einem Symbol. „Alle Konten“ zeigt die Verträge aller sichtbaren Konten; „Neuerkennung“ ist nur bei einzelnem
+          Konto möglich.
         </Typography>
       </Stack>
 
@@ -179,33 +219,25 @@ export default function Contracts() {
         alignItems={{ xs: 'stretch', sm: 'center' }}
         flexWrap="wrap"
       >
-        <FormControl fullWidth sx={{ minWidth: { sm: 220 }, maxWidth: { sm: 360 } }}>
-          <InputLabel id="contracts-hh">Haushalt</InputLabel>
-          <Select
-            labelId="contracts-hh"
-            label="Haushalt"
-            value={hid ?? ''}
-            onChange={(e) => setHouseholdId(Number(e.target.value))}
-          >
-            {households.map((h) => (
-              <MenuItem key={h.id} value={h.id}>
-                {h.name}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <FormControl fullWidth sx={{ minWidth: { sm: 220 }, maxWidth: { sm: 400 } }}>
+        <FormControl fullWidth sx={{ minWidth: { sm: 220 }, maxWidth: { sm: 480 } }}>
           <InputLabel id="contracts-acc">Konto</InputLabel>
           <Select
             labelId="contracts-acc"
             label="Konto"
-            value={bankAccountId ?? ''}
-            onChange={(e) => setBankAccountId(Number(e.target.value))}
+            value={accountFilter == null ? '' : accountFilter === 'all' ? 'all' : accountFilter}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'all') setAccountFilter('all');
+              else setAccountFilter(Number(v));
+            }}
             disabled={accountsSorted.length === 0}
           >
+            <MenuItem value="all">Alle Konten</MenuItem>
             {accountsSorted.map((a) => (
               <MenuItem key={a.id} value={a.id}>
-                {a.name}
+                {multihh && householdNameById[a.household_id]
+                  ? `${householdNameById[a.household_id]} · ${a.name}`
+                  : a.name}
               </MenuItem>
             ))}
           </Select>
@@ -214,7 +246,14 @@ export default function Contracts() {
           variant="contained"
           fullWidth={isMobile}
           sx={{ flexShrink: 0, py: { xs: 1.25, sm: 1 } }}
-          disabled={hid == null || bankAccountId == null || recognizeMut.isPending}
+          title={
+            accountFilter === 'all'
+              ? 'Bitte ein einzelnes Konto wählen, um eine Neuerkennung auszuführen.'
+              : undefined
+          }
+          disabled={
+            accountFilter == null || accountFilter === 'all' || recognizeMut.isPending
+          }
           onClick={() => recognizeMut.mutate()}
         >
           {recognizeMut.isPending ? 'Analyse…' : 'Neuerkennung'}
@@ -229,8 +268,10 @@ export default function Contracts() {
 
       {recognizeMut.isError ? <Alert severity="error">{apiErrorMessage(recognizeMut.error)}</Alert> : null}
 
-      {hid != null && accountsQ.isSuccess && accountsSorted.length === 0 ? (
-        <Alert severity="info">Für diesen Haushalt ist kein Konto vorhanden — Verträge sind erst nach Konten sichtbar.</Alert>
+      {accountsQ.isSuccess && accountsSorted.length === 0 ? (
+        <Alert severity="info">
+          Kein Bankkonto vorhanden — Verträge sind erst nach einem verbundenen Konto sichtbar.
+        </Alert>
       ) : null}
 
       <Tabs
@@ -281,6 +322,7 @@ export default function Contracts() {
                   {tab === 'confirmed' || tab === 'suggested' ? <TableCell width={48} /> : null}
                   <TableCell>Gegenpart / Muster</TableCell>
                   <TableCell align="right">Betrag (typ.)</TableCell>
+                  <TableCell align="right">Kategorie</TableCell>
                   <TableCell>Rhythmus</TableCell>
                   <TableCell align="right">Treffer</TableCell>
                   <TableCell>Zeitraum</TableCell>
@@ -292,7 +334,7 @@ export default function Contracts() {
               <TableBody>
                 {currentRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={tab === 'ignored' ? 7 : tab === 'suggested' ? 9 : 8}>
+                    <TableCell colSpan={tab === 'ignored' ? 8 : tab === 'suggested' ? 10 : 9}>
                       <Typography variant="body2" color="text.secondary">
                         Keine Einträge in dieser Kategorie.
                       </Typography>
@@ -464,6 +506,14 @@ function ContractCardMobile({
 
         <Stack spacing={1.25} sx={{ mt: 1.5 }}>
           <MobileKv label="Betrag" value={formatMoney(r.amount_typical, r.currency)} />
+          <Stack direction="row" alignItems="flex-start" justifyContent="space-between" gap={1.5} sx={{ width: '100%' }}>
+            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, pt: 0.125 }}>
+              Kategorie
+            </Typography>
+            <Box sx={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
+              <ContractCategorySummary r={r} />
+            </Box>
+          </Stack>
           <MobileKv label="Rhythmus" value={r.rhythm_display} valueAlign="left" />
           <MobileKv label="Treffer" value={countLabel} />
           <MobileKv
@@ -517,7 +567,7 @@ function ContractCardMobile({
                   accounts={accounts}
                   title={tab === 'suggested' ? 'Erkannte Buchungen (Vorschlag)' : 'Buchungen zu diesem Vertrag'}
                   hideInlineHint
-                  categoryColumnAdvanced={false}
+                  categoryColumnAdvanced
                 />
               )}
             </Box>
@@ -617,6 +667,9 @@ function FragmentRowDesktop({
           </Typography>
         </TableCell>
         <TableCell align="right">{formatMoney(r.amount_typical, r.currency)}</TableCell>
+        <TableCell align="right" sx={{ maxWidth: 200 }}>
+          <ContractCategorySummary r={r} />
+        </TableCell>
         <TableCell>{r.rhythm_display}</TableCell>
         <TableCell align="right">{countLabel}</TableCell>
         <TableCell>
@@ -646,7 +699,7 @@ function FragmentRowDesktop({
       {(tab === 'confirmed' || tab === 'suggested') && expanded ? (
         <TableRow>
           <TableCell
-            colSpan={tab === 'suggested' ? 9 : 8}
+            colSpan={tab === 'suggested' ? 10 : 9}
             sx={{ borderTop: 0, py: 0, backgroundColor: 'action.hover' }}
           >
             <Collapse in={expanded} unmountOnExit>
@@ -665,7 +718,7 @@ function FragmentRowDesktop({
                         : 'Buchungen zu diesem Vertrag'
                     }
                     hideInlineHint
-                    categoryColumnAdvanced={false}
+                    categoryColumnAdvanced
                   />
                 )}
               </Box>

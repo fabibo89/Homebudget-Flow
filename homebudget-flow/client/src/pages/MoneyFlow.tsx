@@ -27,6 +27,11 @@ import {
   type TransferPair,
   type CategoryOut,
 } from '../api/client';
+import {
+  DEFAULT_TRANSFER_KIND_INCLUSION,
+  passesAnalysisTransferFilter,
+  type AnalysisTransferKindKey,
+} from '../lib/analysisTransferFilter';
 import { displayNameClusterForTransaction } from '../lib/categoryRuleMatching';
 import {
   collectDescendantCategoryIds,
@@ -268,6 +273,8 @@ type MoneyFlowProps = {
   to?: string;
   /** Optional: account filter (null = all visible; [] = none). */
   includedAccountIds?: number[] | null;
+  /** Wenn gesetzt: Umbuchungs-Paare nach abgehender Art filtern (Analysen). */
+  transferKindInclusion?: Record<AnalysisTransferKindKey, boolean>;
 };
 
 export default function MoneyFlow(props: MoneyFlowProps) {
@@ -283,6 +290,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
   const embedded = props.embedded === true;
   const includedIds = props.includedAccountIds;
   const includedSig = includedAccountsKey(includedIds);
+  const transferInclusion = props.transferKindInclusion ?? DEFAULT_TRANSFER_KIND_INCLUSION;
 
   const rangeOk = from <= to;
 
@@ -375,6 +383,14 @@ export default function MoneyFlow(props: MoneyFlowProps) {
         includedSet.has(p.in_transaction.bank_account_id),
     );
   }, [transfersQ.data, includedSet]);
+
+  const filteredTransferPairs = useMemo(
+    () =>
+      scopedTransferPairs.filter((p) =>
+        passesAnalysisTransferFilter(p.out_transaction, transferInclusion),
+      ),
+    [scopedTransferPairs, transferInclusion],
+  );
 
   const nodeByHousehold = useMemo(() => {
     const out = new Map<number, Map<number, CategoryOut>>();
@@ -519,7 +535,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
   ]);
 
   const transferGroupsAll = useMemo<TransferGroup[]>(() => {
-    const pairs = scopedTransferPairs;
+    const pairs = filteredTransferPairs;
     const groups = new Map<string, TransferGroup>();
     for (const p of pairs) {
       const outTx = p.out_transaction;
@@ -539,7 +555,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
       }
     }
     return Array.from(groups.values());
-  }, [scopedTransferPairs]);
+  }, [filteredTransferPairs]);
 
   const MAX_TRANSFER_EDGES = 10;
   const MAX_EXPENSE_EDGES = 12;
@@ -587,14 +603,14 @@ export default function MoneyFlow(props: MoneyFlowProps) {
     if (!selectedTransferGroup) return [];
     const pairIdSet = new Set(selectedTransferGroup.pairIds);
     const rows: TransferPair['out_transaction'][] = [];
-    for (const p of scopedTransferPairs ?? []) {
+    for (const p of filteredTransferPairs ?? []) {
       if (!pairIdSet.has(p.id)) continue;
       rows.push(p.out_transaction, p.in_transaction);
     }
     return rows
       .slice()
       .sort((a, b) => b.booking_date.localeCompare(a.booking_date) || b.id - a.id);
-  }, [selectedTransferGroup, scopedTransferPairs]);
+  }, [selectedTransferGroup, filteredTransferPairs]);
 
   const loading =
     accountsQ.isLoading ||

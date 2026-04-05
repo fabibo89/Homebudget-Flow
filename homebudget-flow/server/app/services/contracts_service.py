@@ -8,15 +8,18 @@ from typing import Optional
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.db.models import (
     AccountGroup,
     BankAccount,
+    Category,
     ContractStatus,
     HouseholdContract,
     Transaction,
     TransferPair,
 )
+from app.schemas.transaction import _effective_hex_for_category
 from app.services.contracts_detection import (
     _amount_abs,
     _norm_counterparty_or_desc,
@@ -109,10 +112,30 @@ async def link_transactions_for_confirmed_contract(session: AsyncSession, hc: Ho
     return updated
 
 
+async def refresh_confirmed_contract_links_for_bank_account(
+    session: AsyncSession,
+    bank_account_id: int,
+) -> int:
+    """
+    Alle bestätigten Verträge auf diesem Konto erneut gegen die Buchungen matchen
+    (z. B. nach Sync neuer Umsätze — gleiche Logik wie am Ende von ``run_contract_recognition``).
+    Returns: Summe der von ``link_transactions_for_confirmed_contract`` gemeldeten Aktualisierungen.
+    """
+    r = await session.execute(
+        select(HouseholdContract).where(
+            HouseholdContract.bank_account_id == bank_account_id,
+            HouseholdContract.status == ContractStatus.confirmed.value,
+        ),
+    )
+    total = 0
+    for hc in r.scalars().all():
+        total += await link_transactions_for_confirmed_contract(session, hc)
+    return total
+
+
 async def run_contract_recognition(
     session: AsyncSession,
     *,
-    household_id: int,
     acc_ids: list[int],
     accounts_by_id: dict[int, BankAccount],
     months_back: int = 60,
@@ -141,7 +164,7 @@ async def run_contract_recognition(
     )
 
     r_existing = await session.execute(
-        select(HouseholdContract).where(HouseholdContract.household_id == household_id),
+        select(HouseholdContract).where(HouseholdContract.bank_account_id.in_(acc_ids)),
     )
     by_sig: dict[str, HouseholdContract] = {c.signature_hash: c for c in r_existing.scalars().all()}
 
@@ -174,7 +197,6 @@ async def run_contract_recognition(
             continue
 
         row = HouseholdContract(
-            household_id=household_id,
             bank_account_id=cand.bank_account_id,
             signature_hash=sig,
             status=ContractStatus.suggested.value,
@@ -197,7 +219,6 @@ async def run_contract_recognition(
     acc_id_set = set(int(x) for x in acc_ids)
     r_conf = await session.execute(
         select(HouseholdContract).where(
-            HouseholdContract.household_id == household_id,
             HouseholdContract.status == ContractStatus.confirmed.value,
             HouseholdContract.bank_account_id.in_(acc_id_set),
         ),
@@ -257,6 +278,45 @@ async def fetch_transactions_for_contract_detail(
         return matched[:limit]
 
     return []
+
+
+DIVERS_LABEL = "Divers"
+
+
+async def contract_category_summary_for_list(
+    session: AsyncSession,
+    hc: HouseholdContract,
+) -> tuple[str, Optional[str]]:
+    """
+    Kategorie auf Vertragsebene: einheitlicher Kategoriename + effektive Farbe;
+    alle ohne Kategorie → „—“; gemischt oder mehrere Kategorien → „Divers“.
+    """
+    txs = await fetch_transactions_for_contract_detail(session, hc, limit=8000)
+    if not txs:
+        return "—", None
+
+    distinct = {tx.category_id for tx in txs}
+    if len(distinct) == 1:
+        only = next(iter(distinct))
+        if only is None:
+            return "—", None
+        hid = await household_id_for_bank_account(session, hc.bank_account_id)
+        if hid is None:
+            return DIVERS_LABEL, None
+        r_cat = await session.execute(
+            select(Category)
+            .where(Category.id == only, Category.household_id == hid)
+            .options(
+                joinedload(Category.parent).selectinload(Category.children),
+            ),
+        )
+        cat = r_cat.unique().scalar_one_or_none()
+        if cat is None:
+            return DIVERS_LABEL, None
+        hex_out = _effective_hex_for_category(cat)
+        return cat.name, hex_out
+
+    return DIVERS_LABEL, None
 
 
 async def sample_transaction_ids_for_contract(

@@ -14,6 +14,7 @@ import {
   CircularProgress,
   Divider,
   FormControl,
+  FormControlLabel,
   InputLabel,
   List,
   ListItemButton,
@@ -54,6 +55,13 @@ import { useAccountGroupLabelMap } from '../hooks/useAccountGroupLabelMap';
 import { getAppTimeZone, isoDateInAppTimezone, todayIsoInAppTimezone } from '../lib/appTimeZone';
 import { sortBankAccountsForDisplay } from '../lib/sortBankAccounts';
 import MoneyFlow from './MoneyFlow';
+import {
+  ANALYSIS_TRANSFER_KIND_KEYS,
+  DEFAULT_TRANSFER_KIND_INCLUSION,
+  passesAnalysisTransferFilter,
+  transferKindLabel,
+  type AnalysisTransferKindKey,
+} from '../lib/analysisTransferFilter';
 import {
   addMonthsToIsoDate,
   collectDescendantCategoryIds,
@@ -668,6 +676,10 @@ export default function Analyses() {
   /** `null` = alle Konten mit Zugriff; sonst explizite Mehrfachauswahl (Reihenfolge egal). */
   const [includedAccountIds, setIncludedAccountIds] = useState<number[] | null>(null);
   const [accountFilterAnchor, setAccountFilterAnchor] = useState<HTMLElement | null>(null);
+  const [transferFilterAnchor, setTransferFilterAnchor] = useState<HTMLElement | null>(null);
+  const [transferKindInclusion, setTransferKindInclusion] = useState<
+    Record<AnalysisTransferKindKey, boolean>
+  >(() => ({ ...DEFAULT_TRANSFER_KIND_INCLUSION }));
   const [selectedBarDay, setSelectedBarDay] = useState<string | null>(null);
   const [selectedCategorySlice, setSelectedCategorySlice] = useState<CategorySliceSelection | null>(null);
   const [verlaufSelectedKeys, setVerlaufSelectedKeys] = useState<string[]>([]);
@@ -789,6 +801,18 @@ export default function Analyses() {
     return raw.filter((t) => includedSet.has(t.bank_account_id));
   }, [txQuery.data, includedAccountIds, includedSet]);
 
+  /** Buchungen für Diagramme/Listen: Konten + Zeitraum + optional Umbuchungsarten ausgeschlossen. */
+  const analysisTransactions = useMemo(
+    () => scopedTransactions.filter((t) => passesAnalysisTransferFilter(t, transferKindInclusion)),
+    [scopedTransactions, transferKindInclusion],
+  );
+
+  const transferFilterSummary = useMemo(() => {
+    const off = ANALYSIS_TRANSFER_KIND_KEYS.filter((k) => !transferKindInclusion[k]);
+    if (off.length === 0) return 'Umbuchungen (alle)';
+    return `Umbuchungen (${off.length} ausgeschlossen)`;
+  }, [transferKindInclusion]);
+
   const applyIncludedSet = useCallback(
     (next: Set<number>) => {
       setIncludedAccountIds(normalizeIncludedAccountIds(next, allAccountIdsSorted));
@@ -810,8 +834,8 @@ export default function Analyses() {
   const defaultCurrency = accounts[0]?.currency ?? 'EUR';
 
   const daily = useMemo(
-    () => dailyNetSums(scopedTransactions, from, to),
-    [scopedTransactions, from, to],
+    () => dailyNetSums(analysisTransactions, from, to),
+    [analysisTransactions, from, to],
   );
 
   const cumulative = useMemo(() => cumulativeFromDaily(daily), [daily]);
@@ -842,14 +866,14 @@ export default function Analyses() {
   }, [tagesbilanzAxisLabels]);
 
   const categoryAggsIncome = useMemo(() => {
-    if (!scopedTransactions.length) return [];
-    return aggregateByCategory(scopedTransactions.filter((t) => Number(t.amount) > 0));
-  }, [scopedTransactions]);
+    if (!analysisTransactions.length) return [];
+    return aggregateByCategory(analysisTransactions.filter((t) => Number(t.amount) > 0));
+  }, [analysisTransactions]);
 
   const categoryAggsExpense = useMemo(() => {
-    if (!scopedTransactions.length) return [];
-    return aggregateByCategory(scopedTransactions.filter((t) => Number(t.amount) < 0));
-  }, [scopedTransactions]);
+    if (!analysisTransactions.length) return [];
+    return aggregateByCategory(analysisTransactions.filter((t) => Number(t.amount) < 0));
+  }, [analysisTransactions]);
 
   const allPieCategoryKeysSorted = useMemo(() => {
     const s = new Set<string>();
@@ -879,10 +903,10 @@ export default function Analyses() {
 
   const dailyExpenseMatrix = useMemo(
     () =>
-      scopedTransactions.length
-        ? buildDailyExpenseMatrix(scopedTransactions, from, to)
+      analysisTransactions.length
+        ? buildDailyExpenseMatrix(analysisTransactions, from, to)
         : { days: [] as string[], byKey: new Map<string, number[]>() },
-    [scopedTransactions, from, to],
+    [analysisTransactions, from, to],
   );
 
   const keysWithSpendInVerlauf = useMemo(() => {
@@ -944,7 +968,7 @@ export default function Analyses() {
     verlaufBucket === 'day' ? 'Tag' : verlaufBucket === 'week' ? 'Kalenderwoche (Mo–So im Filter)' : 'Monat';
 
   const transactionsForSelectedVerlaufPeriod = useMemo(() => {
-    const all = scopedTransactions;
+    const all = analysisTransactions;
     if (verlaufSelectedPeriodIndex == null) return [];
     const daysIn = verlaufPeriodMatrix.periodDays[verlaufSelectedPeriodIndex];
     if (!daysIn?.length) return [];
@@ -953,7 +977,7 @@ export default function Analyses() {
       .filter((t) => Number(t.amount) < 0 && daySet.has(t.booking_date.slice(0, 10)))
       .slice()
       .sort((a, b) => b.id - a.id);
-  }, [scopedTransactions, verlaufSelectedPeriodIndex, verlaufPeriodMatrix.periodDays]);
+  }, [analysisTransactions, verlaufSelectedPeriodIndex, verlaufPeriodMatrix.periodDays]);
 
   const verlaufSelectedPeriodTitle = useMemo(() => {
     if (verlaufSelectedPeriodIndex == null) return '';
@@ -964,13 +988,13 @@ export default function Analyses() {
   }, [verlaufSelectedPeriodIndex, verlaufPeriodMatrix.periodLabels, verlaufBucket]);
 
   const transactionsForSelectedDay = useMemo(() => {
-    const all = scopedTransactions;
+    const all = analysisTransactions;
     if (!all || !selectedBarDay) return [];
     return all
       .filter((t) => t.booking_date.slice(0, 10) === selectedBarDay)
       .slice()
       .sort((a, b) => b.id - a.id);
-  }, [scopedTransactions, selectedBarDay]);
+  }, [analysisTransactions, selectedBarDay]);
 
   const transactionsForSelectedCategory = useMemo(() => {
     if (!selectedCategorySlice) return [];
@@ -1382,7 +1406,7 @@ export default function Analyses() {
   // --- Kategorien: zeitlicher Verlauf (Income/Expense), nutzt dieselben Farben/Labels wie Kategorieverlauf ---
 
   const kategorienIncomeDailyMatrix = useMemo(() => {
-    if (!scopedTransactions.length) return { days: [] as string[], byKey: new Map<string, number[]>() };
+    if (!analysisTransactions.length) return { days: [] as string[], byKey: new Map<string, number[]>() };
     const start = parseIsoDate(from);
     const end = parseIsoDate(to);
     const days: string[] = [];
@@ -1393,7 +1417,7 @@ export default function Analyses() {
       return byKey.get(key)!;
     };
     const allowed = kategorienSelectedKeys.length ? new Set(kategorienSelectedKeys) : null;
-    for (const t of scopedTransactions) {
+    for (const t of analysisTransactions) {
       const amt = Number(t.amount);
       if (!Number.isFinite(amt) || amt <= 0) continue;
       const dayStr = t.booking_date.slice(0, 10);
@@ -1404,10 +1428,10 @@ export default function Analyses() {
       ensure(key)[di] += Math.abs(amt);
     }
     return { days, byKey };
-  }, [scopedTransactions, from, to, kategorienSelectedKeys]);
+  }, [analysisTransactions, from, to, kategorienSelectedKeys]);
 
   const kategorienExpenseDailyMatrix = useMemo(() => {
-    if (!scopedTransactions.length) return { days: [] as string[], byKey: new Map<string, number[]>() };
+    if (!analysisTransactions.length) return { days: [] as string[], byKey: new Map<string, number[]>() };
     const start = parseIsoDate(from);
     const end = parseIsoDate(to);
     const days: string[] = [];
@@ -1418,7 +1442,7 @@ export default function Analyses() {
       return byKey.get(key)!;
     };
     const allowed = kategorienSelectedKeys.length ? new Set(kategorienSelectedKeys) : null;
-    for (const t of scopedTransactions) {
+    for (const t of analysisTransactions) {
       const amt = Number(t.amount);
       if (!Number.isFinite(amt) || amt >= 0) continue;
       const dayStr = t.booking_date.slice(0, 10);
@@ -1429,7 +1453,7 @@ export default function Analyses() {
       ensure(key)[di] += Math.abs(amt);
     }
     return { days, byKey };
-  }, [scopedTransactions, from, to, kategorienSelectedKeys]);
+  }, [analysisTransactions, from, to, kategorienSelectedKeys]);
 
   const kategorienIncomePeriodMatrix = useMemo(
     () => rollupVerlaufFromDaily(kategorienIncomeDailyMatrix, verlaufBucket),
@@ -1819,12 +1843,12 @@ export default function Analyses() {
       return { days: [] as string[], byKey: new Map<string, number[]>() };
     }
     const rules = allRulesSorted;
-    return buildDailyExpenseMatrixClustered(scopedTransactions, from, to, (t) => {
+    return buildDailyExpenseMatrixClustered(analysisTransactions, from, to, (t) => {
       if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return null;
       if (Number(t.amount) >= 0) return null;
       return displayNameClusterForTransaction(t, rules).clusterKey;
     });
-  }, [scopedTransactions, from, to, regelClusterSubtreeIds, allRulesSorted]);
+  }, [analysisTransactions, from, to, regelClusterSubtreeIds, allRulesSorted]);
 
   const regelClusterPeriodMatrix = useMemo(
     () => rollupVerlaufFromDaily(regelClusterDailyMatrix, regelClusterBucket),
@@ -1851,7 +1875,7 @@ export default function Analyses() {
     const daysIn = regelClusterPeriodMatrix.periodDays[regelClusterPeriodIndex];
     if (!daysIn?.length) return [];
     const daySet = new Set(daysIn);
-    return scopedTransactions
+    return analysisTransactions
       .filter((t) => {
         if (Number(t.amount) >= 0) return false;
         if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return false;
@@ -1859,12 +1883,12 @@ export default function Analyses() {
       })
       .slice()
       .sort((a, b) => b.id - a.id);
-  }, [scopedTransactions, regelClusterPeriodIndex, regelClusterPeriodMatrix.periodDays, regelClusterSubtreeIds]);
+  }, [analysisTransactions, regelClusterPeriodIndex, regelClusterPeriodMatrix.periodDays, regelClusterSubtreeIds]);
 
   const transactionsForRegelClusterBarSelection = useMemo(() => {
     if (regelClusterBarClusterKey == null || !regelClusterSubtreeIds) return [];
     const rules = allRulesSorted;
-    return scopedTransactions
+    return analysisTransactions
       .filter((t) => {
         if (Number(t.amount) >= 0) return false;
         if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return false;
@@ -1872,7 +1896,7 @@ export default function Analyses() {
       })
       .slice()
       .sort((a, b) => b.id - a.id);
-  }, [scopedTransactions, regelClusterBarClusterKey, regelClusterSubtreeIds, allRulesSorted]);
+  }, [analysisTransactions, regelClusterBarClusterKey, regelClusterSubtreeIds, allRulesSorted]);
 
   const [regelClusterCounterpartyKey, setRegelClusterCounterpartyKey] = useState<string | null>(null);
 
@@ -2002,7 +2026,7 @@ export default function Analyses() {
         .map((r) => r.label)
         .filter((k) => k && !k.startsWith('Weitere')),
     );
-    return buildDailyExpenseMatrixClustered(scopedTransactions, from, to, (t) => {
+    return buildDailyExpenseMatrixClustered(analysisTransactions, from, to, (t) => {
       if (Number(t.amount) >= 0) return null;
       if (t.category_id == null || !regelClusterSubtreeIds.has(t.category_id)) return null;
       if (displayNameClusterForTransaction(t, rules).clusterKey !== regelClusterBarClusterKey) return null;
@@ -2016,7 +2040,7 @@ export default function Analyses() {
       return key;
     });
   }, [
-    scopedTransactions,
+    analysisTransactions,
     from,
     to,
     regelClusterSubtreeIds,
@@ -2422,6 +2446,74 @@ export default function Analyses() {
             >
               {accountFilterSummary}
             </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={(e) => setTransferFilterAnchor(e.currentTarget)}
+              sx={{ minWidth: 200, justifyContent: 'flex-start', textAlign: 'left' }}
+            >
+              {transferFilterSummary}
+            </Button>
+            <Popover
+              open={Boolean(transferFilterAnchor)}
+              anchorEl={transferFilterAnchor}
+              onClose={() => setTransferFilterAnchor(null)}
+              anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+              slotProps={{
+                paper: {
+                  sx: { maxWidth: 400, mt: 0.5, p: 2 },
+                },
+              }}
+            >
+              <Typography variant="subtitle2" fontWeight={600} gutterBottom>
+                Umbuchungen
+              </Typography>
+              <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1.5 }}>
+                Gilt für Balken, Kategorien, Kategorieverlauf, Anzeigeregeln und Geldfluss. Es werden abgehende
+                Buchungen mit Zielkonto gefiltert (je Art). Der <strong>Saldo-Verlauf</strong> nutzt weiterhin alle
+                Buchungen zur Kontostandsberechnung.
+              </Typography>
+              <Stack spacing={0.25}>
+                {ANALYSIS_TRANSFER_KIND_KEYS.map((k) => (
+                  <FormControlLabel
+                    key={k}
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={transferKindInclusion[k]}
+                        onChange={() =>
+                          setTransferKindInclusion((prev) => ({ ...prev, [k]: !prev[k] }))
+                        }
+                      />
+                    }
+                    label={transferKindLabel(k)}
+                  />
+                ))}
+              </Stack>
+              <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} flexWrap="wrap" useFlexGap>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => setTransferKindInclusion({ ...DEFAULT_TRANSFER_KIND_INCLUSION })}
+                >
+                  Alle einblenden
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() =>
+                    setTransferKindInclusion(
+                      Object.fromEntries(ANALYSIS_TRANSFER_KIND_KEYS.map((key) => [key, false])) as Record<
+                        AnalysisTransferKindKey,
+                        boolean
+                      >,
+                    )
+                  }
+                >
+                  Alle ausblenden
+                </Button>
+              </Stack>
+            </Popover>
             <Popover
               open={Boolean(accountFilterAnchor)}
               anchorEl={accountFilterAnchor}
@@ -2550,7 +2642,13 @@ export default function Analyses() {
           <CircularProgress />
         </Box>
       ) : tab === 'geldfluss' ? (
-        <MoneyFlow embedded from={from} to={to} includedAccountIds={includedAccountIds} />
+        <MoneyFlow
+          embedded
+          from={from}
+          to={to}
+          includedAccountIds={includedAccountIds}
+          transferKindInclusion={transferKindInclusion}
+        />
       ) : tab === 'tagesbilanz' ? (
         <>
           {daily.length === 0 ? (
@@ -2625,7 +2723,7 @@ export default function Analyses() {
         </>
       ) : tab === 'kategorien' ? (
         <>
-          {!scopedTransactions.length ? (
+          {!analysisTransactions.length ? (
             <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
           ) : (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
@@ -2934,7 +3032,7 @@ export default function Analyses() {
               </Accordion>
             </Paper>
           ) : null}
-          {selectedCategorySlice && sharedDataReady && scopedTransactions.length ? (
+          {selectedCategorySlice && sharedDataReady && analysisTransactions.length ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
                 <Typography variant="subtitle1" fontWeight={600}>
@@ -2961,7 +3059,7 @@ export default function Analyses() {
               fehlen ggf. in der Auswahl.
             </Alert>
           ) : null}
-          {!scopedTransactions.length ? (
+          {!analysisTransactions.length ? (
             <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
           ) : dailyExpenseMatrix.days.length === 0 ? (
             <Alert severity="info">Keine Tage im Zeitraum.</Alert>
@@ -3170,7 +3268,7 @@ export default function Analyses() {
               )}
             </Paper>
           )}
-          {verlaufSelectedPeriodIndex != null && sharedDataReady && scopedTransactions.length ? (
+          {verlaufSelectedPeriodIndex != null && sharedDataReady && analysisTransactions.length ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
                 <Typography variant="subtitle1" fontWeight={600}>
@@ -3202,7 +3300,7 @@ export default function Analyses() {
               Zuordnungsregeln konnten nicht geladen werden: {apiErrorMessage(firstRulesQueryError)}.
             </Alert>
           ) : null}
-          {!scopedTransactions.length ? (
+          {!analysisTransactions.length ? (
             <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
           ) : (
             <Stack spacing={2}>
@@ -3351,7 +3449,7 @@ export default function Analyses() {
           )}
           {regelClusterBarClusterKey != null &&
           sharedDataReady &&
-          scopedTransactions.length > 0 &&
+          analysisTransactions.length > 0 &&
           regelClusterSubcategoryId != null ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
@@ -3426,7 +3524,7 @@ export default function Analyses() {
           ) : regelClusterBarClusterKey == null &&
             regelClusterPeriodIndex != null &&
             sharedDataReady &&
-            scopedTransactions.length > 0 &&
+            analysisTransactions.length > 0 &&
             regelClusterSubcategoryId != null ? (
             <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>

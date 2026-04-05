@@ -1,4 +1,4 @@
-"""Persistente Verträge (Haushalt): Erkennung, Status, Buchungs-Verknüpfung."""
+"""Persistente Verträge (pro Bankkonto): Erkennung, Status, Buchungs-Verknüpfung."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.api.deps import CurrentUser
-from app.db.models import AccountGroup, BankAccount, HouseholdContract, Transaction
+from app.db.models import BankAccount, HouseholdContract, Transaction
 from app.db.models import ContractStatus
 from app.db.session import get_session
 from app.schemas.contracts import (
@@ -21,11 +21,13 @@ from app.schemas.contracts import (
     ContractIgnoreResult,
 )
 from app.schemas.transaction import TransactionOut, TransferKind, transaction_to_out
-from app.services.access import bank_account_visible_to_user, user_has_household
+from app.services.access import bank_account_ids_visible_to_user, bank_account_visible_to_user
 from app.services.contracts_service import (
     confirm_contract,
+    contract_category_summary_for_list,
     count_transactions_for_contract,
     fetch_transactions_for_contract_detail,
+    household_id_for_bank_account,
     ignore_contract,
     run_contract_recognition,
     sample_transaction_ids_for_contract,
@@ -54,9 +56,15 @@ async def _contract_out(
     else:
         tx_count = hc.occurrences
 
+    cat_label, cat_hex = await contract_category_summary_for_list(session, hc)
+
+    hid = await household_id_for_bank_account(session, hc.bank_account_id)
+    if hid is None:
+        hid = 0
+
     return ContractOut(
         id=hc.id,
-        household_id=hc.household_id,
+        household_id=hid,
         bank_account_id=hc.bank_account_id,
         bank_account_name=acc_name or "",
         status=hc.status,
@@ -72,6 +80,8 @@ async def _contract_out(
         signature_hash=hc.signature_hash,
         sample_transaction_ids=sample_ids,
         transaction_count=tx_count,
+        category_summary=cat_label,
+        category_color_hex=cat_hex,
     )
 
 
@@ -88,7 +98,7 @@ async def _get_contract_for_user(
     hc = r.unique().scalar_one_or_none()
     if hc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Vertrag nicht gefunden")
-    if not await user_has_household(session, user.id, hc.household_id):
+    if not await bank_account_visible_to_user(session, user, hc.bank_account_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff")
     return hc
 
@@ -97,42 +107,31 @@ async def _get_contract_for_user(
 async def list_contracts(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
-    household_id: int = Query(..., ge=1),
     bank_account_id: Optional[int] = Query(
         None,
         ge=1,
-        description="Optional: nur Verträge dieses Kontos (muss zum Haushalt gehören)",
+        description="Nur Verträge dieses Kontos; weglassen = alle sichtbaren Konten",
     ),
     status: Optional[str] = Query(
         None,
         description="suggested | confirmed | ignored — leer = alle",
     ),
 ) -> list[ContractOut]:
-    if not await user_has_household(session, user.id, household_id):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diesen Haushalt")
-
     if bank_account_id is not None:
         if not await bank_account_visible_to_user(session, user, bank_account_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf dieses Konto")
-        r_h = await session.execute(
-            select(BankAccount.id)
-            .join(AccountGroup, AccountGroup.id == BankAccount.account_group_id)
-            .where(BankAccount.id == bank_account_id, AccountGroup.household_id == household_id),
-        )
-        if r_h.scalar_one_or_none() is None:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "Konto gehört nicht zu diesem Haushalt.",
-            )
+        scope_ids = [bank_account_id]
+    else:
+        scope_ids = await bank_account_ids_visible_to_user(session, user)
+        if not scope_ids:
+            return []
 
     q = (
         select(HouseholdContract)
-        .where(HouseholdContract.household_id == household_id)
+        .where(HouseholdContract.bank_account_id.in_(scope_ids))
         .options(joinedload(HouseholdContract.bank_account))
         .order_by(HouseholdContract.updated_at.desc())
     )
-    if bank_account_id is not None:
-        q = q.where(HouseholdContract.bank_account_id == bank_account_id)
     if status is not None:
         st = status.strip().lower()
         if st not in {ContractStatus.suggested.value, ContractStatus.confirmed.value, ContractStatus.ignored.value}:
@@ -157,21 +156,15 @@ async def recognize_contracts(
     if not await bank_account_visible_to_user(session, user, bank_account_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf dieses Konto")
 
-    r_acc = await session.execute(
-        select(BankAccount)
-        .where(BankAccount.id == bank_account_id)
-        .options(joinedload(BankAccount.account_group)),
-    )
-    acc = r_acc.unique().scalar_one_or_none()
+    r_acc = await session.execute(select(BankAccount).where(BankAccount.id == bank_account_id))
+    acc = r_acc.scalar_one_or_none()
     if acc is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Konto nicht gefunden")
-    household_id = int(acc.account_group.household_id)
 
     accounts = {int(acc.id): acc}
 
     suggestions_updated, confirmed_touched = await run_contract_recognition(
         session,
-        household_id=household_id,
         acc_ids=[bank_account_id],
         accounts_by_id=accounts,
         months_back=months_back,

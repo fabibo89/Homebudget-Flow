@@ -142,10 +142,6 @@ class Household(Base):
         back_populates="household",
         cascade="all, delete-orphan",
     )
-    contracts: Mapped[list["HouseholdContract"]] = relationship(
-        back_populates="household",
-        cascade="all, delete-orphan",
-    )
 
 
 class HouseholdInvitation(Base):
@@ -399,15 +395,14 @@ class CategoryRuleSuggestionDismissal(Base):
 
 
 class HouseholdContract(Base):
-    """Erkannte/bestätigte wiederkehrende Zahlung (Vertrag/Abo) mit Status und Signatur pro Haushalt."""
+    """Erkannte/bestätigte wiederkehrende Zahlung (Vertrag/Abo) — eindeutig pro Bankkonto und Signatur."""
 
     __tablename__ = "household_contracts"
     __table_args__ = (
-        UniqueConstraint("household_id", "signature_hash", name="uq_hh_contract_signature"),
+        UniqueConstraint("bank_account_id", "signature_hash", name="uq_bank_account_contract_signature"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"))
     bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
     signature_hash: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default=ContractStatus.suggested.value)
@@ -425,7 +420,6 @@ class HouseholdContract(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    household: Mapped[Household] = relationship(back_populates="contracts")
     bank_account: Mapped[BankAccount] = relationship(back_populates="household_contracts")
     transactions: Mapped[list["Transaction"]] = relationship(
         back_populates="contract",

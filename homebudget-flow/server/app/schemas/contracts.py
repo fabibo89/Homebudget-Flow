@@ -41,6 +41,11 @@ class ContractOut(BaseModel):
     signature_hash: str
     sample_transaction_ids: list[int] = Field(default_factory=list)
     transaction_count: int = 0
+    category_summary: str = Field(
+        default="—",
+        description="Einheitliche Kategorie aller Buchungen, sonst „Divers“, alle ohne Kategorie „—“.",
+    )
+    category_color_hex: Optional[str] = Field(default=None, description="Effektive Farbe nur bei einheitlicher Kategorie")
 
 
 class ContractRecognizeResult(BaseModel):

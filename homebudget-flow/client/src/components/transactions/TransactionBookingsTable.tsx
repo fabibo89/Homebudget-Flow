@@ -55,6 +55,43 @@ import EventRepeatIcon from '@mui/icons-material/EventRepeat';
 const CATEGORY_COLUMN_HINT =
   'Linksklick: Kategorie ändern oder Regel anlegen (wenn noch keine Kategorie). Rechtsklick: Kategorieliste öffnet sich sofort zur manuellen Auswahl (ohne Regel).';
 
+function _hexLooksValid(hex: string | null | undefined): hex is string {
+  if (!hex?.trim()) return false;
+  return /^#[0-9A-Fa-f]{6}$/.test(hex.trim());
+}
+
+/** Kategoriename mit Farbpunkt (wenn Farbe bekannt), sonst „—“. */
+function TransactionCategoryCellInner({ t }: { t: Transaction }) {
+  if (t.category_name?.trim()) {
+    const hex = _hexLooksValid(t.category_color_hex) ? t.category_color_hex!.trim() : null;
+    return (
+      <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+        {hex ? (
+          <Box
+            aria-hidden
+            sx={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              flexShrink: 0,
+              bgcolor: hex,
+              boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}`,
+            }}
+          />
+        ) : null}
+        <Typography variant="body2" noWrap component="span">
+          {t.category_name}
+        </Typography>
+      </Stack>
+    );
+  }
+  return (
+    <Typography variant="body2" noWrap component="span">
+      —
+    </Typography>
+  );
+}
+
 function transferIcon(kind: Transaction['transfer_kind'] | undefined) {
   if (kind === 'own_internal') return { Icon: SyncAltIcon, label: 'Umbuchung (eigene)' };
   if (kind === 'own_to_shared') return { Icon: GroupsIcon, label: 'Umbuchung (eigen → gemeinsam)' };
@@ -522,7 +559,7 @@ export default function TransactionBookingsTable({
                     />
                     <Chip
                       size="small"
-                      label={t.category_name ?? '—'}
+                      label={t.category_name?.trim() ? t.category_name : '—'}
                       onClick={(e) => {
                         e.stopPropagation();
                         openCategoryDialog(t, 'default');
@@ -539,7 +576,17 @@ export default function TransactionBookingsTable({
                       variant="outlined"
                       sx={{
                         cursor: 'pointer',
+                        maxWidth: '100%',
+                        '& .MuiChip-label': { overflow: 'hidden', textOverflow: 'ellipsis' },
                         '&:hover': { borderColor: 'primary.main' },
+                        ...(_hexLooksValid(t.category_color_hex) && t.category_name?.trim()
+                          ? {
+                              borderLeftWidth: 3,
+                              borderLeftStyle: 'solid',
+                              borderLeftColor: t.category_color_hex!.trim(),
+                              pl: 0.5,
+                            }
+                          : {}),
                       }}
                     />
                   </Stack>
@@ -685,14 +732,14 @@ export default function TransactionBookingsTable({
                     >
                       {categoryColumnAdvanced ? (
                         <Tooltip title={CATEGORY_COLUMN_HINT} enterDelay={500}>
-                          <Typography variant="body2" noWrap component="span">
-                            {t.category_name ?? '—'}
-                          </Typography>
+                          <Box component="span" sx={{ display: 'block', minWidth: 0 }}>
+                            <TransactionCategoryCellInner t={t} />
+                          </Box>
                         </Tooltip>
                       ) : (
-                        <Typography variant="body2" noWrap title={t.category_name ?? undefined}>
-                          {t.category_name ?? '—'}
-                        </Typography>
+                        <Box sx={{ minWidth: 0 }}>
+                          <TransactionCategoryCellInner t={t} />
+                        </Box>
                       )}
                     </TableCell>
                     <TableCell sx={{ maxWidth: 360 }}>

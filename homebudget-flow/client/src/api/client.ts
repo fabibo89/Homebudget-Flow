@@ -173,6 +173,9 @@ export type ContractOut = {
   signature_hash: string;
   sample_transaction_ids: number[];
   transaction_count: number;
+  /** Einheitliche Kategorie aller Buchungen, sonst „Divers“, alle ohne „—“ */
+  category_summary: string;
+  category_color_hex?: string | null;
 };
 
 export type ContractRecognizeResult = {
@@ -181,15 +184,13 @@ export type ContractRecognizeResult = {
 };
 
 export async function fetchContracts(
-  householdId: number,
+  bankAccountId: number | 'all',
   status?: 'suggested' | 'confirmed' | 'ignored',
-  bankAccountId?: number,
 ): Promise<ContractOut[]> {
   const { data } = await api.get<ContractOut[]>('/api/contracts', {
     params: {
-      household_id: householdId,
+      ...(bankAccountId === 'all' ? {} : { bank_account_id: bankAccountId }),
       ...(status ? { status } : {}),
-      ...(bankAccountId != null ? { bank_account_id: bankAccountId } : {}),
     },
   });
   return data;

@@ -33,6 +33,7 @@ import {
   type AnalysisTransferKindKey,
 } from '../lib/analysisTransferFilter';
 import { displayNameClusterForTransaction } from '../lib/categoryRuleMatching';
+import { buildCategoryNodeByIdMap, resolveCategoryRootAndSub } from '../lib/categoryHierarchy';
 import {
   collectDescendantCategoryIds,
   findCategoryById,
@@ -223,44 +224,6 @@ type TransferGroup = {
   pairIds: number[];
 };
 
-function flattenCategoryNodes(roots: CategoryOut[]): CategoryOut[] {
-  const out: CategoryOut[] = [];
-  const walk = (n: CategoryOut) => {
-    out.push(n);
-    for (const ch of n.children ?? []) walk(ch);
-  };
-  for (const r of roots) walk(r);
-  return out;
-}
-
-function resolveCategoryRootAndSub(
-  categoryId: number | null,
-  nodeById: Map<number, CategoryOut>,
-): { root: string; sub: string } {
-  if (categoryId == null) return { root: 'Ohne Kategorie', sub: '—' };
-  const leaf = nodeById.get(categoryId);
-  if (!leaf) return { root: 'Kategorie (unbekannt)', sub: String(categoryId) };
-
-  const chain: CategoryOut[] = [];
-  let cur: CategoryOut | undefined = leaf;
-  const seen = new Set<number>();
-  while (cur && !seen.has(cur.id)) {
-    seen.add(cur.id);
-    chain.push(cur);
-    if (cur.parent_id == null) break;
-    cur = nodeById.get(cur.parent_id);
-  }
-
-  // chain: [leaf, ..., root] (unless graph is broken)
-  const rootNode = chain[chain.length - 1];
-  const rootName = rootNode?.name ?? leaf.name;
-
-  // Direct child of root if available, else leaf.
-  const childUnderRoot = chain.length >= 2 ? chain[chain.length - 2] : leaf;
-  const subName = childUnderRoot?.name ?? leaf.name;
-  return { root: rootName, sub: subName };
-}
-
 function formatMoneyAbs(amountAbs: number, currency: string): string {
   return formatMoney(String(amountAbs), currency);
 }
@@ -395,9 +358,7 @@ export default function MoneyFlow(props: MoneyFlowProps) {
   const nodeByHousehold = useMemo(() => {
     const out = new Map<number, Map<number, CategoryOut>>();
     for (const [hid, roots] of categoriesByHousehold.entries()) {
-      const m = new Map<number, CategoryOut>();
-      for (const n of flattenCategoryNodes(roots)) m.set(n.id, n);
-      out.set(hid, m);
+      out.set(hid, buildCategoryNodeByIdMap(roots));
     }
     return out;
   }, [categoriesByHousehold]);

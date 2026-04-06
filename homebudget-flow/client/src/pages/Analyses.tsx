@@ -48,6 +48,11 @@ import {
   type CategoryRuleOut,
   type Transaction,
 } from '../api/client';
+import ExpenseRuleSunburstChart, {
+  type ExpenseSunburstDatum,
+  type ExpenseSunburstPathFilter,
+} from '../components/analyses/ExpenseRuleSunburstChart';
+import { buildCategoryNodeByIdMap, resolveCategoryRootAndSub } from '../lib/categoryHierarchy';
 import { displayNameClusterForTransaction } from '../lib/categoryRuleMatching';
 import { CategorySymbolDisplay } from '../components/CategorySymbol';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
@@ -553,7 +558,85 @@ function buildVerlaufPickOptions(roots: CategoryOut[], noneOption: VerlaufCatego
   return rows;
 }
 
-type AnalysisTab = 'tagesbilanz' | 'kategorien' | 'kategorieverlauf' | 'regelcluster' | 'geldfluss';
+function sumSunburstDatumSubtree(node: ExpenseSunburstDatum): number {
+  if (typeof node.value === 'number' && Number.isFinite(node.value)) return node.value;
+  const ch = node.children;
+  if (!ch?.length) return 0;
+  return ch.reduce((s, c) => s + sumSunburstDatumSubtree(c), 0);
+}
+
+/** Daten für ECharts-Sunburst: Wurzel „Ausgaben“ → Hauptkategorie → Unterkategorie → Regel-Anzeigename. */
+function buildExpenseRuleSunburstSeries(
+  expenseTxs: Transaction[],
+  nodeById: Map<number, CategoryOut>,
+  rulesSorted: CategoryRuleOut[],
+  rootColorByName: Map<string, string>,
+  piePalette: string[],
+): ExpenseSunburstDatum[] {
+  type L3 = Map<string, number>;
+  type L2 = Map<string, L3>;
+  const l1 = new Map<string, L2>();
+
+  for (const t of expenseTxs) {
+    const amt = Number(t.amount);
+    if (!Number.isFinite(amt) || amt >= 0) continue;
+    const abs = Math.abs(amt);
+    const { root, sub } = resolveCategoryRootAndSub(t.category_id, nodeById);
+    const { label: ruleLabel } = displayNameClusterForTransaction(t, rulesSorted);
+    if (!l1.has(root)) l1.set(root, new Map());
+    const l2 = l1.get(root)!;
+    if (!l2.has(sub)) l2.set(sub, new Map());
+    const l3 = l2.get(sub)!;
+    l3.set(ruleLabel, (l3.get(ruleLabel) ?? 0) + abs);
+  }
+
+  let rootIdx = 0;
+  const roots: ExpenseSunburstDatum[] = [];
+  for (const [rootName, l2] of l1) {
+    const color = rootColorByName.get(rootName) ?? piePalette[rootIdx % piePalette.length];
+    rootIdx += 1;
+    const subs: ExpenseSunburstDatum[] = [];
+    for (const [subName, l3] of l2) {
+      const leaves: ExpenseSunburstDatum[] = [];
+      for (const [ruleName, value] of l3) {
+        leaves.push({
+          name: ruleName,
+          value,
+          pathFilter: { depth: 3, root: rootName, sub: subName, rule: ruleName },
+        });
+      }
+      leaves.sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+      subs.push({
+        name: subName,
+        pathFilter: { depth: 2, root: rootName, sub: subName },
+        children: leaves,
+      });
+    }
+    subs.sort((a, b) => sumSunburstDatumSubtree(b) - sumSunburstDatumSubtree(a));
+    roots.push({
+      name: rootName,
+      pathFilter: { depth: 1, root: rootName },
+      itemStyle: { color },
+      children: subs,
+    });
+  }
+  roots.sort((a, b) => sumSunburstDatumSubtree(b) - sumSunburstDatumSubtree(a));
+
+  return [
+    {
+      name: 'Ausgaben',
+      children: roots,
+    },
+  ];
+}
+
+type AnalysisTab =
+  | 'tagesbilanz'
+  | 'kategorien'
+  | 'kategorieverlauf'
+  | 'regelcluster'
+  | 'ausgaben_sunburst'
+  | 'geldfluss';
 
 type CategorySliceSelection = { flow: 'income' | 'expense'; categoryKey: string };
 
@@ -692,6 +775,8 @@ export default function Analyses() {
   const [regelClusterPeriodIndex, setRegelClusterPeriodIndex] = useState<number | null>(null);
   /** Klick auf Balkendiagramm: Cluster-Schlüssel (`dn:…` / `__no_rule__` …) für Buchungsliste. */
   const [regelClusterBarClusterKey, setRegelClusterBarClusterKey] = useState<string | null>(null);
+  /** Sunburst Ausgaben: gewähltes Segment (Kategorie / Unterkategorie / Regel). */
+  const [expenseSunburstSelection, setExpenseSunburstSelection] = useState<ExpenseSunburstPathFilter | null>(null);
 
   const accountsQuery = useQuery({
     queryKey: ['accounts'],
@@ -722,7 +807,8 @@ export default function Analyses() {
       (tab === 'tagesbilanz' ||
         tab === 'kategorien' ||
         tab === 'kategorieverlauf' ||
-        tab === 'regelcluster') &&
+        tab === 'regelcluster' ||
+        tab === 'ausgaben_sunburst') &&
       (includedAccountIds === null || includedAccountIds.length > 0),
   });
 
@@ -732,6 +818,7 @@ export default function Analyses() {
     setVerlaufSelectedPeriodIndex(null);
     setRegelClusterPeriodIndex(null);
     setRegelClusterBarClusterKey(null);
+    setExpenseSunburstSelection(null);
   }, [from, to, includedAccountsQueryKey, verlaufBucket, regelClusterBucket]);
 
   useEffect(() => {
@@ -746,6 +833,7 @@ export default function Analyses() {
     setVerlaufSelectedPeriodIndex(null);
     setRegelClusterPeriodIndex(null);
     setRegelClusterBarClusterKey(null);
+    setExpenseSunburstSelection(null);
   }
 
   const accounts = useMemo(
@@ -943,7 +1031,10 @@ export default function Analyses() {
       queryFn: () => fetchCategories(hid),
       enabled:
         rangeOk &&
-        (tab === 'kategorien' || tab === 'kategorieverlauf' || tab === 'regelcluster') &&
+        (tab === 'kategorien' ||
+          tab === 'kategorieverlauf' ||
+          tab === 'regelcluster' ||
+          tab === 'ausgaben_sunburst') &&
         householdIdsForCategories.length > 0,
     })),
   });
@@ -952,7 +1043,10 @@ export default function Analyses() {
     queries: householdIdsForCategories.map((hid) => ({
       queryKey: ['category-rules', hid],
       queryFn: () => fetchCategoryRules(hid),
-      enabled: rangeOk && tab === 'regelcluster' && householdIdsForCategories.length > 0,
+      enabled:
+        rangeOk &&
+        (tab === 'regelcluster' || tab === 'ausgaben_sunburst') &&
+        householdIdsForCategories.length > 0,
     })),
   });
 
@@ -1803,10 +1897,14 @@ export default function Analyses() {
     !sharedError &&
     (noAccountsSelected || txQuery.data !== undefined);
   const categoryQueriesLoading =
-    (tab === 'kategorien' || tab === 'kategorieverlauf' || tab === 'regelcluster') &&
+    (tab === 'kategorien' ||
+      tab === 'kategorieverlauf' ||
+      tab === 'regelcluster' ||
+      tab === 'ausgaben_sunburst') &&
     categoryQueries.some((q) => q.isLoading);
   const firstCategoryQueryError = categoryQueries.find((q) => q.isError)?.error;
-  const rulesQueriesLoading = tab === 'regelcluster' && rulesQueries.some((q) => q.isLoading);
+  const rulesQueriesLoading =
+    (tab === 'regelcluster' || tab === 'ausgaben_sunburst') && rulesQueries.some((q) => q.isLoading);
   const firstRulesQueryError = rulesQueries.find((q) => q.isError)?.error;
 
   const mergedCategoryRoots = useMemo(() => {
@@ -1825,6 +1923,58 @@ export default function Analyses() {
     out.sort((a, b) => b.id - a.id);
     return out;
   }, [rulesQueries]);
+
+  const categoryNodeById = useMemo(
+    () => buildCategoryNodeByIdMap(mergedCategoryRoots),
+    [mergedCategoryRoots],
+  );
+
+  const rootColorByCategoryRootName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of mergedCategoryRoots) {
+      const hex = r.effective_color_hex?.trim();
+      if (hex && !m.has(r.name)) m.set(r.name, hex);
+    }
+    return m;
+  }, [mergedCategoryRoots]);
+
+  const expenseSunburstSeriesData = useMemo(() => {
+    const rules = allRulesSorted;
+    const txs = analysisTransactions.filter((t) => Number(t.amount) < 0);
+    if (!txs.length) return [] as ExpenseSunburstDatum[];
+    return buildExpenseRuleSunburstSeries(
+      txs,
+      categoryNodeById,
+      rules,
+      rootColorByCategoryRootName,
+      piePalette,
+    );
+  }, [analysisTransactions, categoryNodeById, allRulesSorted, rootColorByCategoryRootName, piePalette]);
+
+  const expenseSunburstSelectionTitle = useMemo(() => {
+    const sel = expenseSunburstSelection;
+    if (!sel) return '';
+    if (sel.depth === 1) return `Hauptkategorie „${sel.root}“`;
+    if (sel.depth === 2) return `„${sel.root}“ › „${sel.sub}“`;
+    return `„${sel.root}“ › „${sel.sub}“ › Regel „${sel.rule}“`;
+  }, [expenseSunburstSelection]);
+
+  const transactionsForExpenseSunburstSelection = useMemo(() => {
+    if (!expenseSunburstSelection) return [];
+    const rules = allRulesSorted;
+    const sel = expenseSunburstSelection;
+    return analysisTransactions
+      .filter((t) => {
+        if (Number(t.amount) >= 0) return false;
+        const { root, sub } = resolveCategoryRootAndSub(t.category_id, categoryNodeById);
+        const { label: ruleLabel } = displayNameClusterForTransaction(t, rules);
+        if (sel.depth === 1) return root === sel.root;
+        if (sel.depth === 2) return root === sel.root && sub === sel.sub;
+        return root === sel.root && sub === sel.sub && ruleLabel === sel.rule;
+      })
+      .slice()
+      .sort((a, b) => b.id - a.id);
+  }, [analysisTransactions, expenseSunburstSelection, categoryNodeById, allRulesSorted]);
 
   const subcategoryPickOptions = useMemo(
     () => flattenSubcategoryPickOptionsWithMeta(mergedCategoryRoots),
@@ -2368,7 +2518,8 @@ export default function Analyses() {
         <Typography color="text.secondary" variant="body2">
           Diagramme zu Buchungen und Kategorien. Tagesbilanz: kumulierter Verlauf. Kategorien: Torten für Einnahmen
           und Ausgaben. Kategorieverlauf: gestapelte Flächen je Kategorie. Anzeigeregeln: Ausgaben einer Unterkategorie
-          nach Zuordnungsregel-Anzeigenamen gruppiert (Balken + Zeitverlauf).
+          nach Zuordnungsregel-Anzeigenamen gruppiert (Balken + Zeitverlauf). Ausgaben-Sunburst: drei Ebenen
+          (Hauptkategorie → Unterkategorie → Regel) als Ringdiagramm.
         </Typography>
       </Box>
 
@@ -2384,6 +2535,7 @@ export default function Analyses() {
         <Tab value="kategorien" label="Kategorien" />
         <Tab value="kategorieverlauf" label="Kategorieverlauf" />
         <Tab value="regelcluster" label="Anzeigeregeln" />
+        <Tab value="ausgaben_sunburst" label="Ausgaben-Sunburst" />
         <Tab value="geldfluss" label="Geldfluss" />
       </Tabs>
 
@@ -3286,6 +3438,73 @@ export default function Analyses() {
               />
             </Paper>
           ) : null}
+        </>
+      ) : tab === 'ausgaben_sunburst' ? (
+        <>
+          {firstCategoryQueryError ? (
+            <Alert severity="warning" sx={{ mb: 1 }}>
+              Kategorien konnten nicht vollständig geladen werden: {apiErrorMessage(firstCategoryQueryError)}. Namen
+              fehlen ggf. in der Auswahl.
+            </Alert>
+          ) : null}
+          {firstRulesQueryError ? (
+            <Alert severity="warning" sx={{ mb: 1 }}>
+              Zuordnungsregeln konnten nicht geladen werden: {apiErrorMessage(firstRulesQueryError)}.
+            </Alert>
+          ) : null}
+          {!analysisTransactions.length ? (
+            <Alert severity="info">Keine Buchungen im Zeitraum.</Alert>
+          ) : (
+            <Stack spacing={2}>
+              <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                  <strong>Sunburst</strong> der <strong>Ausgaben</strong> (negative Beträge, gleicher Konten- und
+                  Umbuchungsfilter wie oben): von innen nach außen <strong>Hauptkategorie</strong> →{' '}
+                  <strong>Unterkategorie</strong> (direktes Kind der Wurzel im Kategoriebaum) →{' '}
+                  <strong>Anzeigename</strong> der ersten passenden Zuordnungsregel wie bei „Anzeigeregeln“.{' '}
+                  <strong>Segment anklicken</strong>, um die Buchungen darunter zu filtern.
+                </Typography>
+                {categoryQueriesLoading || rulesQueriesLoading ? (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                    Kategorien und Regeln werden geladen…
+                  </Typography>
+                ) : null}
+              </Paper>
+              {!expenseSunburstSeriesData.length ? (
+                <Alert severity="info">Keine Ausgaben im gewählten Zeitraum (nach Filter).</Alert>
+              ) : (
+                <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                  <Box sx={{ width: '100%', maxWidth: 900, mx: 'auto' }}>
+                    <ExpenseRuleSunburstChart
+                      data={expenseSunburstSeriesData}
+                      height={isXs ? 420 : 520}
+                      currency={defaultCurrency}
+                      theme={theme}
+                      onSelectPath={setExpenseSunburstSelection}
+                    />
+                  </Box>
+                </Paper>
+              )}
+              {expenseSunburstSelection && sharedDataReady && analysisTransactions.length ? (
+                <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
+                    <Typography variant="subtitle1" fontWeight={600}>
+                      Buchungen: Ausgaben · {expenseSunburstSelectionTitle} · {from}–{to}
+                    </Typography>
+                    <Button size="small" variant="outlined" onClick={() => setExpenseSunburstSelection(null)}>
+                      Auswahl aufheben
+                    </Button>
+                  </Stack>
+                  <TransactionBookingsTable
+                    rows={transactionsForExpenseSunburstSelection}
+                    accounts={accounts}
+                    emptyMessage="Keine Buchungen für diese Auswahl (im gewählten Filter)."
+                    hideInlineHint
+                  />
+                </Paper>
+              ) : null}
+            </Stack>
+          )}
         </>
       ) : (
         <>

@@ -206,9 +206,10 @@ async def dayzero_meltdown_for_account(
         account=acc,
         household_id=int(acc.account_group.household_id),
     )
-    rule_booking = (
-        str(tx_match.amount.quantize(Decimal("0.01"))) if tx_match is not None else None
-    )
+    rule_booking = None
+    if tx_match is not None:
+        rb = tx_match.amount.quantize(Decimal("0.01")) + inputs.outgoing_internal_transfer_adjustment
+        rule_booking = str(rb.quantize(Decimal("0.01")))
     return DayZeroMeltdownOut(
         bank_account_id=acc.id,
         tag_zero_date=acc.day_zero_date,

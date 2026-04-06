@@ -45,6 +45,8 @@ class DayZeroInputs:
     start_balance: Decimal
     #: Kontostand unmittelbar nach der Tag-Null-Regel-Buchung (None → nicht ermittelbar).
     tag_zero_konto_after_rule: Optional[Decimal] = None
+    #: Summe der Beträge ausgehender Umbuchungen im Meltdown-Zeitraum (negativ oder 0); in Start-Saldi eingerechnet.
+    outgoing_internal_transfer_adjustment: Decimal = Decimal("0")
 
 
 async def _household_id_for_bank_account(session: AsyncSession, account: BankAccount) -> int:
@@ -218,6 +220,7 @@ async def compute_dayzero_meltdown_for_account(
                 currency=account.currency,
                 start_balance=Decimal("0"),
                 tag_zero_konto_after_rule=None,
+                outgoing_internal_transfer_adjustment=Decimal("0"),
             ),
             [],
         )
@@ -296,9 +299,41 @@ async def compute_dayzero_meltdown_for_account(
             txs=txs,
         )
 
+    transfer_ids = await _transfer_tx_ids_for_account(
+        session,
+        account.id,
+        from_day=start,
+        to_day_exclusive=end_exclusive,
+    )
+    out_adj = Decimal("0")
+    for tx in txs:
+        if not (start <= tx.booking_date < end_exclusive):
+            continue
+        if tx.id not in transfer_ids:
+            continue
+        amt = Decimal(str(tx.amount))
+        if amt < 0:
+            out_adj += amt
+
+    # Ausgehende Umbuchungen: Start-Saldo + Tag-Null-Konto nach unten korrigieren; Tagesnetto für
+    # die Ist-Saldo-Linie ohne erneutes Abziehen am Umbuchungstag (kein Doppel-Abzug im Diagramm).
+    if out_adj != 0:
+        if tag_zero_konto_after_rule is not None:
+            tag_zero_konto_after_rule = (tag_zero_konto_after_rule + out_adj).quantize(Decimal("0.01"))
+        start_balance = (start_balance + out_adj).quantize(Decimal("0.01"))
+
+    net_by_day_balance: dict[date, Decimal] = {d: net_by_day[d] for d in days}
+    for tx in txs:
+        bd = tx.booking_date
+        if bd not in net_by_day_balance:
+            continue
+        amt = Decimal(str(tx.amount))
+        if tx.id in transfer_ids and amt < 0:
+            net_by_day_balance[bd] -= amt
+
     logger.info(
         "DayZero[%s] debug: tag_zero_date=%s anchor_day=%s "
-        "anchor_balance=%s start_balance=%s "
+        "anchor_balance=%s start_balance=%s out_internal_transfer_adj=%s "
         "latest_snapshot_balance=%s latest_snapshot_recorded_at=%s "
         "rule_tx_id=%s rule_amount=%s rule_booking_date=%s rule_imported_at=%s "
         "tag_zero_konto_after_rule=%s",
@@ -307,6 +342,7 @@ async def compute_dayzero_meltdown_for_account(
         anchor_day.isoformat(),
         str(anchor_balance),
         str(start_balance),
+        str(out_adj),
         str(getattr(latest_snapshot, "balance", None)) if latest_snapshot is not None else None,
         getattr(latest_snapshot, "recorded_at", None).isoformat()
         if latest_snapshot is not None and latest_snapshot.recorded_at is not None
@@ -323,12 +359,6 @@ async def compute_dayzero_meltdown_for_account(
     )
 
     # Ausgaben/Netto ohne Transfers.
-    transfer_ids = await _transfer_tx_ids_for_account(
-        session,
-        account.id,
-        from_day=start,
-        to_day_exclusive=end_exclusive,
-    )
     net_excl_transfers_by_day: dict[date, Decimal] = {d: Decimal("0") for d in days}
     spend_by_day: dict[date, Decimal] = {d: Decimal("0") for d in days}
     for tx in txs:
@@ -350,7 +380,7 @@ async def compute_dayzero_meltdown_for_account(
     running_balance = start_balance
     for i, d in enumerate(days):
         if i > 0:
-            running_balance += net_by_day.get(d, Decimal("0"))
+            running_balance += net_by_day_balance.get(d, Decimal("0"))
         bal_actual = running_balance
         bal_target = (start_balance * (Decimal(1) - (Decimal(i) / Decimal(denom)))) if denom else Decimal("0")
         # Dynamische Tagesrate: Restbudget / verbleibende Tage inkl. heute.
@@ -377,6 +407,7 @@ async def compute_dayzero_meltdown_for_account(
             currency=account.currency,
             start_balance=start_balance,
             tag_zero_konto_after_rule=tag_zero_konto_after_rule,
+            outgoing_internal_transfer_adjustment=out_adj,
         ),
         out,
     )

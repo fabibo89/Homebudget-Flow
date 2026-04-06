@@ -686,6 +686,17 @@ export type DayZeroMeltdownDay = {
   remaining: string;
 };
 
+export type DayZeroMeltdownBookingRef = {
+  id: number;
+  booking_date: string;
+  amount: string;
+  description: string;
+  counterparty_name?: string | null;
+  transfer_target_bank_account_id?: number | null;
+  contract_id?: number | null;
+  contract_label?: string | null;
+};
+
 export type DayZeroMeltdownOut = {
   bank_account_id: number;
   tag_zero_date: string;
@@ -693,10 +704,16 @@ export type DayZeroMeltdownOut = {
   tag_zero_amount?: string | null;
   /** Betrag der neuesten Buchung, die der Tag-Null-Regel entspricht. */
   tag_zero_rule_booking_amount?: string | null;
+  /** Meltdown-Start (Anzeige), inkl. Umbuchungs-Anpassung. */
+  meltdown_start_amount?: string | null;
+  /** Ob der Tag-Null-Saldo die Regel-Buchung schon enthält (Snapshot-Heuristik). */
+  tag_zero_saldo_includes_rule_booking?: boolean | null;
   period_start: string;
   period_end_exclusive: string;
   currency: string;
   days: DayZeroMeltdownDay[];
+  transfer_bookings: DayZeroMeltdownBookingRef[];
+  contract_bookings: DayZeroMeltdownBookingRef[];
 };
 
 export async function fetchDayZeroMeltdown(bankAccountId: number, months = 1): Promise<DayZeroMeltdownOut> {

@@ -6,6 +6,22 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class DayZeroMeltdownBookingRef(BaseModel):
+    """Kompakte Buchung für Day-Zero-Transparenz (Umbuchung / Vertrag)."""
+
+    id: int
+    booking_date: date
+    amount: str
+    description: str = ""
+    counterparty_name: Optional[str] = None
+    transfer_target_bank_account_id: Optional[int] = Field(
+        default=None,
+        description="Bei Umbuchung: Zielkonto-ID, sonst null.",
+    )
+    contract_id: Optional[int] = None
+    contract_label: Optional[str] = None
+
+
 class DayZeroMeltdownDay(BaseModel):
     day: str = Field(..., description="Kalendertag YYYY-MM-DD (APP_TIMEZONE).")
 
@@ -41,10 +57,28 @@ class DayZeroMeltdownOut(BaseModel):
         default=None,
         description="Betrag der neuesten Buchung, die der Tag-Null-Kontoregel entspricht.",
     )
+    #: Expliziter Meltdown-Start (Regel-Buchung inkl. interne Umbuchungs-Anpassung); gleiche Größe wie tag_zero_rule_booking_amount nach Ausgleich.
+    meltdown_start_amount: Optional[str] = Field(
+        default=None,
+        description="Meltdown-Startwert (Anzeige): Regel-Buchungsbetrag zzgl. outgoing_internal_transfer_adjustment.",
+    )
+    #: Ob der für ``tag_zero_amount`` genutzte Saldo (v. a. Snapshot) die Tag-Null-Regel-Buchung schon enthält; None = kein Snapshot / nicht anwendbar.
+    tag_zero_saldo_includes_rule_booking: Optional[bool] = Field(
+        default=None,
+        description="True: Snapshot-Saldo enthält Regel-Buchung (Heuristik). False: Betrag wurde nachgerechnet. None: Rückrechnung aus Buchungen oder kein Regel-Tx am Tag.",
+    )
     period_start: date
     period_end_exclusive: date
     currency: str
     days: list[DayZeroMeltdownDay]
+    transfer_bookings: list[DayZeroMeltdownBookingRef] = Field(
+        default_factory=list,
+        description="Alle im Meltdown-Zeitraum als Umbuchung erkannten Buchungen auf diesem Konto.",
+    )
+    contract_bookings: list[DayZeroMeltdownBookingRef] = Field(
+        default_factory=list,
+        description="Alle Buchungen im Zeitraum mit Vertrags-Verknüpfung (contract_id).",
+    )
 
 
 class HaDayZeroAccountToday(BaseModel):

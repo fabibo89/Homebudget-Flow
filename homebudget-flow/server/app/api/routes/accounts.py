@@ -16,6 +16,7 @@ from app.db.models import (
     BankAccountBalanceSnapshot,
     BankCredential,
     CategoryRule,
+    Transaction,
 )
 from app.db.session import get_session
 from app.schemas.balance_snapshot import BalanceSnapshotOut, BalanceSnapshotUpdate, balance_snapshot_to_out
@@ -27,10 +28,28 @@ from app.services.bank_account_provision import normalize_iban
 from app.services.day_zero_refresh import refresh_day_zero_for_bank_account
 from app.schemas.category_rule_conditions import conditions_to_json, parse_conditions_json
 from app.services.tag_zero_rule import apply_tag_zero_rule_for_account, find_tag_zero_matching_transaction
-from app.services.dayzero_meltdown import compute_dayzero_meltdown_for_account
-from app.schemas.dayzero_meltdown import DayZeroMeltdownDay, DayZeroMeltdownOut
+from app.services.dayzero_meltdown import (
+    compute_dayzero_meltdown_for_account,
+    list_contract_transactions_in_meltdown_period,
+    list_transfer_transactions_in_meltdown_period,
+)
+from app.schemas.dayzero_meltdown import DayZeroMeltdownBookingRef, DayZeroMeltdownDay, DayZeroMeltdownOut
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+
+def _day_zero_booking_ref(tx: Transaction) -> DayZeroMeltdownBookingRef:
+    c = getattr(tx, "contract", None)
+    return DayZeroMeltdownBookingRef(
+        id=int(tx.id),
+        booking_date=tx.booking_date,
+        amount=str(Decimal(str(tx.amount)).quantize(Decimal("0.01"))),
+        description=(tx.description or "")[:4000],
+        counterparty_name=tx.counterparty_name or tx.counterparty,
+        transfer_target_bank_account_id=tx.transfer_target_bank_account_id,
+        contract_id=tx.contract_id,
+        contract_label=c.label if c is not None else None,
+    )
 
 
 @router.get("", response_model=list[BankAccountOut])
@@ -210,15 +229,31 @@ async def dayzero_meltdown_for_account(
     if tx_match is not None:
         rb = tx_match.amount.quantize(Decimal("0.01")) + inputs.outgoing_internal_transfer_adjustment
         rule_booking = str(rb.quantize(Decimal("0.01")))
+    tx_transfer = await list_transfer_transactions_in_meltdown_period(
+        session,
+        bank_account_id=acc.id,
+        start=inputs.start,
+        end_exclusive=inputs.end_exclusive,
+    )
+    tx_contract = await list_contract_transactions_in_meltdown_period(
+        session,
+        bank_account_id=acc.id,
+        start=inputs.start,
+        end_exclusive=inputs.end_exclusive,
+    )
     return DayZeroMeltdownOut(
         bank_account_id=acc.id,
         tag_zero_date=acc.day_zero_date,
         tag_zero_amount=str(sb),
         tag_zero_rule_booking_amount=rule_booking,
+        meltdown_start_amount=rule_booking,
+        tag_zero_saldo_includes_rule_booking=inputs.tag_zero_balance_includes_rule_booking,
         period_start=inputs.start,
         period_end_exclusive=inputs.end_exclusive,
         currency=inputs.currency,
         days=[DayZeroMeltdownDay(**d) for d in days],
+        transfer_bookings=[_day_zero_booking_ref(t) for t in tx_transfer],
+        contract_bookings=[_day_zero_booking_ref(t) for t in tx_contract],
     )
 
 

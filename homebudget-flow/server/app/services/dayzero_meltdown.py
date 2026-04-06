@@ -8,6 +8,7 @@ from typing import Iterable, Optional
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.db.models import AccountGroup, BankAccount, BankAccountBalanceSnapshot, Transaction, TransferPair
 from app.services.tag_zero_rule import bank_account_has_tag_zero_rule, find_tag_zero_matching_transaction
@@ -47,6 +48,8 @@ class DayZeroInputs:
     tag_zero_konto_after_rule: Optional[Decimal] = None
     #: Summe der Beträge ausgehender Umbuchungen im Meltdown-Zeitraum (negativ oder 0); in Start-Saldi eingerechnet.
     outgoing_internal_transfer_adjustment: Decimal = Decimal("0")
+    #: Ob der verwendete Tag-Null-Saldo (Snapshot) die Regel-Buchung schon enthält; None = nicht aus Snapshot / unklar.
+    tag_zero_balance_includes_rule_booking: Optional[bool] = None
 
 
 async def _household_id_for_bank_account(session: AsyncSession, account: BankAccount) -> int:
@@ -221,6 +224,7 @@ async def compute_dayzero_meltdown_for_account(
                 start_balance=Decimal("0"),
                 tag_zero_konto_after_rule=None,
                 outgoing_internal_transfer_adjustment=Decimal("0"),
+                tag_zero_balance_includes_rule_booking=None,
             ),
             [],
         )
@@ -267,6 +271,7 @@ async def compute_dayzero_meltdown_for_account(
     # Priorität: Wenn es für den Tag Null einen expliziten Saldo-Snapshot gibt, nutze diesen.
     # Wenn der Snapshot die Tag-Null-Regelbuchung noch nicht enthält, addieren wir den Regelbetrag nachträglich.
     tag_zero_konto_after_rule: Optional[Decimal] = None
+    tag_zero_balance_includes_rule_booking: Optional[bool] = None
     latest_snapshot = await _latest_balance_snapshot_for_day(session, account=account, day=start)
     if latest_snapshot is not None:
         hid = await _household_id_for_bank_account(session, account)
@@ -283,6 +288,7 @@ async def compute_dayzero_meltdown_for_account(
                 # den Snapshot so, als ob er die Regelbuchung bereits enthält.
                 delta_s = abs((latest_snapshot.recorded_at - rule_tx.imported_at).total_seconds())
                 recorded_ok = latest_snapshot.recorded_at >= rule_tx.imported_at or delta_s < 30
+            tag_zero_balance_includes_rule_booking = recorded_ok
             tag_zero_konto_after_rule = (
                 base if recorded_ok else (base + Decimal(str(rule_tx.amount))).quantize(Decimal("0.01"))
             )
@@ -298,6 +304,7 @@ async def compute_dayzero_meltdown_for_account(
             opening_balance=start_balance,
             txs=txs,
         )
+        tag_zero_balance_includes_rule_booking = True
 
     transfer_ids = await _transfer_tx_ids_for_account(
         session,
@@ -408,9 +415,57 @@ async def compute_dayzero_meltdown_for_account(
             start_balance=start_balance,
             tag_zero_konto_after_rule=tag_zero_konto_after_rule,
             outgoing_internal_transfer_adjustment=out_adj,
+            tag_zero_balance_includes_rule_booking=tag_zero_balance_includes_rule_booking,
         ),
         out,
     )
+
+
+async def list_transfer_transactions_in_meltdown_period(
+    session: AsyncSession,
+    *,
+    bank_account_id: int,
+    start: date,
+    end_exclusive: date,
+) -> list[Transaction]:
+    """Alle Buchungen auf dem Konto im Zeitraum, die als Umbuchung markiert sind (TransferPair / Zielkonto)."""
+    transfer_ids = await _transfer_tx_ids_for_account(
+        session,
+        bank_account_id,
+        from_day=start,
+        to_day_exclusive=end_exclusive,
+    )
+    if not transfer_ids:
+        return []
+    r = await session.execute(
+        select(Transaction)
+        .where(Transaction.id.in_(transfer_ids))
+        .options(joinedload(Transaction.contract))
+        .order_by(Transaction.booking_date.asc(), Transaction.id.asc()),
+    )
+    return list(r.unique().scalars().all())
+
+
+async def list_contract_transactions_in_meltdown_period(
+    session: AsyncSession,
+    *,
+    bank_account_id: int,
+    start: date,
+    end_exclusive: date,
+) -> list[Transaction]:
+    """Buchungen im Zeitraum mit gesetztem ``contract_id`` (bestätigter Vertrag)."""
+    r = await session.execute(
+        select(Transaction)
+        .where(
+            Transaction.bank_account_id == bank_account_id,
+            Transaction.booking_date >= start,
+            Transaction.booking_date < end_exclusive,
+            Transaction.contract_id.isnot(None),
+        )
+        .options(joinedload(Transaction.contract))
+        .order_by(Transaction.booking_date.asc(), Transaction.id.asc()),
+    )
+    return list(r.unique().scalars().all())
 
 
 def eligible_accounts_with_tag_zero_rule(accounts: Iterable[BankAccount]) -> list[BankAccount]:

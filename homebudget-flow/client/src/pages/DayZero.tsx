@@ -1012,6 +1012,120 @@ export default function DayZero() {
                   ) : null}
                 </Paper>
               ) : null}
+              {meltdownQ.data ? (
+                <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+                  <Typography variant="subtitle1" fontWeight={700} gutterBottom>
+                    Grundlagen &amp; Buchungen im Zeitraum
+                  </Typography>
+                  <Stack spacing={2}>
+                    <Stack spacing={0.75}>
+                      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.5 }}>
+                        <strong>Saldo zum Day Zero</strong> (Ausgangspunkt für die Konto-Kurve):{' '}
+                        <strong>
+                          {meltdownQ.data.tag_zero_amount != null && String(meltdownQ.data.tag_zero_amount).trim() !== ''
+                            ? formatMoney(String(meltdownQ.data.tag_zero_amount), meltdownQ.data.currency)
+                            : '—'}
+                        </strong>
+                        .{' '}
+                        {meltdownQ.data.tag_zero_saldo_includes_rule_booking === true
+                          ? 'Der verwendete Saldo-Snapshot wurde nach der Tag-Null-Regel-Buchung erfasst — die Regel-Buchung ist im Saldo enthalten.'
+                          : meltdownQ.data.tag_zero_saldo_includes_rule_booking === false
+                            ? 'Der Snapshot lag vor der Regel-Buchung; der Regelbetrag wurde zum Saldo addiert (siehe Server-Logik).'
+                            : 'Saldo aus Buchungsrekonstruktion oder ohne Snapshot-Zuordnung — die Tag-Null-Regel ist in der Berechnung berücksichtigt.'}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.5 }}>
+                        <strong>Meltdown-Start</strong> (Anzeige, inkl. Anpassung ausgehender Umbuchungen):{' '}
+                        <strong>
+                          {meltdownQ.data.meltdown_start_amount != null &&
+                          String(meltdownQ.data.meltdown_start_amount).trim() !== ''
+                            ? formatMoney(String(meltdownQ.data.meltdown_start_amount), meltdownQ.data.currency)
+                            : '—'}
+                        </strong>
+                      </Typography>
+                    </Stack>
+                    <Stack spacing={1}>
+                      <Typography variant="body2" fontWeight={600}>
+                        Umbuchungen (im Zeitraum, als interne Umbuchung erkannt)
+                      </Typography>
+                      {(meltdownQ.data.transfer_bookings ?? []).length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Keine.
+                        </Typography>
+                      ) : (
+                        <TableContainer>
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Datum</TableCell>
+                                <TableCell align="right">Betrag</TableCell>
+                                <TableCell>Gegenpart / Text</TableCell>
+                                <TableCell>Zielkonto</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {(meltdownQ.data.transfer_bookings ?? []).map((r) => (
+                                <TableRow key={r.id}>
+                                  <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
+                                  <TableCell align="right">{formatMoney(r.amount, meltdownQ.data.currency)}</TableCell>
+                                  <TableCell sx={{ maxWidth: 280 }}>
+                                    {(r.counterparty_name || '').trim() || '—'}
+                                    {r.description?.trim() ? (
+                                      <Typography component="span" variant="caption" color="text.secondary" display="block">
+                                        {r.description.slice(0, 120)}
+                                        {r.description.length > 120 ? '…' : ''}
+                                      </Typography>
+                                    ) : null}
+                                  </TableCell>
+                                  <TableCell>
+                                    {r.transfer_target_bank_account_id != null
+                                      ? `#${r.transfer_target_bank_account_id}`
+                                      : '—'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      )}
+                    </Stack>
+                    <Stack spacing={1}>
+                      <Typography variant="body2" fontWeight={600}>
+                        Vertrags-Buchungen (contract_id im Zeitraum)
+                      </Typography>
+                      {(meltdownQ.data.contract_bookings ?? []).length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Keine.
+                        </Typography>
+                      ) : (
+                        <TableContainer>
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Datum</TableCell>
+                                <TableCell align="right">Betrag</TableCell>
+                                <TableCell>Vertrag</TableCell>
+                                <TableCell>Gegenpart / Text</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {(meltdownQ.data.contract_bookings ?? []).map((r) => (
+                                <TableRow key={r.id}>
+                                  <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
+                                  <TableCell align="right">{formatMoney(r.amount, meltdownQ.data.currency)}</TableCell>
+                                  <TableCell>{r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')}</TableCell>
+                                  <TableCell sx={{ maxWidth: 280 }}>
+                                    {(r.counterparty_name || '').trim() || '—'}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      )}
+                    </Stack>
+                  </Stack>
+                </Paper>
+              ) : null}
               <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
                 <Typography variant="subtitle1" fontWeight={700} gutterBottom>
                   Saldo Ist/Soll

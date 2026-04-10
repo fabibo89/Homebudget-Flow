@@ -78,7 +78,8 @@ export default function Transfers() {
           Umbuchungen
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Gepaarte Ausgangs- und Eingangsbuchungen innerhalb des Haushalts.
+          Je Zeile eine interne Umbuchung (Von → Nach). In kontobezogenen Auswertungen (z. B. Tag Null) erscheint nur
+          die Buchung auf dem jeweiligen Konto — hier die Zuordnung beider Konten in einer Zeile.
         </Typography>
       </Box>
 
@@ -164,12 +165,14 @@ export default function Transfers() {
                   </TableCell>
                   <TableCell align="right">{formatMoney(transferAmount, outTx.currency)}</TableCell>
                   <TableCell>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                      OUT #{outTx.id} · {formatDateTime(outTx.imported_at)}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                      IN #{inTx.id} · {formatDateTime(inTx.imported_at)}
-                    </Typography>
+                    <Tooltip
+                      title={`Ausgang #${outTx.id} (${formatDateTime(outTx.imported_at)}) · Eingang #${inTx.id} (${formatDateTime(inTx.imported_at)})`}
+                      enterDelay={400}
+                    >
+                      <Typography variant="caption" color="text.secondary" sx={{ cursor: 'default' }}>
+                        Paar #{p.id} · Buch-ID Ausgang #{outTx.id}
+                      </Typography>
+                    </Tooltip>
                   </TableCell>
                 </TableRow>
               );

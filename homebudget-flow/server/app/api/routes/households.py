@@ -568,20 +568,25 @@ async def create_bank_account(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account group not found")
     if not await user_can_access_account_group(session, user.id, g.id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this account group")
-    cr = await session.get(BankCredential, body.credential_id)
-    if cr is None or cr.user_id != user.id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Ungültiger FinTS-Zugang.")
-    cred_id = cr.id
+    cred_id: int | None = None
+    if body.credential_id is not None:
+        cr = await session.get(BankCredential, body.credential_id)
+        if cr is None or cr.user_id != user.id:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Ungültiger FinTS-Zugang.")
+        cred_id = cr.id
     iban_norm = normalize_iban(body.iban)
     if len(iban_norm) < 15:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             "Ungültige IBAN (mindestens 15 Zeichen nach Normalisierung).",
         )
+    prov = (body.provider or "").strip() or "comdirect"
+    if cred_id is None:
+        prov = (body.provider or "").strip() or "manual"
     acc = BankAccount(
         account_group_id=body.account_group_id,
         credential_id=cred_id,
-        provider=body.provider,
+        provider=prov,
         name=body.name,
         iban=iban_norm,
         currency=body.currency,

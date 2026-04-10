@@ -107,14 +107,13 @@ export default function BankAccountsSettings() {
   const updateMut = useMutation({
     mutationFn: () => {
       if (!editing) throw new Error('Kein Konto');
-      if (form.credential_id === '') throw new Error('FinTS-Zugang ist erforderlich.');
       return updateBankAccount(editing.id, {
         account_group_id: form.account_group_id,
         name: form.name.trim(),
         iban: form.iban.replace(/\s/g, '').trim(),
         currency: form.currency.trim().toUpperCase(),
         provider: form.provider.trim(),
-        credential_id: form.credential_id,
+        credential_id: form.credential_id === '' ? null : form.credential_id,
       });
     },
     onSuccess: () => {
@@ -162,7 +161,7 @@ export default function BankAccountsSettings() {
       iban: a.iban,
       currency: a.currency,
       provider: a.provider,
-      credential_id: a.credential_id,
+      credential_id: a.credential_id ?? '',
     });
     setFormError('');
     setTagZeroError('');
@@ -220,12 +219,12 @@ export default function BankAccountsSettings() {
           Bankkonten
         </Typography>
         <Typography color="text.secondary" variant="body2">
-          Alle Konten, die in der Übersicht und beim Sync verwendet werden. Neue Konten entstehen u. a. über FinTS
-          (Bankzugang) oder unter{' '}
+          Alle Konten in der Übersicht. Mit FinTS werden sie synchronisiert; manuelle Konten ohne Bankzugang kannst du in
+          den Einstellungen oder unter{' '}
           <Link component={RouterLink} to="/settings/setup" underline="hover">
             Einrichtung
-          </Link>
-          .
+          </Link>{' '}
+          anlegen.
         </Typography>
       </Box>
 
@@ -236,7 +235,10 @@ export default function BankAccountsSettings() {
           <CircularProgress />
         </Box>
       ) : rows.length === 0 ? (
-        <Alert severity="info">Noch keine Bankkonten – zuerst FinTS-Zugang speichern oder unter Einrichtung anlegen.</Alert>
+        <Alert severity="info">
+          Noch keine Bankkonten – unter Einrichtung anlegen (mit oder ohne FinTS). Ohne FinTS: in der Konten-Maske „Kein
+          FinTS“ wählen; es gibt dann keinen automatischen Abruf.
+        </Alert>
       ) : (
         <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider', overflowX: 'auto' }}>
           <Table size="small" sx={{ minWidth: 760 }}>
@@ -413,7 +415,7 @@ export default function BankAccountsSettings() {
               value={form.provider}
               onChange={(e) => setForm((f) => ({ ...f, provider: e.target.value }))}
             />
-            <FormControl fullWidth required>
+            <FormControl fullWidth>
               <InputLabel id="cred-edit">FinTS-Zugang</InputLabel>
               <Select
                 labelId="cred-edit"
@@ -421,9 +423,17 @@ export default function BankAccountsSettings() {
                 value={form.credential_id === '' ? '' : form.credential_id}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setForm((f) => ({ ...f, credential_id: v === '' ? '' : Number(v) }));
+                  setForm((f) => ({
+                    ...f,
+                    credential_id: v === '' ? '' : Number(v),
+                    provider:
+                      v === '' && (f.provider === 'comdirect' || !f.provider.trim())
+                        ? 'manual'
+                        : f.provider,
+                  }));
                 }}
               >
+                <MenuItem value="">Kein FinTS (manuell, kein Sync)</MenuItem>
                 {creds.map((c) => (
                   <MenuItem key={c.id} value={c.id}>
                     {c.provider} · BLZ {c.fints_blz}
@@ -442,13 +452,7 @@ export default function BankAccountsSettings() {
           </Button>
           <Button
             variant="contained"
-            disabled={
-              updateMut.isPending ||
-              !form.name.trim() ||
-              !form.iban.trim() ||
-              form.credential_id === '' ||
-              creds.length === 0
-            }
+            disabled={updateMut.isPending || !form.name.trim() || !form.iban.trim()}
             onClick={() => {
               setFormError('');
               updateMut.mutate();

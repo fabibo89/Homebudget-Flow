@@ -114,9 +114,9 @@ class BankAccountCreate(BaseModel):
     )
     name: str
     currency: str = "EUR"
-    credential_id: int = Field(
-        ...,
-        description="FinTS-Zugang dieses Nutzers für Saldo- und Umsatzabruf.",
+    credential_id: int | None = Field(
+        default=None,
+        description="FinTS-Zugang für Sync; fehlt oder null = manuelles Konto ohne Abruf.",
     )
 
 
@@ -172,7 +172,7 @@ def bank_account_to_out(
 
 
 class BankAccountUpdate(BaseModel):
-    """Nur gesetzte Felder ändern. ``credential_id`` kann auf einen anderen FinTS-Zugang desselben Nutzers zeigen, nicht auf null."""
+    """Nur gesetzte Felder ändern. ``credential_id`` null = FinTS trennen (manuelles Konto)."""
 
     account_group_id: Optional[int] = Field(
         default=None,
@@ -184,5 +184,5 @@ class BankAccountUpdate(BaseModel):
     provider: Optional[str] = Field(default=None, min_length=1, max_length=64)
     credential_id: Optional[int] = Field(
         default=None,
-        description="Anderer FinTS-Zugang (gleicher Nutzer); nicht leer setzen.",
+        description="FinTS-Zugang (gleicher Nutzer) oder null für rein manuelles Konto.",
     )

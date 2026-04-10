@@ -25,8 +25,25 @@ class DayZeroMeltdownBookingRef(BaseModel):
 class DayZeroMeltdownDay(BaseModel):
     day: str = Field(..., description="Kalendertag YYYY-MM-DD (APP_TIMEZONE).")
 
-    balance_actual: str = Field(..., description="Ist-Saldo (Betrag als String).")
-    balance_target: str = Field(..., description="Soll-Saldo (linearer Burn-down auf 0).")
+    balance_actual: str = Field(
+        ...,
+        description=(
+            "Meltdown-Ist-Saldo: gleicher Pfad wie konto_balance_actual (Eröffnung, kumulatives Tagesnetto, Regel/Umbuchung)."
+        ),
+    )
+    balance_target: str = Field(..., description="Meltdown-Soll-Saldo (linearer Burn-down auf 0).")
+
+    konto_balance_actual: str = Field(
+        ...,
+        description=(
+            "Konto-Ist: Pfad ab angepasstem Start (+ Regelbetrag, ausgehende Umbuchungen im Verlauf neutralisiert); "
+            "endet am Sync-Saldo."
+        ),
+    )
+    konto_balance_target: str = Field(
+        ...,
+        description="Konto-Soll: lineare Linie von Tagesend-Saldo Tag Null bis 0 über die Periodenlänge.",
+    )
 
     net_actual: str = Field(
         ...,
@@ -48,9 +65,8 @@ class DayZeroMeltdownOut(BaseModel):
     tag_zero_amount: Optional[str] = Field(
         default=None,
         description=(
-            "Kontostand unmittelbar nach der Tag-Null-Regel-Buchung am Tag Null "
-            "(Tageseröffnung + Buchungen desselben Tages bis einschließlich Regel-Tx, Reihenfolge id); "
-            "Fallback: Eröffnungssaldo Tag Null."
+            "Konto-Start: Bank-Rückrechnung bis Tag Null plus Tag-Null-Regelbetrag plus Summe ausgehender Umbuchungen (out_adj); "
+            "entspricht konto_saldo_start_backcalc."
         ),
     )
     tag_zero_rule_booking_amount: Optional[str] = Field(
@@ -78,6 +94,26 @@ class DayZeroMeltdownOut(BaseModel):
     contract_bookings: list[DayZeroMeltdownBookingRef] = Field(
         default_factory=list,
         description="Alle Buchungen im Zeitraum mit Vertrags-Verknüpfung (contract_id).",
+    )
+
+    konto_saldo_ist: str = Field(..., description="Neuester bekannter Bank-Saldo (Sync).")
+    konto_saldo_ist_at: Optional[str] = Field(
+        default=None,
+        description="Zeitpunkt des letzten Saldos (ISO8601, UTC naiv wie in der DB).",
+    )
+    konto_saldo_ledger_day: Optional[date] = Field(
+        default=None,
+        description="Kalendertag des letzten Saldos in APP_TIMEZONE.",
+    )
+    konto_saldo_not_tagesaktuell: bool = Field(
+        ...,
+        description="True, wenn Ledger-Tag vor „heute“ (APP_TIMEZONE) oder kein balance_at.",
+    )
+    konto_saldo_start_backcalc: str = Field(
+        ...,
+        description=(
+            "(Letzter Bank-Saldo minus alle Buchungen bis Ledger-Tag) + Regelbetrag am Tag Null + out_adj (ausgehende Umbuchungen)."
+        ),
     )
 
 

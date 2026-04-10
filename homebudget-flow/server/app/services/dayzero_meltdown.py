@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 from typing import Iterable, Optional
@@ -10,6 +10,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from app.app_time import app_today, get_app_tz
 from app.db.models import AccountGroup, BankAccount, BankAccountBalanceSnapshot, Transaction, TransferPair
 from app.services.tag_zero_rule import bank_account_has_tag_zero_rule, find_tag_zero_matching_transaction
 
@@ -38,6 +39,12 @@ def _date_range(start: date, end_exclusive: date) -> list[date]:
     return out
 
 
+def _utc_naive_to_app_date(dt: datetime) -> date:
+    """DB-Zeitstempel (naiv = UTC) → Kalendertag in APP_TIMEZONE."""
+    aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return aware.astimezone(get_app_tz()).date()
+
+
 @dataclass(frozen=True)
 class DayZeroInputs:
     start: date
@@ -50,6 +57,14 @@ class DayZeroInputs:
     outgoing_internal_transfer_adjustment: Decimal = Decimal("0")
     #: Ob der verwendete Tag-Null-Saldo (Snapshot) die Regel-Buchung schon enthält; None = nicht aus Snapshot / unklar.
     tag_zero_balance_includes_rule_booking: Optional[bool] = None
+    #: Neuester bekannter Bank-Saldo (Konto · Ist).
+    konto_saldo_ist: Decimal = Decimal("0")
+    #: Kalendertag des letzten Saldos in APP_TIMEZONE (aus ``balance_at``).
+    konto_saldo_ledger_day: Optional[date] = None
+    #: True, wenn ``konto_saldo_ledger_day`` vor „heute“ (APP_TIMEZONE) liegt oder kein ``balance_at``.
+    konto_saldo_not_tagesaktuell: bool = True
+    #: Eröffnung vor Buchungen am Tag Null: Ist-Saldo minus Summe aller Nicht-Umbuchungen von Tag Null bis einschließlich Ledger-Tag.
+    konto_saldo_start_backcalc: Decimal = Decimal("0")
 
 
 async def _household_id_for_bank_account(session: AsyncSession, account: BankAccount) -> int:
@@ -113,7 +128,10 @@ async def _transfer_tx_ids_for_account(
     from_day: date,
     to_day_exclusive: date,
 ) -> set[int]:
-    """IDs, die als Umbuchung gelten (TransferPair oder explizites Zielkonto)."""
+    """IDs von Buchungen **auf diesem Konto**, die als Umbuchung gelten (Zielkonto gesetzt und/oder Paar-Leg hier).
+
+    Nur Transaktionen mit ``bank_account_id`` = betrachtetes Konto — nicht die Gegenbuchung auf dem Partnerkonto.
+    """
     r = await session.execute(
         select(Transaction.id)
         .where(
@@ -124,8 +142,8 @@ async def _transfer_tx_ids_for_account(
         )
     )
     out = {int(x[0]) for x in r.all()}
-    rp = await session.execute(
-        select(TransferPair.out_transaction_id, TransferPair.in_transaction_id)
+    r_out_leg = await session.execute(
+        select(TransferPair.out_transaction_id)
         .join(Transaction, Transaction.id == TransferPair.out_transaction_id)
         .where(
             Transaction.bank_account_id == bank_account_id,
@@ -133,11 +151,21 @@ async def _transfer_tx_ids_for_account(
             Transaction.booking_date < to_day_exclusive,
         )
     )
-    for out_id, in_id in rp.all():
-        if out_id is not None:
-            out.add(int(out_id))
-        if in_id is not None:
-            out.add(int(in_id))
+    for (oid,) in r_out_leg.all():
+        if oid is not None:
+            out.add(int(oid))
+    r_in_leg = await session.execute(
+        select(TransferPair.in_transaction_id)
+        .join(Transaction, Transaction.id == TransferPair.in_transaction_id)
+        .where(
+            Transaction.bank_account_id == bank_account_id,
+            Transaction.booking_date >= from_day,
+            Transaction.booking_date < to_day_exclusive,
+        )
+    )
+    for (iid,) in r_in_leg.all():
+        if iid is not None:
+            out.add(int(iid))
     return out
 
 
@@ -216,6 +244,9 @@ async def compute_dayzero_meltdown_for_account(
     end_exclusive = _add_months(start, months)
     days = _date_range(start, end_exclusive)
     if not days:
+        L0 = Decimal(str(account.balance)).quantize(Decimal("0.01"))
+        la0 = getattr(account, "balance_at", None)
+        ld0 = _utc_naive_to_app_date(la0) if la0 is not None else None
         return (
             DayZeroInputs(
                 start=start,
@@ -225,6 +256,10 @@ async def compute_dayzero_meltdown_for_account(
                 tag_zero_konto_after_rule=None,
                 outgoing_internal_transfer_adjustment=Decimal("0"),
                 tag_zero_balance_includes_rule_booking=None,
+                konto_saldo_ist=L0,
+                konto_saldo_ledger_day=ld0,
+                konto_saldo_not_tagesaktuell=True,
+                konto_saldo_start_backcalc=Decimal("0"),
             ),
             [],
         )
@@ -329,15 +364,6 @@ async def compute_dayzero_meltdown_for_account(
             tag_zero_konto_after_rule = (tag_zero_konto_after_rule + out_adj).quantize(Decimal("0.01"))
         start_balance = (start_balance + out_adj).quantize(Decimal("0.01"))
 
-    net_by_day_balance: dict[date, Decimal] = {d: net_by_day[d] for d in days}
-    for tx in txs:
-        bd = tx.booking_date
-        if bd not in net_by_day_balance:
-            continue
-        amt = Decimal(str(tx.amount))
-        if tx.id in transfer_ids and amt < 0:
-            net_by_day_balance[bd] -= amt
-
     logger.info(
         "DayZero[%s] debug: tag_zero_date=%s anchor_day=%s "
         "anchor_balance=%s start_balance=%s out_internal_transfer_adj=%s "
@@ -379,21 +405,89 @@ async def compute_dayzero_meltdown_for_account(
         if amt < 0:
             spend_by_day[bd] += (-amt)
 
+    # --- Konto: Ist = Bank-Saldo; Start = Bank-Rückrechnung + Tag-Null-Regelbetrag + out_adj (ausgehende Umbuchungen) ---
+    L = Decimal(str(account.balance)).quantize(Decimal("0.01"))
+    bal_at = getattr(account, "balance_at", None)
+    ledger_app: Optional[date] = _utc_naive_to_app_date(bal_at) if bal_at is not None else None
+    today_app = app_today()
+    period_last = days[-1]
+    if ledger_app is None:
+        ledger_end = min(period_last, today_app)
+        not_tagesaktuell = True
+    else:
+        ledger_end = min(period_last, max(start, ledger_app))
+        not_tagesaktuell = ledger_app < today_app
+
+    total_ledger_net = Decimal("0")
+    for tx in txs:
+        bd = tx.booking_date
+        if bd < start or bd > ledger_end:
+            continue
+        total_ledger_net += Decimal(str(tx.amount))
+
+    hid_k = await _household_id_for_bank_account(session, account)
+    rule_tx_k = await find_tag_zero_matching_transaction(session, account=account, household_id=hid_k)
+    rule_amt_k = (
+        Decimal(str(rule_tx_k.amount)).quantize(Decimal("0.01"))
+        if rule_tx_k is not None and rule_tx_k.booking_date == start
+        else Decimal("0")
+    )
+
+    konto_bank_opening = (L - total_ledger_net).quantize(Decimal("0.01"))
+    # Wie Meltdown: Regel auf den Start; ausgehende Umbuchungen (Summe out_adj ≤ 0) mindern den effektiven Start.
+    konto_opening_pre_tag_zero = (konto_bank_opening + rule_amt_k + out_adj).quantize(Decimal("0.01"))
+
+    # Tagespfad: volles Bank-Netto, aber Regelbuchung (einmal) und ausgehende Umbuchungen aus dem Saldo-Verlauf heraus,
+    # damit Öffnung + Kumuliertes wieder bei L endet.
+    konto_net_by_day: dict[date, Decimal] = {d: net_by_day[d] for d in days}
+    if rule_amt_k != 0 and rule_tx_k is not None and rule_tx_k.booking_date in konto_net_by_day:
+        konto_net_by_day[rule_tx_k.booking_date] -= rule_amt_k
+    for tx in txs:
+        bd = tx.booking_date
+        if bd < start or bd > ledger_end:
+            continue
+        if tx.id not in transfer_ids:
+            continue
+        amt = Decimal(str(tx.amount))
+        if amt < 0 and bd in konto_net_by_day:
+            konto_net_by_day[bd] -= amt
+
+    # Konto-Ist: erster Punkt = Eröffnung (wie konto_saldo_start_backcalc), danach kumulatives Tagesnetto;
+    # letzter Ledger-Tag = Bank-Saldo L (wenn es mehr als einen Ledger-Tag gibt).
+    konto_eod: dict[date, Decimal] = {}
+    krun = konto_opening_pre_tag_zero
+    last_ld: Optional[date] = None
+    if days:
+        ledger_subset = [d for d in days if d <= ledger_end]
+        if ledger_subset:
+            last_ld = max(ledger_subset)
+    for d in days:
+        if d > ledger_end:
+            konto_eod[d] = L
+            continue
+        krun = (krun + konto_net_by_day.get(d, Decimal("0"))).quantize(Decimal("0.01"))
+        konto_eod[d] = krun.quantize(Decimal("0.01"))
+    if days:
+        konto_eod[days[0]] = konto_opening_pre_tag_zero.quantize(Decimal("0.01"))
+    if last_ld is not None and last_ld != days[0]:
+        konto_eod[last_ld] = L.quantize(Decimal("0.01"))
+    kono_ref = konto_opening_pre_tag_zero
+
     n = len(days)
     denom = max(1, n - 1)
     per_day_fixed = (start_balance / Decimal(denom)) if denom else Decimal("0")
 
     out: list[dict] = []
-    running_balance = start_balance
     for i, d in enumerate(days):
-        if i > 0:
-            running_balance += net_by_day_balance.get(d, Decimal("0"))
-        bal_actual = running_balance
+        # Meltdown · Ist = gleicher Kumulationspfad wie Konto · Ist (Eröffnung, Tag‑Null‑Netto, Regel/Umbuchung).
+        konto_bal = konto_eod[d]
+        bal_actual = konto_bal
         bal_target = (start_balance * (Decimal(1) - (Decimal(i) / Decimal(denom)))) if denom else Decimal("0")
         # Dynamische Tagesrate: Restbudget / verbleibende Tage inkl. heute.
         # Dadurch ist der Wert am letzten Tag nicht 0 (erst außerhalb des Zeitraums).
         days_left = max(0, n - i)
         per_day_dyn = (bal_actual / Decimal(days_left)) if days_left > 0 else Decimal("0")
+        konto_soll = (kono_ref * (Decimal(1) - (Decimal(i) / Decimal(denom)))) if denom else Decimal("0")
         out.append(
             {
                 "day": d.isoformat(),
@@ -404,6 +498,8 @@ async def compute_dayzero_meltdown_for_account(
                 "spend_target_fixed": str(per_day_fixed.quantize(Decimal("0.01"))),
                 "spend_target_dynamic": str(per_day_dyn.quantize(Decimal("0.01"))),
                 "remaining": str(bal_actual.quantize(Decimal("0.01"))),
+                "konto_balance_actual": str(konto_bal.quantize(Decimal("0.01"))),
+                "konto_balance_target": str(konto_soll.quantize(Decimal("0.01"))),
             }
         )
 
@@ -416,6 +512,10 @@ async def compute_dayzero_meltdown_for_account(
             tag_zero_konto_after_rule=tag_zero_konto_after_rule,
             outgoing_internal_transfer_adjustment=out_adj,
             tag_zero_balance_includes_rule_booking=tag_zero_balance_includes_rule_booking,
+            konto_saldo_ist=L,
+            konto_saldo_ledger_day=ledger_app,
+            konto_saldo_not_tagesaktuell=not_tagesaktuell,
+            konto_saldo_start_backcalc=konto_opening_pre_tag_zero,
         ),
         out,
     )

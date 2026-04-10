@@ -210,8 +210,9 @@ class BankAccount(Base):
     __tablename__ = "bank_accounts"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     account_group_id: Mapped[int] = mapped_column(ForeignKey("account_groups.id", ondelete="CASCADE"))
-    credential_id: Mapped[int] = mapped_column(
-        ForeignKey("bank_credentials.id", ondelete="RESTRICT"),
+    credential_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bank_credentials.id", ondelete="SET NULL"),
+        nullable=True,
     )
     provider: Mapped[str] = mapped_column(String(64), index=True)
     iban: Mapped[str] = mapped_column(String(34))
@@ -231,7 +232,7 @@ class BankAccount(Base):
     tag_zero_rule_display_name_override: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     account_group: Mapped[AccountGroup] = relationship(back_populates="bank_accounts")
-    credential: Mapped[BankCredential] = relationship(back_populates="bank_accounts")
+    credential: Mapped[BankCredential | None] = relationship(back_populates="bank_accounts")
     tag_zero_rule_category_rule: Mapped[Optional["CategoryRule"]] = relationship(
         foreign_keys=[tag_zero_rule_category_rule_id],
         lazy="joined",

@@ -514,9 +514,9 @@ export default function TransactionBookingsTable({
                           <EventRepeatIcon fontSize="small" color="primary" />
                         </Tooltip>
                       ) : null}
-                      <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
-                        {formatDate(t.booking_date)}
-                      </Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                      {formatDate(t.booking_date)}
+                    </Typography>
                     </Stack>
                     <Typography
                       sx={{
@@ -611,9 +611,9 @@ export default function TransactionBookingsTable({
                     </Stack>
                   ) : null}
                   <Stack spacing={0.25}>
-                    <Typography variant="caption" color="text.secondary">
-                      {t.counterparty ? clipText(t.counterparty, 80) : '—'}
-                    </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {t.counterparty ? clipText(t.counterparty, 80) : '—'}
+                  </Typography>
                     {counterpartyMetaLines(t).length > 0 ? (
                       <Stack spacing={0.25}>
                         {counterpartyMetaLines(t).map((line, i) => (

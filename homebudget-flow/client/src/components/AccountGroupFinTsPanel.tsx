@@ -309,6 +309,7 @@ export default function AccountGroupFinTsPanel({
     if (!bankAccounts?.length) return m;
     for (const a of bankAccounts) {
       const cid = a.credential_id;
+      if (cid == null) continue;
       const cur = m.get(cid);
       if (cur) cur.push(a);
       else m.set(cid, [a]);

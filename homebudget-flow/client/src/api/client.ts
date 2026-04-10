@@ -582,7 +582,8 @@ export type BankAccount = {
   id: number;
   account_group_id: number;
   household_id: number;
-  credential_id: number;
+  /** Fehlt bei rein manuellen Konten ohne FinTS-Sync. */
+  credential_id: number | null;
   provider: string;
   name: string;
   iban: string;
@@ -608,15 +609,17 @@ export async function createBankAccount(body: {
   iban: string;
   name: string;
   currency?: string;
-  credential_id: number;
+  /** Weglassen oder null = Konto ohne FinTS (wird nicht synchronisiert). */
+  credential_id?: number | null;
 }): Promise<BankAccount> {
+  const hasFints = body.credential_id != null;
   const { data } = await api.post<BankAccount>('/api/households/bank-accounts', {
     account_group_id: body.account_group_id,
-    provider: body.provider ?? 'comdirect',
+    provider: body.provider ?? (hasFints ? 'comdirect' : 'manual'),
     iban: body.iban,
     name: body.name,
     currency: body.currency ?? 'EUR',
-    credential_id: body.credential_id,
+    credential_id: hasFints ? body.credential_id : null,
   });
   return data;
 }
@@ -630,7 +633,7 @@ export async function updateBankAccount(
     iban?: string;
     currency?: string;
     provider?: string;
-    credential_id?: number;
+    credential_id?: number | null;
   },
 ): Promise<BankAccount> {
   const { data } = await api.patch<BankAccount>(`/api/accounts/${id}`, body);
@@ -679,6 +682,8 @@ export type DayZeroMeltdownDay = {
   day: string;
   balance_actual: string;
   balance_target: string;
+  konto_balance_actual?: string;
+  konto_balance_target?: string;
   net_actual: string;
   spend_actual: string;
   spend_target_fixed: string;
@@ -700,7 +705,7 @@ export type DayZeroMeltdownBookingRef = {
 export type DayZeroMeltdownOut = {
   bank_account_id: number;
   tag_zero_date: string;
-  /** Kontostand am Tag Null (berechnet). */
+  /** Konto-Start: Bank-Rückrechnung + Tag-Null-Regelbetrag + out_adj (ausgehende Umbuchungen). */
   tag_zero_amount?: string | null;
   /** Betrag der neuesten Buchung, die der Tag-Null-Regel entspricht. */
   tag_zero_rule_booking_amount?: string | null;
@@ -714,6 +719,11 @@ export type DayZeroMeltdownOut = {
   days: DayZeroMeltdownDay[];
   transfer_bookings: DayZeroMeltdownBookingRef[];
   contract_bookings: DayZeroMeltdownBookingRef[];
+  konto_saldo_ist?: string;
+  konto_saldo_ist_at?: string | null;
+  konto_saldo_ledger_day?: string | null;
+  konto_saldo_not_tagesaktuell?: boolean;
+  konto_saldo_start_backcalc?: string;
 };
 
 export async function fetchDayZeroMeltdown(bankAccountId: number, months = 1): Promise<DayZeroMeltdownOut> {

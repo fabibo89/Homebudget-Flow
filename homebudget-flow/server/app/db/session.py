@@ -1,3 +1,4 @@
+import re
 from collections.abc import AsyncGenerator
 from decimal import Decimal
 
@@ -479,6 +480,119 @@ async def _ensure_categories_unique_sub_name_under_parent(conn) -> None:
 _TXV1_PREFIX = "txv1|"
 
 
+async def _ensure_bank_accounts_credential_nullable(conn) -> None:
+    """Manuelle Konten ohne FinTS: ``credential_id`` NULL; FK ON DELETE SET NULL beim Löschen des Zugangs."""
+    url = settings.database_url.lower()
+    if "postgresql" in url:
+        r_null = await conn.execute(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'bank_accounts' "
+                "AND column_name = 'credential_id'",
+            ),
+        )
+        row_n = r_null.fetchone()
+        if row_n is None:
+            return
+        if str(row_n[0]).upper() == "YES":
+            return
+        r_fk = await conn.execute(
+            text(
+                "SELECT tc.constraint_name FROM information_schema.table_constraints tc "
+                "JOIN information_schema.key_column_usage kcu "
+                "ON tc.constraint_schema = kcu.constraint_schema "
+                "AND tc.constraint_name = kcu.constraint_name "
+                "WHERE tc.table_schema = current_schema() AND tc.table_name = 'bank_accounts' "
+                "AND tc.constraint_type = 'FOREIGN KEY' AND kcu.column_name = 'credential_id'",
+            ),
+        )
+        for (cname,) in r_fk.fetchall():
+            await conn.execute(text(f'ALTER TABLE bank_accounts DROP CONSTRAINT "{cname}"'))
+        await conn.execute(text("ALTER TABLE bank_accounts ALTER COLUMN credential_id DROP NOT NULL"))
+        await conn.execute(
+            text(
+                "ALTER TABLE bank_accounts ADD CONSTRAINT bank_accounts_credential_id_fkey "
+                "FOREIGN KEY (credential_id) REFERENCES bank_credentials(id) ON DELETE SET NULL",
+            ),
+        )
+        return
+
+    if "sqlite" not in url:
+        return
+    r_pr = await conn.execute(text("PRAGMA table_info(bank_accounts)"))
+    cols = r_pr.fetchall()
+    if not cols:
+        return
+    cred_col = next((c for c in cols if c[1] == "credential_id"), None)
+    if cred_col is None:
+        return
+    if cred_col[3] == 0:
+        return
+    r_sql = await conn.execute(
+        text("SELECT sql FROM sqlite_master WHERE type='table' AND name='bank_accounts'"),
+    )
+    row_sql = r_sql.fetchone()
+    if not row_sql or not row_sql[0]:
+        return
+    old_sql = row_sql[0]
+    new_sql = re.sub(
+        r"credential_id\s+INTEGER\s+NOT\s+NULL\s+",
+        "credential_id INTEGER ",
+        old_sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    if new_sql == old_sql:
+        new_sql = re.sub(
+            r"\bcredential_id\b\s+INTEGER\s+NOT\s+NULL\b",
+            "credential_id INTEGER",
+            old_sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    if new_sql == old_sql:
+        return
+    new_sql = re.sub(
+        r"REFERENCES\s+bank_credentials\s*\(\s*id\s*\)(?!\s+ON\s+DELETE)",
+        "REFERENCES bank_credentials(id) ON DELETE SET NULL",
+        new_sql,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    await conn.execute(text("PRAGMA foreign_keys=OFF"))
+    try:
+        await conn.execute(text("ALTER TABLE bank_accounts RENAME TO bank_accounts_hbtmp_cred"))
+        await conn.execute(text(new_sql))
+        col_names = ", ".join(f'"{c[1]}"' for c in cols)
+        await conn.execute(
+            text(f"INSERT INTO bank_accounts ({col_names}) SELECT {col_names} FROM bank_accounts_hbtmp_cred"),
+        )
+        try:
+            await conn.execute(text("DELETE FROM sqlite_sequence WHERE name='bank_accounts'"))
+            await conn.execute(
+                text(
+                    "INSERT INTO sqlite_sequence(name, seq) "
+                    "SELECT 'bank_accounts', COALESCE(MAX(id), 0) FROM bank_accounts",
+                ),
+            )
+        except Exception:
+            pass
+        r_idx = await conn.execute(
+            text(
+                "SELECT name, sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='bank_accounts_hbtmp_cred' AND sql IS NOT NULL",
+            ),
+        )
+        for idx_name, idx_sql in r_idx.fetchall():
+            if idx_name.startswith("sqlite_autoindex"):
+                continue
+            fixed = str(idx_sql).replace("bank_accounts_hbtmp_cred", "bank_accounts")
+            await conn.execute(text(fixed))
+        await conn.execute(text("DROP TABLE bank_accounts_hbtmp_cred"))
+    finally:
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
+
+
 async def _migrate_transaction_external_ids_to_txv1(conn) -> None:
     """Alte Schlüssel (IBAN|POS, h|…) → stabile txv1|-Hashes; einmalig pro nicht-txv1-Zeile."""
     r = await conn.execute(
@@ -698,6 +812,7 @@ async def init_db() -> None:
         await _ensure_transactions_counterparty_fields(conn)
         await _ensure_transactions_fints_raw_and_reference_fields(conn)
         await _ensure_bank_credentials_fints_verification(conn)
+        await _ensure_bank_accounts_credential_nullable(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)
 
 

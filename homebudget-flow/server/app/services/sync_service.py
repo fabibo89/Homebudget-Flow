@@ -19,7 +19,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -52,6 +52,32 @@ from app.schemas.category_rule_conditions import (
 logger = logging.getLogger(__name__)
 
 _IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
+
+# Stabile ``external_id`` für auf manuellen Konten erzeugte Umbuchungs-Gegenbuchungen (ohne FinTS-Import).
+_TRANSFER_MIRROR_EXT_PREFIX = "hbflow:transfer-mirror:"
+
+
+def transfer_mirror_external_id(source_transaction_id: int) -> str:
+    return f"{_TRANSFER_MIRROR_EXT_PREFIX}{int(source_transaction_id)}"
+
+
+async def delete_transfer_mirror_transactions_for_account(
+    session: AsyncSession,
+    *,
+    bank_account_id: int,
+) -> int:
+    """Entfernt Spiegelbuchungen auf diesem Konto (z. B. vor FinTS-Verknüpfung, um Doppelungen zu vermeiden)."""
+    r = await session.execute(
+        select(Transaction.id).where(
+            Transaction.bank_account_id == int(bank_account_id),
+            Transaction.external_id.like(f"{_TRANSFER_MIRROR_EXT_PREFIX}%"),
+        )
+    )
+    ids = [int(x[0]) for x in r.fetchall()]
+    if not ids:
+        return 0
+    await session.execute(delete(Transaction).where(Transaction.id.in_(ids)))
+    return len(ids)
 
 
 def _extract_iban_from_counterparty(counterparty: str | None) -> str | None:
@@ -146,6 +172,8 @@ async def backfill_missing_transaction_fields_for_account(
     acc = r.scalar_one_or_none()
     if acc is None:
         return {"bank_account_id": bank_account_id, "ok": False, "error": "account_not_found"}
+    if acc.credential_id is None or acc.credential is None:
+        return {"bank_account_id": bank_account_id, "ok": False, "error": "no_fints_credential"}
 
     iban_norm = _iban_for_fints(acc)
     fints_cred = _fints_credentials_from_row(acc.credential)
@@ -245,7 +273,13 @@ async def backfill_missing_transaction_fields_for_account(
             )
             if household_id is not None:
                 iban_to_acc_id = await _household_iban_to_account_id(session, int(household_id))
-                other = iban_to_acc_id.get(_extract_iban_from_tx(tx) or "")
+                iban_key = _extract_iban_from_tx(tx) or ""
+                if not iban_key and existing.counterparty_iban:
+                    try:
+                        iban_key = normalize_iban(str(existing.counterparty_iban).strip())
+                    except Exception:
+                        iban_key = ""
+                other = iban_to_acc_id.get(iban_key)
                 if other and other != acc.id:
                     existing.transfer_target_bank_account_id = other
                     any_set = True
@@ -291,6 +325,42 @@ async def backfill_missing_transaction_fields_for_user(
     return {"ok": True, "accounts": results}
 
 
+async def repair_transfer_targets_from_counterparty_iban(
+    session: AsyncSession,
+    *,
+    household_id: int,
+) -> int:
+    """Setzt fehlendes ``transfer_target_bank_account_id``, wenn ``counterparty_iban`` einem Haushaltskonto entspricht."""
+    iban_to_acc_id = await _household_iban_to_account_id(session, household_id)
+    if not iban_to_acc_id:
+        return 0
+    r = await session.execute(
+        select(Transaction)
+        .join(BankAccount, BankAccount.id == Transaction.bank_account_id)
+        .join(AccountGroup, AccountGroup.id == BankAccount.account_group_id)
+        .where(
+            AccountGroup.household_id == int(household_id),
+            Transaction.transfer_target_bank_account_id.is_(None),
+            Transaction.counterparty_iban.isnot(None),
+        )
+    )
+    updated = 0
+    for tx in r.scalars().unique().all():
+        raw = (tx.counterparty_iban or "").strip()
+        if not raw:
+            continue
+        try:
+            ni = normalize_iban(raw)
+        except Exception:
+            continue
+        tgt = iban_to_acc_id.get(ni)
+        if tgt is None or int(tgt) == int(tx.bank_account_id):
+            continue
+        tx.transfer_target_bank_account_id = int(tgt)
+        updated += 1
+    return updated
+
+
 async def recheck_transfer_pairs_for_user(
     session: AsyncSession,
     *,
@@ -304,6 +374,14 @@ async def recheck_transfer_pairs_for_user(
         .where(AccountGroupMember.user_id == user_id),
     )
     accs = [(int(aid), int(hid)) for (aid, hid) in r.fetchall() if hid is not None]
+
+    household_ids = sorted({hid for _, hid in accs})
+    transfer_targets_repaired = 0
+    for hid in household_ids:
+        transfer_targets_repaired += await repair_transfer_targets_from_counterparty_iban(
+            session,
+            household_id=hid,
+        )
 
     total_candidates = 0
     total_paired_attempts = 0
@@ -328,6 +406,7 @@ async def recheck_transfer_pairs_for_user(
         for tx_id in tx_ids:
             total_paired_attempts += 1
             await _try_pair_transfer(session, household_id=hid, tx_id=tx_id)
+            await _ensure_manual_transfer_mirror(session, household_id=hid, source_tx_id=tx_id)
 
     await session.commit()
     return {
@@ -335,6 +414,7 @@ async def recheck_transfer_pairs_for_user(
         "accounts": len(accs),
         "candidates": total_candidates,
         "pair_attempts": total_paired_attempts,
+        "transfer_targets_repaired": transfer_targets_repaired,
     }
 
 async def _household_iban_to_account_id(session: AsyncSession, household_id: int) -> dict[str, int]:
@@ -430,6 +510,67 @@ async def _try_pair_transfer(
     )
 
 
+async def _ensure_manual_transfer_mirror(
+    session: AsyncSession,
+    *,
+    household_id: int,
+    source_tx_id: int,
+) -> None:
+    """Wenn die Gegenbuchung auf einem Konto ohne FinTS fehlt: Spiegelbuchung anlegen und paaren."""
+    source = await session.get(Transaction, source_tx_id)
+    if source is None or source.transfer_target_bank_account_id is None:
+        return
+    tgt_id = int(source.transfer_target_bank_account_id)
+    tgt_acc = await session.get(BankAccount, tgt_id)
+    if tgt_acc is None or tgt_acc.credential_id is not None:
+        return
+    r_pair = await session.execute(
+        select(TransferPair.id)
+        .where(
+            (TransferPair.out_transaction_id == source.id) | (TransferPair.in_transaction_id == source.id),
+        )
+        .limit(1)
+    )
+    if r_pair.scalar_one_or_none() is not None:
+        return
+    amt = source.amount
+    if amt is None or amt == 0:
+        return
+    ext = transfer_mirror_external_id(source.id)
+    existing_mirror = await session.scalar(
+        select(Transaction.id).where(
+            Transaction.bank_account_id == tgt_id,
+            Transaction.external_id == ext,
+        )
+    )
+    if existing_mirror is None:
+        src_acc = await session.get(BankAccount, int(source.bank_account_id))
+        src_label = (src_acc.name if src_acc else "") or f"Konto #{source.bank_account_id}"
+        mirror_amount = Decimal("0") - amt
+        mirror = Transaction(
+            bank_account_id=tgt_id,
+            transfer_target_bank_account_id=int(source.bank_account_id),
+            external_id=ext,
+            amount=mirror_amount,
+            currency=source.currency,
+            booking_date=source.booking_date,
+            value_date=source.value_date,
+            description=f"Umbuchung (Gegenbuchung) · {src_label}",
+            counterparty=src_label,
+            counterparty_name=src_label,
+            raw_json=json.dumps({"hbflow_mirror": True, "from_transaction_id": int(source.id)}),
+        )
+        session.add(mirror)
+        await session.flush()
+        logger.info(
+            "Transfer mirror created: source_tx=%s target_account=%s mirror_tx=%s amount=%s",
+            source.id,
+            tgt_id,
+            mirror.id,
+            mirror_amount,
+        )
+    await _try_pair_transfer(session, household_id=household_id, tx_id=int(source.id))
+
 
 def _utc_now_naive() -> datetime:
     """UTC-Zeitpunkt für DB-Spalten ``DateTime`` ohne ``timezone=True`` (TIMESTAMP WITHOUT TIME ZONE)."""
@@ -494,6 +635,12 @@ async def sync_bank_account(
         return
 
     st = await ensure_sync_state(session, bank_account_id)
+
+    if acc.credential_id is None or acc.credential is None:
+        st.status = SyncStatus.never.value
+        st.last_error = None
+        await session.commit()
+        return
 
     if not getattr(acc.credential, "fints_verified_ok", True):
         st.status = SyncStatus.error.value
@@ -699,6 +846,11 @@ async def sync_bank_account(
                 await session.flush()
                 if household_id is not None:
                     await _try_pair_transfer(session, household_id=int(household_id), tx_id=int(row.id))
+                    await _ensure_manual_transfer_mirror(
+                        session,
+                        household_id=int(household_id),
+                        source_tx_id=int(row.id),
+                    )
                 # Tag Null: wenn Regel passt, Datum/Betrag am Konto setzen (nur nach vorne).
                 if tag_zero_conds:
                     try:

@@ -433,16 +433,14 @@ export default function Setup() {
     mutationFn: () => {
       const gid = bankDialog.accountGroupId;
       if (gid == null) throw new Error('Keine Kontogruppe');
-      if (bankForm.credential_id === '') {
-        throw new Error('Bitte einen FinTS-Zugang wählen.');
-      }
+      const hasFints = bankForm.credential_id !== '';
       return createBankAccount({
         account_group_id: gid,
         name: bankForm.name.trim(),
         iban: bankForm.iban.replace(/\s/g, ''),
         currency: bankForm.currency,
-        provider: bankForm.provider,
-        credential_id: bankForm.credential_id,
+        provider: hasFints ? bankForm.provider : bankForm.provider.trim() || 'manual',
+        ...(hasFints ? { credential_id: bankForm.credential_id } : { credential_id: null }),
       });
     },
     onSuccess: () => {
@@ -1098,7 +1096,7 @@ export default function Setup() {
               label="IBAN"
               fullWidth
               required
-              helperText="Ohne Leerzeichen; Kennung für FinTS-Sync und eindeutig pro Provider."
+              helperText="Ohne Leerzeichen; eindeutig pro Provider. Bei manuellen Konten z. B. provider „manual“ nutzen."
               value={bankForm.iban}
               onChange={(e) => setBankForm((f) => ({ ...f, iban: e.target.value }))}
             />
@@ -1114,7 +1112,7 @@ export default function Setup() {
               value={bankForm.provider}
               onChange={(e) => setBankForm((f) => ({ ...f, provider: e.target.value }))}
             />
-            <FormControl fullWidth required>
+            <FormControl fullWidth>
               <InputLabel id="cred">FinTS-Zugang</InputLabel>
               <Select
                 labelId="cred"
@@ -1122,9 +1120,17 @@ export default function Setup() {
                 value={bankForm.credential_id === '' ? '' : bankForm.credential_id}
                 onChange={(e) => {
                   const v = e.target.value;
-                  setBankForm((f) => ({ ...f, credential_id: v === '' ? '' : Number(v) }));
+                  setBankForm((f) => ({
+                    ...f,
+                    credential_id: v === '' ? '' : Number(v),
+                    provider:
+                      v === '' && (f.provider === 'comdirect' || !f.provider.trim())
+                        ? 'manual'
+                        : f.provider,
+                  }));
                 }}
               >
+                <MenuItem value="">Kein FinTS (manuell, kein Sync)</MenuItem>
                 {creds.map((c) => (
                   <MenuItem key={c.id} value={c.id}>
                     {c.provider} · BLZ {c.fints_blz}
@@ -1133,9 +1139,9 @@ export default function Setup() {
               </Select>
             </FormControl>
             {!bankCredsForDialog.isLoading && creds.length === 0 ? (
-              <Alert severity="warning">
-                Zuerst unter dieser Kontogruppe einen FinTS-Zugang anlegen (oder in den Einstellungen), dann kann das
-                Bankkonto verknüpft werden.
+              <Alert severity="info">
+                Ohne FinTS-Zugang kannst du trotzdem ein manuelles Konto anlegen („Kein FinTS“). Später einen Zugang
+                hinzufügen und das Konto bearbeiten, um es zu verknüpfen.
               </Alert>
             ) : null}
             {bankCredsForDialog.isError ? (
@@ -1149,13 +1155,7 @@ export default function Setup() {
           </Button>
           <Button
             variant="contained"
-            disabled={
-              createBankMut.isPending ||
-              !bankForm.name.trim() ||
-              !bankForm.iban.trim() ||
-              bankForm.credential_id === '' ||
-              creds.length === 0
-            }
+            disabled={createBankMut.isPending || !bankForm.name.trim() || !bankForm.iban.trim()}
             onClick={() => {
               setBankError('');
               createBankMut.mutate();

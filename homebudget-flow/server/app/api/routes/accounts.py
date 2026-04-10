@@ -33,6 +33,7 @@ from app.services.dayzero_meltdown import (
     list_contract_transactions_in_meltdown_period,
     list_transfer_transactions_in_meltdown_period,
 )
+from app.services.sync_service import delete_transfer_mirror_transactions_for_account
 from app.schemas.dayzero_meltdown import DayZeroMeltdownBookingRef, DayZeroMeltdownDay, DayZeroMeltdownOut
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -215,11 +216,7 @@ async def dayzero_meltdown_for_account(
         tag_zero_date=acc.day_zero_date,
         months=months,
     )
-    sb = (
-        inputs.tag_zero_konto_after_rule
-        if inputs.tag_zero_konto_after_rule is not None
-        else inputs.start_balance
-    ).quantize(Decimal("0.01"))
+    sb = inputs.konto_saldo_start_backcalc.quantize(Decimal("0.01"))
     tx_match = await find_tag_zero_matching_transaction(
         session,
         account=acc,
@@ -241,6 +238,7 @@ async def dayzero_meltdown_for_account(
         start=inputs.start,
         end_exclusive=inputs.end_exclusive,
     )
+    bal_at_iso = acc.balance_at.isoformat() if getattr(acc, "balance_at", None) is not None else None
     return DayZeroMeltdownOut(
         bank_account_id=acc.id,
         tag_zero_date=acc.day_zero_date,
@@ -254,6 +252,11 @@ async def dayzero_meltdown_for_account(
         days=[DayZeroMeltdownDay(**d) for d in days],
         transfer_bookings=[_day_zero_booking_ref(t) for t in tx_transfer],
         contract_bookings=[_day_zero_booking_ref(t) for t in tx_contract],
+        konto_saldo_ist=str(inputs.konto_saldo_ist.quantize(Decimal("0.01"))),
+        konto_saldo_ist_at=bal_at_iso,
+        konto_saldo_ledger_day=inputs.konto_saldo_ledger_day,
+        konto_saldo_not_tagesaktuell=inputs.konto_saldo_not_tagesaktuell,
+        konto_saldo_start_backcalc=str(inputs.konto_saldo_start_backcalc.quantize(Decimal("0.01"))),
     )
 
 
@@ -403,18 +406,19 @@ async def update_my_bank_account(
 
     if "credential_id" in data:
         cid = data["credential_id"]
+        prev_credential_id = row.credential_id
         if cid is None:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "FinTS-Zugang ist Pflicht und kann nicht entfernt werden.",
-            )
-        cr = await session.get(BankCredential, cid)
-        if cr is None or cr.user_id != user.id:
-            raise HTTPException(
-                status.HTTP_403_FORBIDDEN,
-                "Ungültiger FinTS-Zugang (nicht dein gespeicherter Zugang).",
-            )
-        row.credential_id = cr.id
+            row.credential_id = None
+        else:
+            cr = await session.get(BankCredential, cid)
+            if cr is None or cr.user_id != user.id:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    "Ungültiger FinTS-Zugang (nicht dein gespeicherter Zugang).",
+                )
+            row.credential_id = cr.id
+        if prev_credential_id is None and row.credential_id is not None:
+            await delete_transfer_mirror_transactions_for_account(session, bank_account_id=row.id)
 
     if "account_group_id" in data and data["account_group_id"] is not None:
         new_gid = int(data["account_group_id"])

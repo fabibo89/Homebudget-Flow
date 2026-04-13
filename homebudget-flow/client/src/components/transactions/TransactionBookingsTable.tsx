@@ -133,6 +133,8 @@ type Props = {
   hideInlineHint?: boolean;
   /** Linksklick/Rechtsklick auf Kategorie wie in der Übersicht (Tooltips, manuelle Zuordnung). */
   categoryColumnAdvanced?: boolean;
+  /** true: kein äußerer Rahmen — z. B. eingebettet in eine andere Tabelle (Umbuchungen). */
+  embedded?: boolean;
 };
 
 export default function TransactionBookingsTable({
@@ -144,6 +146,7 @@ export default function TransactionBookingsTable({
   title,
   hideInlineHint = false,
   categoryColumnAdvanced = true,
+  embedded = false,
 }: Props) {
   const qc = useQueryClient();
   const theme = useTheme();
@@ -224,6 +227,7 @@ export default function TransactionBookingsTable({
     void qc.invalidateQueries({ queryKey: ['transactions'] });
     void qc.invalidateQueries({ queryKey: ['analyses-transactions'] });
     void qc.invalidateQueries({ queryKey: ['contracts'] });
+    void qc.invalidateQueries({ queryKey: ['transfers'] });
   }
 
   const patchCategoryMut = useMutation({
@@ -494,11 +498,17 @@ export default function TransactionBookingsTable({
       />
       {isXs ? (
         rows.length === 0 ? (
-          <Paper variant="outlined" sx={{ p: 2 }}>
+          <Paper
+            variant="outlined"
+            sx={{
+              p: 2,
+              ...(embedded ? { border: 'none', bgcolor: 'transparent', boxShadow: 'none' } : {}),
+            }}
+          >
             <Typography color="text.secondary">{emptyMessage}</Typography>
           </Paper>
         ) : (
-          <Stack spacing={1.25}>
+          <Stack spacing={1.25} sx={embedded ? { width: '100%', minWidth: 0 } : undefined}>
             {rows.map((t) => (
               <Card
                 key={t.id}
@@ -630,7 +640,15 @@ export default function TransactionBookingsTable({
           </Stack>
         )
       ) : (
-        <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
+        <TableContainer
+          component={Paper}
+          elevation={0}
+          sx={
+            embedded
+              ? { border: 'none', boxShadow: 'none', bgcolor: 'transparent', backgroundImage: 'none' }
+              : { border: 1, borderColor: 'divider' }
+          }
+        >
           <Table size="small">
             <TableHead>
               <TableRow>

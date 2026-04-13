@@ -2842,16 +2842,16 @@ export default function Analyses() {
                   </Box>
                 )}
               </Paper>
-              <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
-                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Jeder Balken reicht vom kumulierten Stand des Vortags bis zum Stand nach diesem Tag (Wasserfall /
-                  Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
-                  <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
-                </Typography>
+            <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Jeder Balken reicht vom kumulierten Stand des Vortags bis zum Stand nach diesem Tag (Wasserfall /
+                Aktienstufen). Farbe = Tagesänderung (grün aufwärts, rot abwärts).{' '}
+                <strong>Balken anklicken</strong>, um die Buchungen dieses Tages darunter anzuzeigen.
+              </Typography>
                 <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400, '& .apexcharts-canvas': { mx: 'auto' } }}>
                   <Chart options={chartOptions} series={series} type="rangeBar" height={isXs ? 320 : 420} width="100%" />
-                </Box>
-              </Paper>
+              </Box>
+            </Paper>
             </Stack>
           )}
           {selectedBarDay && sharedDataReady ? (
@@ -3057,53 +3057,53 @@ export default function Analyses() {
                   Bitte mindestens eine Kategorie auswählen.
                 </Alert>
               ) : (
-                <Stack
-                  direction={{ xs: 'column', md: 'row' }}
-                  spacing={3}
-                  alignItems="stretch"
-                  sx={{ mt: 1 }}
-                >
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="subtitle2" fontWeight={700} color="success.main" gutterBottom textAlign="center">
-                      Einnahmen
-                    </Typography>
+              <Stack
+                direction={{ xs: 'column', md: 'row' }}
+                spacing={3}
+                alignItems="stretch"
+                sx={{ mt: 1 }}
+              >
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="subtitle2" fontWeight={700} color="success.main" gutterBottom textAlign="center">
+                    Einnahmen
+                  </Typography>
                     {categoryAggsIncomeFiltered.length === 0 ? (
-                      <Alert severity="info" sx={{ mt: 1 }}>
+                    <Alert severity="info" sx={{ mt: 1 }}>
                         Keine Einnahmen für die gewählten Kategorien im Zeitraum.
-                      </Alert>
-                    ) : (
+                    </Alert>
+                  ) : (
                       <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
-                        <Chart
-                          options={incomeDonut.options}
-                          series={incomeDonut.series}
-                          type="donut"
+                      <Chart
+                        options={incomeDonut.options}
+                        series={incomeDonut.series}
+                        type="donut"
                           height={isXs ? 320 : 420}
-                          width="100%"
-                        />
-                      </Box>
-                    )}
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="subtitle2" fontWeight={700} color="error.main" gutterBottom textAlign="center">
-                      Ausgaben
-                    </Typography>
+                        width="100%"
+                      />
+                    </Box>
+                  )}
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="subtitle2" fontWeight={700} color="error.main" gutterBottom textAlign="center">
+                    Ausgaben
+                  </Typography>
                     {categoryAggsExpenseFiltered.length === 0 ? (
-                      <Alert severity="info" sx={{ mt: 1 }}>
+                    <Alert severity="info" sx={{ mt: 1 }}>
                         Keine Ausgaben für die gewählten Kategorien im Zeitraum.
-                      </Alert>
-                    ) : (
+                    </Alert>
+                  ) : (
                       <Box sx={{ width: '100%', minHeight: isXs ? 300 : 400 }}>
-                        <Chart
-                          options={expenseDonut.options}
-                          series={expenseDonut.series}
-                          type="donut"
+                      <Chart
+                        options={expenseDonut.options}
+                        series={expenseDonut.series}
+                        type="donut"
                           height={isXs ? 320 : 420}
-                          width="100%"
-                        />
-                      </Box>
-                    )}
-                  </Box>
-                </Stack>
+                        width="100%"
+                      />
+                    </Box>
+                  )}
+                </Box>
+              </Stack>
               )}
             </Paper>
           )}

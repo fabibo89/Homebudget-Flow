@@ -50,6 +50,26 @@ class DayZeroMeltdownDay(BaseModel):
         description="Tages-Netto (Summe aller Buchungen des Tages, Transfers ausgeschlossen; Vorzeichen wie Buchungen).",
     )
     spend_actual: str = Field(..., description="Ist-Ausgaben des Tages (Summe negativer Beträge, Transfers ausgeschlossen).")
+    spend_excl_contract: str = Field(
+        ...,
+        description="Wie spend_actual, aber ohne Buchungen mit Vertrags-Verknüpfung (contract_id).",
+    )
+    spend_contract: str = Field(
+        ...,
+        description="Ausgaben nur aus Vertrags-Buchungen (Summe |negativer Beträge|, Transfers ausgeschlossen).",
+    )
+    #: Tagesanteil der Summe aller Vertrags-Buchungsbeträge im Zeitraum (signed, Bank-Vorzeichen); gleicher Wert jeden Tag.
+    contract_net_daily_avg: str = Field(
+        ...,
+        description="Summe Vertrags-Nettos im Zeitraum ÷ Anzahl Kalendertage (für Saldo-Glättung und Balken).",
+    )
+    konto_balance_excl_contract_smooth: str = Field(
+        ...,
+        description=(
+            "Konto-Ist-Saldo, wenn Vertragsbuchungen nicht tagesgenau wirken, sondern gleichmäßig über die Periode "
+            "(Netto/Tag = contract_net_daily_avg)."
+        ),
+    )
     spend_target_fixed: str = Field(..., description="Soll-Ausgaben pro Tag (fix, an Tag Null berechnet).")
     spend_target_dynamic: str = Field(
         ...,
@@ -73,10 +93,13 @@ class DayZeroMeltdownOut(BaseModel):
         default=None,
         description="Betrag der neuesten Buchung, die der Tag-Null-Kontoregel entspricht.",
     )
-    #: Expliziter Meltdown-Start (Regel-Buchung inkl. interne Umbuchungs-Anpassung); gleiche Größe wie tag_zero_rule_booking_amount nach Ausgleich.
+    #: Meltdown-Start (Anzeige/Diagramm): Summe aller positiven Umbuchungsbeträge auf dem Konto im Meltdown-Zeitraum.
     meltdown_start_amount: Optional[str] = Field(
         default=None,
-        description="Meltdown-Startwert (Anzeige): Regel-Buchungsbetrag zzgl. outgoing_internal_transfer_adjustment.",
+        description=(
+            "Meltdown-Startwert (Anzeige): Summe der positiven Buchungsbeträge aller im Zeitraum als Umbuchung "
+            "erkannten Buchungen auf diesem Konto (gleiche Menge wie Summe positiver Beträge in transfer_bookings)."
+        ),
     )
     #: Ob der für ``tag_zero_amount`` genutzte Saldo (v. a. Snapshot) die Tag-Null-Regel-Buchung schon enthält; None = kein Snapshot / nicht anwendbar.
     tag_zero_saldo_includes_rule_booking: Optional[bool] = Field(
@@ -94,6 +117,13 @@ class DayZeroMeltdownOut(BaseModel):
     contract_bookings: list[DayZeroMeltdownBookingRef] = Field(
         default_factory=list,
         description="Alle Buchungen im Zeitraum mit Vertrags-Verknüpfung (contract_id).",
+    )
+    income_bookings: list[DayZeroMeltdownBookingRef] = Field(
+        default_factory=list,
+        description=(
+            "Zusätzliche Einnahmen im Meltdown-Zeitraum: positiver Betrag, ohne als Umbuchung erkannte Buchungen "
+            "(Eingehen per Umbuchung siehe transfer_bookings). Summe i. d. R. kleiner als einnahmen_summe_tag_zero_zeitraum."
+        ),
     )
 
     konto_saldo_ist: str = Field(..., description="Neuester bekannter Bank-Saldo (Sync).")
@@ -113,6 +143,35 @@ class DayZeroMeltdownOut(BaseModel):
         ...,
         description=(
             "(Letzter Bank-Saldo minus alle Buchungen bis Ledger-Tag) + Regelbetrag am Tag Null + out_adj (ausgehende Umbuchungen)."
+        ),
+    )
+    konto_saldo_morgen_tag_null: str = Field(
+        ...,
+        description=(
+            "Kontostand am Morgen des Tag-Null-Kalendertags: Sync-Saldo minus Summe aller Buchungsbeträge "
+            "von tag_zero_date bis einschließlich Ledger-Tag (ohne die spätere Regel-/Kurven-Korrektur)."
+        ),
+    )
+    einnahmen_summe_tag_zero_zeitraum: str = Field(
+        ...,
+        description=(
+            "Summe aller positiven Buchungsbeträge im Meltdown-Zeitraum [period_start, period_end_exclusive), "
+            "inkl. eingehender Umbuchungen."
+        ),
+    )
+    vertraege_netto_summe_tag_zero_zeitraum: str = Field(
+        ...,
+        description=(
+            "Summe der Buchungsbeträge (Bank-Vorzeichen) aller vertragsverknüpften Buchungen im Meltdown-Zeitraum "
+            "[period_start, period_end_exclusive); typischerweise ≤ 0 (Belastungen)."
+        ),
+    )
+    konto_morgen_start_inkl_einnahmen: str = Field(
+        ...,
+        description=(
+            "konto_saldo_morgen_tag_null + einnahmen_summe_tag_zero_zeitraum + vertraege_netto_summe_tag_zero_zeitraum — "
+            "„Konto · ohne Fixkosten“ für Tabellen-Spalte „Start“: Morgen-Saldo zuzüglich Einnahmen und Vertrags-Netto "
+            "im Zeitraum (Belastungen mindern den Wert)."
         ),
     )
 

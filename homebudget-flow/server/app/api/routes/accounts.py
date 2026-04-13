@@ -31,6 +31,7 @@ from app.services.tag_zero_rule import apply_tag_zero_rule_for_account, find_tag
 from app.services.dayzero_meltdown import (
     compute_dayzero_meltdown_for_account,
     list_contract_transactions_in_meltdown_period,
+    list_income_transactions_in_meltdown_period,
     list_transfer_transactions_in_meltdown_period,
 )
 from app.services.sync_service import delete_transfer_mirror_transactions_for_account
@@ -232,7 +233,19 @@ async def dayzero_meltdown_for_account(
         start=inputs.start,
         end_exclusive=inputs.end_exclusive,
     )
+    pos_transfer_sum = Decimal("0")
+    for t in tx_transfer:
+        a = Decimal(str(t.amount))
+        if a > 0:
+            pos_transfer_sum += a
+    meltdown_start_display = str(pos_transfer_sum.quantize(Decimal("0.01")))
     tx_contract = await list_contract_transactions_in_meltdown_period(
+        session,
+        bank_account_id=acc.id,
+        start=inputs.start,
+        end_exclusive=inputs.end_exclusive,
+    )
+    tx_income = await list_income_transactions_in_meltdown_period(
         session,
         bank_account_id=acc.id,
         start=inputs.start,
@@ -244,7 +257,7 @@ async def dayzero_meltdown_for_account(
         tag_zero_date=acc.day_zero_date,
         tag_zero_amount=str(sb),
         tag_zero_rule_booking_amount=rule_booking,
-        meltdown_start_amount=rule_booking,
+        meltdown_start_amount=meltdown_start_display,
         tag_zero_saldo_includes_rule_booking=inputs.tag_zero_balance_includes_rule_booking,
         period_start=inputs.start,
         period_end_exclusive=inputs.end_exclusive,
@@ -252,11 +265,18 @@ async def dayzero_meltdown_for_account(
         days=[DayZeroMeltdownDay(**d) for d in days],
         transfer_bookings=[_day_zero_booking_ref(t) for t in tx_transfer],
         contract_bookings=[_day_zero_booking_ref(t) for t in tx_contract],
+        income_bookings=[_day_zero_booking_ref(t) for t in tx_income],
         konto_saldo_ist=str(inputs.konto_saldo_ist.quantize(Decimal("0.01"))),
         konto_saldo_ist_at=bal_at_iso,
         konto_saldo_ledger_day=inputs.konto_saldo_ledger_day,
         konto_saldo_not_tagesaktuell=inputs.konto_saldo_not_tagesaktuell,
         konto_saldo_start_backcalc=str(inputs.konto_saldo_start_backcalc.quantize(Decimal("0.01"))),
+        konto_saldo_morgen_tag_null=str(inputs.konto_saldo_morgen_tag_null.quantize(Decimal("0.01"))),
+        einnahmen_summe_tag_zero_zeitraum=str(inputs.einnahmen_summe_tag_zero_zeitraum.quantize(Decimal("0.01"))),
+        vertraege_netto_summe_tag_zero_zeitraum=str(
+            inputs.vertraege_netto_summe_tag_zero_zeitraum.quantize(Decimal("0.01"))
+        ),
+        konto_morgen_start_inkl_einnahmen=str(inputs.konto_morgen_start_inkl_einnahmen.quantize(Decimal("0.01"))),
     )
 
 

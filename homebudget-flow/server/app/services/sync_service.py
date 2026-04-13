@@ -417,6 +417,31 @@ async def recheck_transfer_pairs_for_user(
         "transfer_targets_repaired": transfer_targets_repaired,
     }
 
+def _transfer_pair_description_key(desc: str | None) -> str:
+    """Normalisierter Verwendungszweck für Paar-Vergleich (ohne abschließende Bank-Referenz).
+
+    Häufig: „…NICHT ANGEGEBENRef. ABC123/…“ — ohne Leerzeichen vor „Ref.“; daher letztes
+    „REF.“ mit folgender alphanumerischer Referenz, nicht „END-TO-END-REF.:“.
+    """
+    s = (desc or "").strip().upper().replace("\n", " ")
+    s = re.sub(r"\s+", " ", s)
+    idx = s.rfind("REF.")
+    if idx != -1:
+        tail = s[idx:]
+        if re.match(r"^REF\.\s*[A-Z0-9]", tail):
+            s = s[:idx].strip()
+    return s
+
+
+def _transfer_counterpart_descriptions_align(tx: Transaction, cand: Transaction) -> bool:
+    """True, wenn Ausgangs- und Eingangs-Verwendungszweck (normalisiert) übereinstimmen."""
+    if tx.amount < 0:
+        out_d, in_d = tx.description, cand.description
+    else:
+        out_d, in_d = cand.description, tx.description
+    return _transfer_pair_description_key(out_d) == _transfer_pair_description_key(in_d)
+
+
 async def _household_iban_to_account_id(session: AsyncSession, household_id: int) -> dict[str, int]:
     r = await session.execute(
         select(BankAccount.id, BankAccount.iban)
@@ -484,10 +509,14 @@ async def _try_pair_transfer(
     if not cands:
         return
 
-    # Falls es mehrere Treffer gibt, wollen wir nicht raten.
-    if len(cands) != 1:
-        return
-    other = cands[0]
+    if len(cands) == 1:
+        other = cands[0]
+    else:
+        # Mehrere gleiche Beträge im Fenster: über Verwendungszweck eindeutig machen.
+        desc_matched = [c for c in cands if _transfer_counterpart_descriptions_align(tx, c)]
+        if len(desc_matched) != 1:
+            return
+        other = desc_matched[0]
 
     # Richtung festlegen: out = negative amount, in = positive amount
     if tx.amount < 0:

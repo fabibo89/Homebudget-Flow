@@ -6,7 +6,7 @@ from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -21,6 +21,7 @@ from app.db.models import (
     HouseholdMember,
     Transaction,
     TransactionEnrichment,
+    TransferPair,
     User,
 )
 from app.db.session import get_session
@@ -109,17 +110,57 @@ def _transfer_kind_for_memberships(
     return TransferKind.none
 
 
+def _transfer_kind_for_pair_out_in_accounts(
+    *,
+    current_user_id: int,
+    out_bank_account_id: int,
+    in_bank_account_id: int,
+    acc_to_group: dict[int, int],
+    group_to_members: dict[int, set[int]],
+) -> TransferKind:
+    """Klassifikation nach Geldfluss: Ausgangskonto → Eingangskonto (für beide Beine eines Paars gleich)."""
+    out_gid = acc_to_group.get(int(out_bank_account_id))
+    in_gid = acc_to_group.get(int(in_bank_account_id))
+    return _transfer_kind_for_memberships(
+        current_user_id=current_user_id,
+        source_members=group_to_members.get(int(out_gid)) if out_gid is not None else None,
+        target_members=group_to_members.get(int(in_gid)) if in_gid is not None else None,
+    )
+
+
 async def _transfer_kind_map_for_transactions(
     session: AsyncSession,
     *,
     current_user_id: int,
     rows: list[Transaction],
 ) -> dict[int, TransferKind]:
+    if not rows:
+        return {}
+
+    row_ids = [int(tx.id) for tx in rows]
+    r_pairs = await session.execute(
+        select(TransferPair)
+        .where(
+            or_(
+                TransferPair.out_transaction_id.in_(row_ids),
+                TransferPair.in_transaction_id.in_(row_ids),
+            )
+        )
+        .options(
+            joinedload(TransferPair.out_transaction),
+            joinedload(TransferPair.in_transaction),
+        )
+    )
+    pairs = list(r_pairs.scalars().unique().all())
+
     bank_account_ids: set[int] = set()
     for tx in rows:
         bank_account_ids.add(int(tx.bank_account_id))
         if tx.transfer_target_bank_account_id is not None:
             bank_account_ids.add(int(tx.transfer_target_bank_account_id))
+    for p in pairs:
+        bank_account_ids.add(int(p.out_transaction.bank_account_id))
+        bank_account_ids.add(int(p.in_transaction.bank_account_id))
     if not bank_account_ids:
         return {}
 
@@ -140,20 +181,22 @@ async def _transfer_kind_map_for_transactions(
     for gid, uid in r_mem.fetchall():
         group_to_members.setdefault(int(gid), set()).add(int(uid))
 
-    out: dict[int, TransferKind] = {}
-    for tx in rows:
-        tgt = tx.transfer_target_bank_account_id
-        if tgt is None:
-            out[int(tx.id)] = TransferKind.none
-            continue
-        src_gid = acc_to_group.get(int(tx.bank_account_id))
-        tgt_gid = acc_to_group.get(int(tgt))
-        out[int(tx.id)] = _transfer_kind_for_memberships(
+    # Nur echte Paare: gleicher transfer_kind für Aus- und Eingang (nach Kontogruppe Aus→Ein).
+    pair_kind_by_tx: dict[int, TransferKind] = {}
+    for p in pairs:
+        oa = int(p.out_transaction.bank_account_id)
+        ia = int(p.in_transaction.bank_account_id)
+        k = _transfer_kind_for_pair_out_in_accounts(
             current_user_id=current_user_id,
-            source_members=group_to_members.get(int(src_gid)) if src_gid is not None else None,
-            target_members=group_to_members.get(int(tgt_gid)) if tgt_gid is not None else None,
+            out_bank_account_id=oa,
+            in_bank_account_id=ia,
+            acc_to_group=acc_to_group,
+            group_to_members=group_to_members,
         )
-    return out
+        pair_kind_by_tx[int(p.out_transaction_id)] = k
+        pair_kind_by_tx[int(p.in_transaction_id)] = k
+
+    return {int(tx.id): pair_kind_by_tx.get(int(tx.id), TransferKind.none) for tx in rows}
 
 
 @router.get("", response_model=list[TransactionOut])

@@ -1,5 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   CircularProgress,
@@ -13,10 +16,12 @@ import {
   TableBody,
   TableCell,
   TableContainer,
+  TableFooter,
   TableHead,
   TableRow,
   Typography,
 } from '@mui/material';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import { useQuery } from '@tanstack/react-query';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
@@ -32,12 +37,6 @@ import { apiErrorMessage } from '../api/client';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 import { formatMoney } from '../lib/transactionUi';
 import { getAppTimeZone } from '../lib/appTimeZone';
-
-/** Vertikaler Trenner zwischen Konto-, Meltdown- und Differenz-Block in der Day-Zero-Saldo-Tabelle. */
-const dayZeroSaldoTableSectionDividerSx = {
-  borderLeft: '1px solid',
-  borderLeftColor: 'divider',
-} as const;
 
 function accountHasTagZeroRule(a: BankAccount): boolean {
   // Heuristic: rule config is stored on account, but not part of BankAccount type.
@@ -102,7 +101,37 @@ function yAxisMinTrimZeroGap(args: {
   const maxV = Math.max(...maxNums);
   const span = maxV - minPos;
   const pad = span > 0 ? span * 0.06 : Math.max(minPos * 0.02, 1);
-  return minPos - pad;
+  /** Kein negatives Achsen-Minimum, solange alle Linien ≥ 0 — sonst wirkt wie ein negativer Saldo (Balken starten „unter null“). */
+  return Math.max(0, minPos - pad);
+}
+
+/**
+ * Obergrenze fürs Saldo-Diagramm: Apex berechnet bei ``chart.stacked: true`` im Combo-Chart die
+ * Y-Skala fälschlich aus der Summe aller Serien pro Tag (mehrere Saldolinien → künstlich hohes Max).
+ * Hier: echtes Maximum aus allen Linienpunkten plus Ausgaben-Balkenhöhe (``spend_actual``), mit Padding.
+ */
+function yAxisMaxSaldoMixed(args: {
+  linesForMax: readonly (readonly (number | null)[])[];
+  stackedBarsPerDay: readonly (number | null)[];
+  yMinHint?: number;
+}): number | undefined {
+  const lineVals = collectFiniteSeriesValues(args.linesForMax);
+  const barVals = collectFiniteSeriesValues([args.stackedBarsPerDay]);
+  if (lineVals.length === 0 && barVals.length === 0) return undefined;
+  const maxV = Math.max(
+    lineVals.length ? Math.max(...lineVals) : -Infinity,
+    barVals.length ? Math.max(...barVals) : -Infinity,
+  );
+  if (!Number.isFinite(maxV) || maxV === -Infinity) return undefined;
+  const minLine = lineVals.length ? Math.min(...lineVals) : maxV;
+  const lo =
+    args.yMinHint != null && Number.isFinite(args.yMinHint) ? Math.min(minLine, args.yMinHint) : minLine;
+  const span = Math.max(maxV - lo, Math.abs(maxV) * 0.02, 1);
+  const hi = maxV + span * 0.08;
+  if (args.yMinHint != null && Number.isFinite(args.yMinHint) && hi <= args.yMinHint) {
+    return args.yMinHint + span * 0.08;
+  }
+  return hi;
 }
 
 function diffColor(args: { goodWhen: 'positive' | 'negative' | 'zeroOrPositive' | 'zeroOrNegative'; diff: number }): string {
@@ -119,6 +148,60 @@ function valueSignColor(v: number): string {
   if (v > 0) return 'success.main';
   if (v < 0) return 'error.main';
   return 'text.secondary';
+}
+
+function sumBookingRefAmounts(rows: readonly { amount?: string | null }[]): number {
+  let s = 0;
+  for (const r of rows) {
+    const raw = r.amount;
+    if (raw == null || String(raw).trim() === '') continue;
+    const n = Number(raw);
+    if (Number.isFinite(n)) s += n;
+  }
+  return s;
+}
+
+/**
+ * Saldo-Tabelle „Konto“ · Startwert: errechneter Morgen-Saldo Tag Null + Summe positiver Umbuchungen im Zeitraum +
+ * zusätzliche Einnahmen (``income_bookings``, ohne eingehende Umbuchungen).
+ */
+function tableKontoSaldoRowStart(data: DayZeroMeltdownOut): number | null {
+  const mRaw = data.konto_saldo_morgen_tag_null;
+  if (mRaw == null || String(mRaw).trim() === '') return null;
+  const m = Number(mRaw);
+  if (!Number.isFinite(m)) return null;
+  let s = m;
+  const mdRaw = data.meltdown_start_amount;
+  if (mdRaw != null && String(mdRaw).trim() !== '') {
+    const md = Number(mdRaw);
+    if (Number.isFinite(md)) s += md;
+  }
+  s += sumBookingRefAmounts(data.income_bookings ?? []);
+  return Number.isFinite(s) ? s : null;
+}
+
+function MeltdownBookingSumFooter(props: { sum: number; currency: string }) {
+  const { sum, currency } = props;
+  return (
+    <TableFooter>
+      <TableRow>
+        <TableCell sx={{ fontWeight: 700, borderTop: 1, borderColor: 'divider' }}>Summe (Zeitraum)</TableCell>
+        <TableCell
+          align="right"
+          sx={{
+            fontWeight: 700,
+            fontVariantNumeric: 'tabular-nums',
+            borderTop: 1,
+            borderColor: 'divider',
+            color: valueSignColor(sum),
+          }}
+        >
+          {formatMoney(sum.toFixed(2), currency)}
+        </TableCell>
+        <TableCell colSpan={2} sx={{ borderTop: 1, borderColor: 'divider' }} />
+      </TableRow>
+    </TableFooter>
+  );
 }
 
 /** Einheitlich europäisch (de-DE), z. B. 02.03.2026 — für Achsen, Tooltips und Texte. */
@@ -148,13 +231,92 @@ function tableKontoStart(data: DayZeroMeltdownOut): number | null {
   return Number.isNaN(v) ? null : v;
 }
 
-/** Meltdown-Start wie Tabellenspalte (``tag_zero_rule_booking_amount``). */
-function tableMeltdownStart(data: DayZeroMeltdownOut): number | null {
-  if (data.tag_zero_rule_booking_amount == null || String(data.tag_zero_rule_booking_amount).trim() === '') {
-    return null;
+/** Konto · ohne Fixkosten: Morgen-Saldo + Einnahmen + Vertrags-Netto im Zeitraum (API ``konto_morgen_start_inkl_einnahmen``). */
+function tableKontoMorgenStartInklEinnahmen(data: DayZeroMeltdownOut): number | null {
+  const c =
+    data.konto_morgen_start_inkl_einnahmen != null && String(data.konto_morgen_start_inkl_einnahmen).trim() !== ''
+      ? Number(data.konto_morgen_start_inkl_einnahmen)
+      : NaN;
+  if (Number.isFinite(c)) return c;
+  const mRaw = data.konto_saldo_morgen_tag_null;
+  const eRaw = data.einnahmen_summe_tag_zero_zeitraum;
+  const vRaw = data.vertraege_netto_summe_tag_zero_zeitraum;
+  if (
+    mRaw != null &&
+    String(mRaw).trim() !== '' &&
+    eRaw != null &&
+    String(eRaw).trim() !== '' &&
+    vRaw != null &&
+    String(vRaw).trim() !== ''
+  ) {
+    const m = Number(mRaw);
+    const e = Number(eRaw);
+    const v = Number(vRaw);
+    if (Number.isFinite(m) && Number.isFinite(e) && Number.isFinite(v)) return m + e + v;
   }
-  const v = Number(data.tag_zero_rule_booking_amount);
-  return Number.isNaN(v) ? null : v;
+  if (
+    mRaw != null &&
+    String(mRaw).trim() !== '' &&
+    eRaw != null &&
+    String(eRaw).trim() !== ''
+  ) {
+    const m = Number(mRaw);
+    const e = Number(eRaw);
+    if (Number.isFinite(m) && Number.isFinite(e)) return m + e;
+  }
+  return null;
+}
+
+/**
+ * Saldo-Diagramm · Meltdown‑Linie: Start = „Konto · ohne Fixkosten“; pro Tag um die nicht‑Vertrags‑Ausgaben
+ * (``spend_excl_contract``) verringert — kumulativ je Kalendertag (Vertragsausgaben wirken nicht).
+ */
+function saldoReferenzMeltdownLineSeries(data: DayZeroMeltdownOut): (number | null)[] {
+  const ref = tableKontoMorgenStartInklEinnahmen(data);
+  if (ref == null || !Number.isFinite(ref) || Number.isNaN(ref)) {
+    return data.days.map(() => null);
+  }
+  let run = ref;
+  return data.days.map((d) => {
+    const excl = Number(d.spend_excl_contract ?? 0);
+    const s = Number.isFinite(excl) && excl >= 0 ? excl : 0;
+    run -= s;
+    return run;
+  });
+}
+
+/** Lineare Soll-Rampe von „Konto · ohne Fixkosten“ auf 0 — gleiche Formel wie Tabelle / ``kontoMorgenSollHeute``. */
+function kontoReferenzstartLinearSollSeries(data: DayZeroMeltdownOut): (number | null)[] {
+  const ref = tableKontoMorgenStartInklEinnahmen(data);
+  const n = data.days.length;
+  if (ref == null || !Number.isFinite(ref) || Number.isNaN(ref) || n === 0) {
+    return data.days.map(() => null);
+  }
+  const denom = Math.max(1, n - 1);
+  return data.days.map((_, i) => ref * (1 - i / denom));
+}
+
+/**
+ * Meltdown · ohne Fixkosten: Meltdown-Start (Summe positiver Umbuchungen) + Vertrags-Netto im Zeitraum
+ * (Bank-Vorzeichen; Vertrags-Netto typischerweise negativ → rechnerisch Abzug der Belastung).
+ */
+function tableMeltdownReferenzStartTagNull(data: DayZeroMeltdownOut): number | null {
+  const md = tableMeltdownStart(data);
+  if (md == null || !Number.isFinite(md) || Number.isNaN(md)) return null;
+  const vRaw = data.vertraege_netto_summe_tag_zero_zeitraum;
+  if (vRaw == null || String(vRaw).trim() === '') return md;
+  const v = Number(vRaw);
+  if (!Number.isFinite(v) || Number.isNaN(v)) return md;
+  return md + v;
+}
+
+/** Meltdown-Start: API ``meltdown_start_amount`` = Summe aller positiven Umbuchungen im Zeitraum. */
+function tableMeltdownStart(data: DayZeroMeltdownOut): number | null {
+  if (data.meltdown_start_amount != null && String(data.meltdown_start_amount).trim() !== '') {
+    const v = Number(data.meltdown_start_amount);
+    if (!Number.isNaN(v)) return v;
+  }
+  return null;
 }
 
 function kontoBalanceIstDay(d: DayZeroMeltdownOut['days'][number]): number {
@@ -167,6 +329,15 @@ function kontoBalanceSollDay(d: DayZeroMeltdownOut['days'][number]): number {
   const s = (d as { konto_balance_target?: string }).konto_balance_target ?? d.balance_target;
   const v = Number(s);
   return Number.isNaN(v) ? 0 : v;
+}
+
+/** Positive Tageshöhe für Vertrags-Anteil (Balken): typisch negatives ``contract_net_daily_avg`` → Ausgabe. */
+function contractBarPerDay(d: DayZeroMeltdownOut['days'][number]): number {
+  const raw = d.contract_net_daily_avg;
+  if (raw == null || String(raw).trim() === '') return 0;
+  const n = Number(raw);
+  if (Number.isNaN(n)) return 0;
+  return n <= 0 ? -n : 0;
 }
 
 /**
@@ -185,13 +356,8 @@ function kontoFixProTagRate(data: DayZeroMeltdownOut): number | null {
   return ts != null && Number.isFinite(Number(ts)) ? Number(ts) / n : null;
 }
 
-/** Startwert für Meltdown Soll/Ist: Regel-Buchung am Tag Null, sonst Meltdown-Start / erster Meltdown-Saldo. */
+/** Startwert für Meltdown Soll/Ist: ``meltdown_start_amount`` (Summe pos. Umbuchungen), sonst erster Meltdown-Saldo. */
 function meltdownDayZeroStart(data: DayZeroMeltdownOut): number | null {
-  const ruleBooking =
-    data.tag_zero_rule_booking_amount != null && String(data.tag_zero_rule_booking_amount).trim() !== ''
-      ? Number(data.tag_zero_rule_booking_amount)
-      : null;
-  if (ruleBooking != null && !Number.isNaN(ruleBooking)) return ruleBooking;
   const mdStart =
     data.meltdown_start_amount != null && String(data.meltdown_start_amount).trim() !== ''
       ? Number(data.meltdown_start_amount)
@@ -204,30 +370,30 @@ function meltdownDayZeroStart(data: DayZeroMeltdownOut): number | null {
 
 function buildSaldoChart(args: {
   data: DayZeroMeltdownOut;
-  showMeltdownIst: boolean;
-  showMeltdownSoll: boolean;
-  showSaldoIst: boolean;
-  showSaldoSoll: boolean;
-  showAusgaben: boolean;
-  onToggleMeltdownIst: () => void;
-  onToggleMeltdownSoll: () => void;
-  onToggleSaldoIst: () => void;
-  onToggleSaldoSoll: () => void;
-  onToggleAusgaben: () => void;
+  showKontoIst: boolean;
+  showReferenzMeltdownLine: boolean;
+  showKontoReferenzSollLinear: boolean;
+  showBarSonstige: boolean;
+  showBarVertraege: boolean;
+  onToggleKontoIst: () => void;
+  onToggleReferenzMeltdownLine: () => void;
+  onToggleKontoReferenzSollLinear: () => void;
+  onToggleBarSonstige: () => void;
+  onToggleBarVertraege: () => void;
   onPickSpendDay: (isoDay: string) => void;
 }): { options: ApexOptions; series: any[] } {
   const {
     data,
-    showMeltdownIst,
-    showMeltdownSoll,
-    showSaldoIst,
-    showSaldoSoll,
-    showAusgaben,
-    onToggleMeltdownIst,
-    onToggleMeltdownSoll,
-    onToggleSaldoIst,
-    onToggleSaldoSoll,
-    onToggleAusgaben,
+    showKontoIst,
+    showReferenzMeltdownLine,
+    showKontoReferenzSollLinear,
+    showBarSonstige,
+    showBarVertraege,
+    onToggleKontoIst,
+    onToggleReferenzMeltdownLine,
+    onToggleKontoReferenzSollLinear,
+    onToggleBarSonstige,
+    onToggleBarVertraege,
     onPickSpendDay,
   } = args;
   const tz = getAppTimeZone();
@@ -235,92 +401,110 @@ function buildSaldoChart(args: {
   const dayIsos = data.days.map((d) => d.day);
   const cats = dayIsos;
   const isIsoDay = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
-  const meltdownStart = meltdownDayZeroStart(data);
-  const downmelt =
-    meltdownStart == null || Number.isNaN(meltdownStart)
-      ? null
-      : data.days.map((_, i) => {
-          const denom = Math.max(1, data.days.length - 1);
-          const f = 1 - i / denom;
-          return meltdownStart * f;
-        });
-  // Meltdown · Ist = Server-Pfad (balance_actual ≡ konto_balance_actual), nicht meltdownStart + net_actual.
-  const lived =
-    data.days.length === 0 ? null : data.days.map((d) => kontoBalanceIstDay(d));
-  const livedMasked = lived ? maskSeriesAfterCalendarDay(dayIsos, lived, todayIso) : null;
+
+  const referenzLineRaw = saldoReferenzMeltdownLineSeries(data);
+  const referenzLineMasked = maskSeriesAfterCalendarDay(
+    dayIsos,
+    showReferenzMeltdownLine ? referenzLineRaw : data.days.map(() => null),
+    todayIso,
+  );
 
   const saldoIstData = maskSeriesAfterCalendarDay(
     dayIsos,
-    showSaldoIst ? data.days.map((d) => kontoBalanceIstDay(d)) : data.days.map(() => null),
+    showKontoIst ? data.days.map((d) => kontoBalanceIstDay(d)) : data.days.map(() => null),
     todayIso,
   );
-  const saldoSollData = showSaldoSoll
-    ? data.days.map((d) => kontoBalanceSollDay(d))
-    : data.days.map(() => null);
-  const spendBars = data.days.map((d) => Number(d.spend_actual)); // Ausgaben als positive Balken
+
+  const spendSonstige = data.days.map((d) => Number(d.spend_excl_contract ?? 0));
+  const spendVertraege = data.days.map((d) => Number(d.spend_contract ?? 0));
+  const spendTotal = data.days.map((d) => Number(d.spend_actual ?? 0));
 
   const saldoIstForYBounds = maskSeriesAfterCalendarDay(
     dayIsos,
     data.days.map((d) => kontoBalanceIstDay(d)),
     todayIso,
   );
-  const saldoSollForYBounds = data.days.map((d) => kontoBalanceSollDay(d));
-  const saldoLinesForYMin = [
-    ...(livedMasked ? [livedMasked] : []),
-    ...(downmelt ? [downmelt] : []),
-    saldoIstForYBounds,
-    saldoSollForYBounds,
-  ];
+  const referenzForYBounds = maskSeriesAfterCalendarDay(dayIsos, referenzLineRaw, todayIso);
+  const referenzLinearSollRaw = kontoReferenzstartLinearSollSeries(data);
+  const referenzLinearSollData = showKontoReferenzSollLinear
+    ? referenzLinearSollRaw
+    : data.days.map(() => null);
+  const saldoLinesForYMin = [saldoIstForYBounds, referenzForYBounds, referenzLinearSollRaw];
   const yAxisMinSaldo = yAxisMinTrimZeroGap({
     linesForMin: saldoLinesForYMin,
-    allForMax: [...saldoLinesForYMin, spendBars],
+    allForMax: [...saldoLinesForYMin, spendTotal],
+  });
+  const yAxisMaxSaldo = yAxisMaxSaldoMixed({
+    linesForMax: saldoLinesForYMin,
+    stackedBarsPerDay: spendTotal,
+    yMinHint: yAxisMinSaldo,
   });
 
   const nullLine = data.days.map(() => null);
-  // Reihenfolge: Meltdown (Ist/Soll) zuerst (voll), Konto (Saldo) danach (dünner).
+  /** Linien zuerst, gestapelte Ausgaben-Balken (sonstige unten, Verträge oben). */
   const series = [
-    ...(livedMasked ? [{ name: 'Meltdown · Ist', data: showMeltdownIst ? livedMasked : nullLine }] : []),
-    ...(downmelt ? [{ name: 'Meltdown · Soll', data: showMeltdownSoll ? downmelt : nullLine }] : []),
     { name: 'Konto · Ist', data: saldoIstData },
-    { name: 'Konto · Soll', data: saldoSollData },
-    { name: 'Ausgaben', type: 'column', data: showAusgaben ? spendBars : nullLine },
+    { name: 'Meltdown‑Linie (ohne Fixkosten)', data: referenzLineMasked },
+    { name: 'Konto · ohne Fixkosten · Soll (linear)', data: referenzLinearSollData },
+    {
+      name: 'Ausgaben · sonstige',
+      type: 'column',
+      stack: 'ausgaben',
+      data: showBarSonstige ? spendSonstige : nullLine,
+    },
+    {
+      name: 'Ausgaben · Verträge',
+      type: 'column',
+      stack: 'ausgaben',
+      data: showBarVertraege ? spendVertraege : nullLine,
+    },
   ];
 
-  /** Meltdown = blaue Familie; Konto (Saldo) = grüne Familie; Soll-Linien gestrichelt. */
-  const COLOR_MELTDOWN_IST_LINE = '#008FFB';
-  const COLOR_MELTDOWN_SOLL_LINE = '#00E396';
-  const COLOR_AUSGABEN = '#FEB019';
+  const COLOR_KONTO_IST = '#00E396';
+  const COLOR_REFERENZ_MELTDOWN = '#008FFB';
+  const COLOR_REFERENZ_SOLL_LINEAR = '#69F0AE';
+  const COLOR_BAR_SONSTIGE = '#FEB019';
+  const COLOR_BAR_VERTRAEGE = '#FF4560';
   const strokeStyles = series.map((s: { name?: string; type?: string }) => {
     const n = String(s.name ?? '');
-    if (n === 'Meltdown · Ist') return { w: 3, dash: 0, color: COLOR_MELTDOWN_IST_LINE };
-    if (n === 'Meltdown · Soll') return { w: 3, dash: 6, color: COLOR_MELTDOWN_IST_LINE };
-    if (n === 'Konto · Ist') return { w: 2, dash: 0, color: COLOR_MELTDOWN_SOLL_LINE };
-    if (n === 'Konto · Soll') return { w: 2, dash: 6, color: COLOR_MELTDOWN_SOLL_LINE };
-    return { w: 0, dash: 0, color: COLOR_AUSGABEN };
+    if (n === 'Konto · Ist') return { w: 2, dash: 0, color: COLOR_KONTO_IST };
+    if (n === 'Meltdown‑Linie (ohne Fixkosten)') return { w: 3, dash: 6, color: COLOR_REFERENZ_MELTDOWN };
+    if (n === 'Konto · ohne Fixkosten · Soll (linear)') return { w: 2, dash: 6, color: COLOR_REFERENZ_SOLL_LINEAR };
+    if (n === 'Ausgaben · sonstige') return { w: 0, dash: 0, color: COLOR_BAR_SONSTIGE };
+    if (n === 'Ausgaben · Verträge') return { w: 0, dash: 0, color: COLOR_BAR_VERTRAEGE };
+    return { w: 0, dash: 0, color: COLOR_BAR_SONSTIGE };
   });
 
   const options: ApexOptions = {
     chart: {
       type: 'line',
       height: 340,
+      stacked: true,
+      stackOnlyBar: true,
       toolbar: { show: false },
       zoom: { enabled: false },
       events: {
         legendClick: (_chartCtx, seriesIndex, config) => {
-          const name = String(config?.globals?.seriesNames?.[seriesIndex] ?? '');
-          if (name === 'Meltdown · Ist') onToggleMeltdownIst();
-          else if (name === 'Meltdown · Soll') onToggleMeltdownSoll();
-          else if (name === 'Konto · Ist') onToggleSaldoIst();
-          else if (name === 'Konto · Soll') onToggleSaldoSoll();
-          else if (name === 'Ausgaben') onToggleAusgaben();
+          const names = config?.globals?.seriesNames;
+          const name =
+            typeof seriesIndex === 'number' && names ? String(names[seriesIndex] ?? '') : '';
+          if (name === 'Konto · Ist') onToggleKontoIst();
+          else if (name === 'Meltdown‑Linie (ohne Fixkosten)') onToggleReferenzMeltdownLine();
+          else if (name === 'Konto · ohne Fixkosten · Soll (linear)') onToggleKontoReferenzSollLinear();
+          else if (name === 'Ausgaben · sonstige') onToggleBarSonstige();
+          else if (name === 'Ausgaben · Verträge') onToggleBarVertraege();
           return false; // prevent Apex default hide/show
         },
         dataPointSelection: (_event, _chartCtx, cfg) => {
           const si = cfg?.seriesIndex;
           const di = cfg?.dataPointIndex;
-          const name = String(cfg?.w?.globals?.seriesNames?.[si] ?? '');
-          if (name !== 'Ausgaben' || !showAusgaben) return;
-          const day = cats?.[di];
+          const sNames = cfg?.w?.globals?.seriesNames;
+          const name = typeof si === 'number' && sNames ? String(sNames[si] ?? '') : '';
+          const isSpend = name === 'Ausgaben · Verträge' || name === 'Ausgaben · sonstige';
+          if (!isSpend) return;
+          if (name === 'Ausgaben · Verträge' && !showBarVertraege) return;
+          if (name === 'Ausgaben · sonstige' && !showBarSonstige) return;
+          const day = typeof di === 'number' ? cats?.[di] : undefined;
           if (isIsoDay(day)) onPickSpendDay(day);
         },
       },
@@ -363,6 +547,7 @@ function buildSaldoChart(args: {
     },
     yaxis: {
       ...(yAxisMinSaldo != null ? { min: yAxisMinSaldo } : {}),
+      ...(yAxisMaxSaldo != null ? { max: yAxisMaxSaldo } : {}),
       axisBorder: { show: true, color: 'rgba(255,255,255,0.12)' },
       axisTicks: { show: true, color: 'rgba(255,255,255,0.12)' },
       labels: { formatter: (v: number) => formatMoney(String(v.toFixed(2)), data.currency) },
@@ -405,11 +590,11 @@ function buildSaldoChart(args: {
       onItemHover: { highlightDataSeries: false },
       formatter: (seriesName: string) => {
         const disabled =
-          (seriesName === 'Meltdown · Ist' && !showMeltdownIst) ||
-          (seriesName === 'Meltdown · Soll' && !showMeltdownSoll) ||
-          (seriesName === 'Konto · Ist' && !showSaldoIst) ||
-          (seriesName === 'Konto · Soll' && !showSaldoSoll) ||
-          (seriesName === 'Ausgaben' && !showAusgaben);
+          (seriesName === 'Konto · Ist' && !showKontoIst) ||
+          (seriesName === 'Meltdown‑Linie (ohne Fixkosten)' && !showReferenzMeltdownLine) ||
+          (seriesName === 'Konto · ohne Fixkosten · Soll (linear)' && !showKontoReferenzSollLinear) ||
+          (seriesName === 'Ausgaben · sonstige' && !showBarSonstige) ||
+          (seriesName === 'Ausgaben · Verträge' && !showBarVertraege);
         return disabled ? `<span style="opacity:0.45">${seriesName}</span>` : seriesName;
       },
     },
@@ -417,47 +602,20 @@ function buildSaldoChart(args: {
   return { options, series };
 }
 
-/** Geld-pro-Tag: Konto-Ist aus konto_balance_actual; Konto-Soll-Fix = erster konto_balance_target / n (wie Saldo-Diagramm). */
+/**
+ * Geld pro Tag nur für die Zeile „Konto · ohne Fixkosten“: Fix/Tag, Ø Ist/Tag (kumul., ohne Verträge), Ø Soll/Tag
+ * (Rest der Meltdown‑Linie ohne Fixkosten geteilt durch Resttage).
+ */
 function buildGeldProTagChart(args: {
   data: DayZeroMeltdownOut;
-  showMeltdownIst: boolean;
-  showMeltdownStart: boolean;
-  showKontoIst: boolean;
-  showKontoStart: boolean;
-  showAusgaben: boolean;
-  showAusgabenKumAvg: boolean;
-  showKontoSollKumAvg: boolean;
-  showMeltdownSollKumAvg: boolean;
-  onToggleMeltdownIst: () => void;
-  onToggleMeltdownStart: () => void;
-  onToggleKontoIst: () => void;
-  onToggleKontoStart: () => void;
-  onToggleAusgaben: () => void;
-  onToggleAusgabenKumAvg: () => void;
-  onToggleKontoSollKumAvg: () => void;
-  onToggleMeltdownSollKumAvg: () => void;
-  onPickSpendDay: (isoDay: string) => void;
+  showFixTag: boolean;
+  showIstTag: boolean;
+  showSollTag: boolean;
+  onToggleFixTag: () => void;
+  onToggleIstTag: () => void;
+  onToggleSollTag: () => void;
 }): { options: ApexOptions; series: any[] } {
-  const {
-    data,
-    showMeltdownIst,
-    showMeltdownStart,
-    showKontoIst,
-    showKontoStart,
-    showAusgaben,
-    showAusgabenKumAvg,
-    showKontoSollKumAvg,
-    showMeltdownSollKumAvg,
-    onToggleMeltdownIst,
-    onToggleMeltdownStart,
-    onToggleKontoIst,
-    onToggleKontoStart,
-    onToggleAusgaben,
-    onToggleAusgabenKumAvg,
-    onToggleKontoSollKumAvg,
-    onToggleMeltdownSollKumAvg,
-    onPickSpendDay,
-  } = args;
+  const { data, showFixTag, showIstTag, showSollTag, onToggleFixTag, onToggleIstTag, onToggleSollTag } = args;
   const tz = getAppTimeZone();
   const todayIso = isoDayInTimeZone(new Date(), tz);
   const dayIsos = data.days.map((x) => x.day);
@@ -465,111 +623,59 @@ function buildGeldProTagChart(args: {
   const isIsoDay = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
 
   const n = data.days.length;
-  const kontoFixRate = kontoFixProTagRate(data);
-  const md0 = meltdownDayZeroStart(data);
-  const hasMd = md0 != null && !Number.isNaN(md0);
-
-  const livedMeltdown: number[] | null =
-    n === 0 ? null : data.days.map((d) => kontoBalanceIstDay(d));
-
-  const kontoStartPerDay =
-    n > 0 && kontoFixRate != null && Number.isFinite(kontoFixRate)
-      ? data.days.map(() => kontoFixRate)
+  const referenzOhneFix = saldoReferenzMeltdownLineSeries(data);
+  const kontoOhneFixSollDynPerDay = data.days.map((_, i) => {
+    const left = n - i;
+    if (left <= 0) return null;
+    const r = referenzOhneFix[i];
+    if (r == null || !Number.isFinite(r)) return null;
+    return r / left;
+  });
+  const morgenStartTab = tableKontoMorgenStartInklEinnahmen(data);
+  const kontoOhneFixSollFixPerDay =
+    n > 0 && morgenStartTab != null && Number.isFinite(morgenStartTab) && !Number.isNaN(morgenStartTab)
+      ? data.days.map(() => morgenStartTab / n)
       : data.days.map(() => null);
-  const kontoIstPerDay = data.days.map((_, i) => {
-    const left = n - i;
-    if (left <= 0) return null;
-    const bal = kontoBalanceIstDay(data.days[i]);
-    if (!Number.isFinite(bal)) return null;
-    return bal / left;
-  });
-  const meltdownStartPerDay =
-    n > 0 && hasMd ? data.days.map(() => (md0 as number) / n) : data.days.map(() => null);
-  const meltdownIstPerDay = data.days.map((_, i) => {
-    if (!livedMeltdown) return null;
-    const left = n - i;
-    if (left <= 0) return null;
-    return livedMeltdown[i] / left;
-  });
 
-  /** Kumulativer Durchschnitt: Summe Ausgaben 0..i geteilt durch (i+1) — wie Tabelle „Geld pro Tag“. */
-  const ausgabenKumAvgRaw: (number | null)[] = (() => {
+  /** Kumulativer Durchschnitt: Summe Ausgaben ohne Verträge 0..i geteilt durch (i+1) — wie Spalte Ø Ist/Tag. */
+  const istKumAvgExclRaw: (number | null)[] = (() => {
     if (n === 0) return [];
     let run = 0;
     return data.days.map((row, i) => {
-      run += Number(row.spend_actual ?? 0);
+      run += Number(row.spend_excl_contract ?? 0);
       const days = i + 1;
       return days > 0 ? run / days : null;
     });
   })();
-  const saldoTabChart = tableKontoStart(data);
-  const meltdownTabChart = tableMeltdownStart(data);
-  const denomM = Math.max(1, n - 1);
-  const kontoSollKumAvgRaw: (number | null)[] = data.days.map((row, i) => {
-    if (saldoTabChart == null || Number.isNaN(saldoTabChart)) return null;
-    const soll = kontoBalanceSollDay(row);
-    if (!Number.isFinite(soll)) return null;
-    const days = i + 1;
-    return (saldoTabChart - soll) / days;
-  });
-  const meltdownSollKumAvgRaw: (number | null)[] = data.days.map((_, i) => {
-    if (!hasMd || meltdownTabChart == null || Number.isNaN(meltdownTabChart)) return null;
-    const soll = (md0 as number) * (1 - i / denomM);
-    const days = i + 1;
-    return (meltdownTabChart - soll) / days;
-  });
 
   const nullLine = data.days.map(() => null);
-  const mdIstMasked = maskSeriesAfterCalendarDay(dayIsos, meltdownIstPerDay, todayIso);
-  const kIstMasked = maskSeriesAfterCalendarDay(dayIsos, kontoIstPerDay, todayIso);
-  const ausgabenKumAvgMasked = maskSeriesAfterCalendarDay(dayIsos, ausgabenKumAvgRaw, todayIso);
-  const kontoSollKumAvgMasked = maskSeriesAfterCalendarDay(dayIsos, kontoSollKumAvgRaw, todayIso);
-  const meltdownSollKumAvgMasked = maskSeriesAfterCalendarDay(dayIsos, meltdownSollKumAvgRaw, todayIso);
-  const spendBars = data.days.map((x) => Number(x.spend_actual));
-  const geldLinesForYMin = [
-    mdIstMasked,
-    meltdownStartPerDay,
-    kIstMasked,
-    kontoStartPerDay,
-    ausgabenKumAvgMasked,
-    kontoSollKumAvgMasked,
-    meltdownSollKumAvgMasked,
-  ];
+  const kontoOhneFixDynMasked = maskSeriesAfterCalendarDay(dayIsos, kontoOhneFixSollDynPerDay, todayIso);
+  const istKumAvgExclMasked = maskSeriesAfterCalendarDay(dayIsos, istKumAvgExclRaw, todayIso);
+  const geldLinesForYMin = [kontoOhneFixSollFixPerDay, istKumAvgExclMasked, kontoOhneFixDynMasked];
   const yAxisMinGeld = yAxisMinTrimZeroGap({
     linesForMin: geldLinesForYMin,
-    allForMax: [...geldLinesForYMin, spendBars],
+    allForMax: geldLinesForYMin,
   });
 
-  const COLOR_MD = '#008FFB';
-  const COLOR_KONTO = '#00E396';
-  const COLOR_BAR = '#FEB019';
-  const COLOR_AUSGABEN_KUM = '#FDD835';
-  const COLOR_KONTO_SOLL_KUM = '#A7FFEB';
-  const COLOR_MD_SOLL_KUM = '#82B1FF';
+  const COLOR_FIX = '#AB47BC';
+  const COLOR_IST = '#00E396';
+  const COLOR_SOLL = '#FF8A65';
 
-  // Soll (Fixrate): unmaskiert über den ganzen geladenen Zeitraum; Ist endet am Kalendertag „heute“.
+  const nameFixTag = 'Fix/Tag';
+  const nameIstTag = '\u00d8 Ist/Tag';
+  const nameSollTag = '\u00d8 Soll/Tag';
+
   const series = [
-    { name: 'Meltdown · Ist', data: showMeltdownIst ? mdIstMasked : nullLine },
-    { name: 'Meltdown · Soll', data: showMeltdownStart ? meltdownStartPerDay : nullLine },
-    { name: 'Meltdown · Soll Ø kumul.', data: showMeltdownSollKumAvg ? meltdownSollKumAvgMasked : nullLine },
-    { name: 'Konto · Ist', data: showKontoIst ? kIstMasked : nullLine },
-    { name: 'Konto · Soll', data: showKontoStart ? kontoStartPerDay : nullLine },
-    { name: 'Konto · Soll Ø kumul.', data: showKontoSollKumAvg ? kontoSollKumAvgMasked : nullLine },
-    { name: 'Ausgaben · Ø kumul.', data: showAusgabenKumAvg ? ausgabenKumAvgMasked : nullLine },
-    { name: 'Ausgaben', type: 'column', data: showAusgaben ? spendBars : nullLine },
+    { name: nameFixTag, data: showFixTag ? kontoOhneFixSollFixPerDay : nullLine },
+    { name: nameIstTag, data: showIstTag ? istKumAvgExclMasked : nullLine },
+    { name: nameSollTag, data: showSollTag ? kontoOhneFixDynMasked : nullLine },
   ];
 
-  const strokeStyles = series.map((s: { name?: string; type?: string }) => {
-    const nm = String(s.name ?? '');
-    if (nm === 'Meltdown · Ist') return { w: 3, dash: 0, color: COLOR_MD };
-    if (nm === 'Meltdown · Soll') return { w: 3, dash: 6, color: COLOR_MD };
-    if (nm === 'Konto · Ist') return { w: 2, dash: 0, color: COLOR_KONTO };
-    if (nm === 'Konto · Soll') return { w: 2, dash: 6, color: COLOR_KONTO };
-    if (nm === 'Ausgaben · Ø kumul.') return { w: 3, dash: 0, color: COLOR_AUSGABEN_KUM };
-    if (nm === 'Konto · Soll Ø kumul.') return { w: 2, dash: 4, color: COLOR_KONTO_SOLL_KUM };
-    if (nm === 'Meltdown · Soll Ø kumul.') return { w: 2, dash: 4, color: COLOR_MD_SOLL_KUM };
-    return { w: 0, dash: 0, color: COLOR_BAR };
-  });
+  const strokeStyles = [
+    { w: 2, dash: 6, color: COLOR_FIX },
+    { w: 2, dash: 0, color: COLOR_IST },
+    { w: 4, dash: 0, color: COLOR_SOLL },
+  ];
 
   const options: ApexOptions = {
     chart: {
@@ -580,29 +686,17 @@ function buildGeldProTagChart(args: {
       zoom: { enabled: false },
       events: {
         legendClick: (_chartCtx, seriesIndex, config) => {
-          const name = String(config?.globals?.seriesNames?.[seriesIndex] ?? '');
-          if (name === 'Meltdown · Ist') onToggleMeltdownIst();
-          else if (name === 'Meltdown · Soll') onToggleMeltdownStart();
-          else if (name === 'Meltdown · Soll Ø kumul.') onToggleMeltdownSollKumAvg();
-          else if (name === 'Konto · Ist') onToggleKontoIst();
-          else if (name === 'Konto · Soll') onToggleKontoStart();
-          else if (name === 'Konto · Soll Ø kumul.') onToggleKontoSollKumAvg();
-          else if (name === 'Ausgaben · Ø kumul.') onToggleAusgabenKumAvg();
-          else if (name === 'Ausgaben') onToggleAusgaben();
+          const names = config?.globals?.seriesNames;
+          const name =
+            typeof seriesIndex === 'number' && names ? String(names[seriesIndex] ?? '') : '';
+          if (name === nameFixTag) onToggleFixTag();
+          else if (name === nameIstTag) onToggleIstTag();
+          else if (name === nameSollTag) onToggleSollTag();
           return false;
-        },
-        dataPointSelection: (_event, _chartCtx, cfg) => {
-          const si = cfg?.seriesIndex;
-          const di = cfg?.dataPointIndex;
-          const name = String(cfg?.w?.globals?.seriesNames?.[si] ?? '');
-          if (name !== 'Ausgaben' || !showAusgaben) return;
-          const day = cats?.[di];
-          if (isIsoDay(day)) onPickSpendDay(day);
         },
       },
     },
     colors: strokeStyles.map((s) => s.color),
-    plotOptions: { bar: { columnWidth: '55%' } },
     stroke: { width: strokeStyles.map((s) => s.w), curve: 'smooth', dashArray: strokeStyles.map((s) => s.dash) },
     markers: { size: 0 },
     grid: {
@@ -677,14 +771,9 @@ function buildGeldProTagChart(args: {
       onItemHover: { highlightDataSeries: false },
       formatter: (seriesName: string) => {
         const disabled =
-          (seriesName === 'Meltdown · Ist' && !showMeltdownIst) ||
-          (seriesName === 'Meltdown · Soll' && !showMeltdownStart) ||
-          (seriesName === 'Meltdown · Soll Ø kumul.' && !showMeltdownSollKumAvg) ||
-          (seriesName === 'Konto · Ist' && !showKontoIst) ||
-          (seriesName === 'Konto · Soll' && !showKontoStart) ||
-          (seriesName === 'Konto · Soll Ø kumul.' && !showKontoSollKumAvg) ||
-          (seriesName === 'Ausgaben · Ø kumul.' && !showAusgabenKumAvg) ||
-          (seriesName === 'Ausgaben' && !showAusgaben);
+          (seriesName === nameFixTag && !showFixTag) ||
+          (seriesName === nameIstTag && !showIstTag) ||
+          (seriesName === nameSollTag && !showSollTag);
         return disabled ? `<span style="opacity:0.45">${seriesName}</span>` : seriesName;
       },
     },
@@ -695,22 +784,24 @@ function buildGeldProTagChart(args: {
 export default function DayZero() {
   const accountsQ = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts });
   const accountsAll = accountsQ.data ?? [];
+  const accountNameById = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const a of accountsAll) {
+      m.set(a.id, a.name);
+    }
+    return m;
+  }, [accountsAll]);
   const accounts = useMemo(() => accountsAll.filter(accountHasTagZeroRule), [accountsAll]);
   const [pick, setPick] = useState<number | ''>('');
-  const [showMeltdownIst, setShowMeltdownIst] = useState(true);
-  const [showMeltdownSoll, setShowMeltdownSoll] = useState(true);
   const [showSaldoIst, setShowSaldoIst] = useState(true);
-  const [showSaldoSoll, setShowSaldoSoll] = useState(true);
-  const [showSaldoAusgaben, setShowSaldoAusgaben] = useState(true);
+  const [showSaldoReferenzMeltdownLine, setShowSaldoReferenzMeltdownLine] = useState(true);
+  const [showSaldoKontoReferenzSollLinear, setShowSaldoKontoReferenzSollLinear] = useState(true);
+  const [showSaldoBarSonstige, setShowSaldoBarSonstige] = useState(true);
+  const [showSaldoBarVertraege, setShowSaldoBarVertraege] = useState(true);
   const [selectedSpendDay, setSelectedSpendDay] = useState<string | null>(null);
-  const [showSpendSaldoFix, setShowSpendSaldoFix] = useState(true);
-  const [showSpendSaldoDyn, setShowSpendSaldoDyn] = useState(true);
-  const [showSpendMeltdownFixSoll, setShowSpendMeltdownFixSoll] = useState(true);
-  const [showSpendMeltdownDynIst, setShowSpendMeltdownDynIst] = useState(true);
-  const [showSpendAusgaben, setShowSpendAusgaben] = useState(false);
-  const [showSpendAusgabenKumAvg, setShowSpendAusgabenKumAvg] = useState(true);
-  const [showSpendKontoSollKumAvg, setShowSpendKontoSollKumAvg] = useState(true);
-  const [showSpendMeltdownSollKumAvg, setShowSpendMeltdownSollKumAvg] = useState(true);
+  const [showSpendFixTag, setShowSpendFixTag] = useState(true);
+  const [showSpendIstTag, setShowSpendIstTag] = useState(true);
+  const [showSpendSollTag, setShowSpendSollTag] = useState(true);
 
   const effectiveAccountId = pick === '' ? (accounts[0]?.id ?? null) : pick;
 
@@ -720,20 +811,15 @@ export default function DayZero() {
     enabled: effectiveAccountId != null,
   });
 
-  const toggleMeltdownIst = useCallback(() => setShowMeltdownIst((v) => !v), []);
-  const toggleMeltdownSoll = useCallback(() => setShowMeltdownSoll((v) => !v), []);
   const toggleSaldoIst = useCallback(() => setShowSaldoIst((v) => !v), []);
-  const toggleSaldoSoll = useCallback(() => setShowSaldoSoll((v) => !v), []);
-  const toggleSaldoAusgaben = useCallback(() => setShowSaldoAusgaben((v) => !v), []);
+  const toggleSaldoReferenzMeltdownLine = useCallback(() => setShowSaldoReferenzMeltdownLine((v) => !v), []);
+  const toggleSaldoKontoReferenzSollLinear = useCallback(() => setShowSaldoKontoReferenzSollLinear((v) => !v), []);
+  const toggleSaldoBarSonstige = useCallback(() => setShowSaldoBarSonstige((v) => !v), []);
+  const toggleSaldoBarVertraege = useCallback(() => setShowSaldoBarVertraege((v) => !v), []);
   const pickSpendDay = useCallback((isoDay: string) => setSelectedSpendDay(isoDay), []);
-  const toggleSpendSaldoFix = useCallback(() => setShowSpendSaldoFix((v) => !v), []);
-  const toggleSpendSaldoDyn = useCallback(() => setShowSpendSaldoDyn((v) => !v), []);
-  const toggleSpendMeltdownFixSoll = useCallback(() => setShowSpendMeltdownFixSoll((v) => !v), []);
-  const toggleSpendMeltdownDynIst = useCallback(() => setShowSpendMeltdownDynIst((v) => !v), []);
-  const toggleSpendAusgaben = useCallback(() => setShowSpendAusgaben((v) => !v), []);
-  const toggleSpendAusgabenKumAvg = useCallback(() => setShowSpendAusgabenKumAvg((v) => !v), []);
-  const toggleSpendKontoSollKumAvg = useCallback(() => setShowSpendKontoSollKumAvg((v) => !v), []);
-  const toggleSpendMeltdownSollKumAvg = useCallback(() => setShowSpendMeltdownSollKumAvg((v) => !v), []);
+  const toggleSpendFixTag = useCallback(() => setShowSpendFixTag((v) => !v), []);
+  const toggleSpendIstTag = useCallback(() => setShowSpendIstTag((v) => !v), []);
+  const toggleSpendSollTag = useCallback(() => setShowSpendSollTag((v) => !v), []);
 
   const todaySummary = useMemo(() => {
     const d = meltdownQ.data;
@@ -743,8 +829,10 @@ export default function DayZero() {
     const md0 = meltdownDayZeroStart(d);
     const hasMd = md0 != null && !Number.isNaN(md0);
     const kontoFixProTag = kontoFixProTagRate(d);
-    /** Meltdown Start: gleiche Tagesanzahl n (parallel zur Konto-Fixrate). */
+    /** Meltdown Fix/Tag: meltdown_start_amount / n (Summe pos. Umbuchungen / Periodentage). */
     const meltdownFixProTag = n > 0 && hasMd ? (md0 as number) / n : null;
+    /** Vertrags-Netto im Zeitraum ÷ Kalendertage, als positive Tagesbelastung (wie Diagramm-Balken). */
+    const vertrageGeldProTag = n > 0 ? contractBarPerDay(d.days[0]) : null;
 
     const idx = d.days.findIndex((x) => x.day === todayIso);
     if (idx < 0) {
@@ -761,6 +849,31 @@ export default function DayZero() {
         meltdownGeldSollProTagAvg: null as number | null,
         kontoGeldDeltaIstSoll: null as number | null,
         meltdownGeldDeltaIstSoll: null as number | null,
+        vertrageGeldProTag,
+        kontoMorgenSollHeute: null as number | null,
+        kontoMorgenDeltaIstSoll: null as number | null,
+        kontoMorgenFixProTag: null as number | null,
+        kontoMorgenGeldSollProTagAvg: null as number | null,
+        kontoMorgenGeldDeltaIstSoll: null as number | null,
+        meltdownReferenzSollHeute: null as number | null,
+        meltdownReferenzDeltaIstSoll: null as number | null,
+        meltdownReferenzFixProTag: null as number | null,
+        meltdownReferenzGeldSollProTagAvg: null as number | null,
+        meltdownReferenzGeldDeltaIstSoll: null as number | null,
+        kontoCompositeSollHeute: null as number | null,
+        kontoCompositeDeltaIstSoll: null as number | null,
+        kontoCompositeFixProTag: null as number | null,
+        kontoCompositeGeldSollProTagAvg: null as number | null,
+        kontoCompositeGeldDeltaIstSoll: null as number | null,
+        geldIstProTagAvgExclContract: null as number | null,
+        kontoCompositeGeldSollMinusIst: null as number | null,
+        kontoCompositeGeldStartMinusIst: null as number | null,
+        kontoMorgenGeldSollMinusIst: null as number | null,
+        kontoMorgenGeldStartMinusIst: null as number | null,
+        meltdownGeldSollMinusIst: null as number | null,
+        meltdownGeldStartMinusIst: null as number | null,
+        meltdownReferenzGeldSollMinusIst: null as number | null,
+        meltdownReferenzGeldStartMinusIst: null as number | null,
       };
     }
 
@@ -779,6 +892,78 @@ export default function DayZero() {
     const meltdownSollHeute =
       hasMd && idx >= 0 ? (md0 as number) * (1 - idx / denomMeltdown) : null;
     const meltdownSollTagNull = hasMd ? (md0 as number) : null;
+
+    /** Konto · ohne Fixkosten · Soll: wie Konto-Soll-Linie — linear vom Tabellen-Startwert auf 0 bis Periodenende. */
+    const kontoMorgenStartTab = tableKontoMorgenStartInklEinnahmen(d);
+    const denomKontoMorgen = Math.max(1, n - 1);
+    const kontoMorgenSollHeute =
+      kontoMorgenStartTab != null &&
+      Number.isFinite(kontoMorgenStartTab) &&
+      !Number.isNaN(kontoMorgenStartTab) &&
+      idx >= 0
+        ? kontoMorgenStartTab * (1 - idx / denomKontoMorgen)
+        : null;
+    const kontoMorgenDeltaIstSoll =
+      kontoMorgenSollHeute != null &&
+      Number.isFinite(kontoSaldoHeute) &&
+      Number.isFinite(kontoMorgenSollHeute)
+        ? kontoSaldoHeute - kontoMorgenSollHeute
+        : null;
+
+    /** Konto · Zeile: linearer Soll vom zusammengesetzten Start (Morgen + pos. Umbuchungen + sonst. Einnahmen) auf 0. */
+    const kontoCompositeStartTab = tableKontoSaldoRowStart(d);
+    const denomKontoComposite = Math.max(1, n - 1);
+    const kontoCompositeSollHeute =
+      kontoCompositeStartTab != null &&
+      Number.isFinite(kontoCompositeStartTab) &&
+      !Number.isNaN(kontoCompositeStartTab) &&
+      idx >= 0
+        ? kontoCompositeStartTab * (1 - idx / denomKontoComposite)
+        : null;
+    const kontoCompositeDeltaIstSoll =
+      kontoCompositeSollHeute != null &&
+      Number.isFinite(kontoSaldoHeute) &&
+      Number.isFinite(kontoCompositeSollHeute)
+        ? kontoSaldoHeute - kontoCompositeSollHeute
+        : null;
+
+    /** Wie Konto-Fix/Tag, aber Startwert = „Konto · ohne Fixkosten“ (Startwert-Spalte). */
+    const kontoMorgenFixProTag =
+      n > 0 &&
+      kontoMorgenStartTab != null &&
+      Number.isFinite(kontoMorgenStartTab) &&
+      !Number.isNaN(kontoMorgenStartTab)
+        ? kontoMorgenStartTab / n
+        : null;
+
+    /** Fix/Tag für Zeile „Konto“: zusammengesetzter Start (Morgen + pos. Umbuchungen + sonst. Einnahmen) / Periodentage. */
+    const kontoCompositeFixProTag =
+      n > 0 &&
+      kontoCompositeStartTab != null &&
+      Number.isFinite(kontoCompositeStartTab) &&
+      !Number.isNaN(kontoCompositeStartTab)
+        ? kontoCompositeStartTab / n
+        : null;
+
+    /** Meltdown · ohne Fixkosten: linearer Soll-Pfad vom Startwert Meltdown + Vertrags-Netto (signed). */
+    const meltdownReferenzStartTab = tableMeltdownReferenzStartTagNull(d);
+    const denomMeltdownReferenz = Math.max(1, n - 1);
+    const hasMeltdownReferenz =
+      meltdownReferenzStartTab != null &&
+      Number.isFinite(meltdownReferenzStartTab) &&
+      !Number.isNaN(meltdownReferenzStartTab);
+    const meltdownReferenzSollHeute =
+      hasMeltdownReferenz && idx >= 0
+        ? (meltdownReferenzStartTab as number) * (1 - idx / denomMeltdownReferenz)
+        : null;
+    const meltdownReferenzDeltaIstSoll =
+      meltdownReferenzSollHeute != null &&
+      Number.isFinite(kontoSaldoHeute) &&
+      Number.isFinite(meltdownReferenzSollHeute)
+        ? kontoSaldoHeute - meltdownReferenzSollHeute
+        : null;
+    const meltdownReferenzFixProTag =
+      n > 0 && hasMeltdownReferenz ? (meltdownReferenzStartTab as number) / n : null;
 
     /** Tabelle Saldo: Meltdown · Ist = Meltdown · Start − (Konto · Start − Konto · Ist). */
     const meltdownIstHeuteVal =
@@ -807,21 +992,28 @@ export default function DayZero() {
     }
     const geldIstProTagAvg =
       daysElapsedGeld > 0 && Number.isFinite(spendSumToToday) ? spendSumToToday / daysElapsedGeld : null;
-    /** Soll = (Tabellen-Start minus Soll-Saldo heute) geteilt durch dieselbe Tagesanzahl — Ø tägliche geplante Absenkung laut Soll-Linie. */
+    let spendExclContractSumToToday = 0;
+    for (let i = 0; i <= idx; i++) {
+      const row = d.days[i];
+      const exRaw = row?.spend_excl_contract;
+      const hasEx = exRaw != null && String(exRaw).trim() !== '';
+      const nEx = hasEx ? Number(exRaw) : Number(row?.spend_actual ?? 0);
+      if (Number.isFinite(nEx)) spendExclContractSumToToday += nEx;
+    }
+    const geldIstProTagAvgExclContract =
+      daysElapsedGeld > 0 && Number.isFinite(spendExclContractSumToToday)
+        ? spendExclContractSumToToday / daysElapsedGeld
+        : null;
+    /** Ø Soll/Tag (Geld-Tabelle): Soll-Stand auf der linearen Rampe heute, geteilt durch restliche Tage inkl. heute. */
     const kontoGeldSollProTagAvg =
-      saldoStartTab != null &&
-      Number.isFinite(kontoSollHeute) &&
-      !Number.isNaN(saldoStartTab) &&
-      daysElapsedGeld > 0
-        ? (saldoStartTab - kontoSollHeute) / daysElapsedGeld
+      daysLeftInclToday > 0 && Number.isFinite(kontoSollHeute)
+        ? kontoSollHeute / daysLeftInclToday
         : null;
     const meltdownGeldSollProTagAvg =
-      meltdownStartTab != null &&
+      daysLeftInclToday > 0 &&
       meltdownSollHeute != null &&
-      Number.isFinite(meltdownSollHeute) &&
-      !Number.isNaN(meltdownStartTab) &&
-      daysElapsedGeld > 0
-        ? (meltdownStartTab - meltdownSollHeute) / daysElapsedGeld
+      Number.isFinite(meltdownSollHeute)
+        ? meltdownSollHeute / daysLeftInclToday
         : null;
     const kontoGeldDeltaIstSoll =
       geldIstProTagAvg != null &&
@@ -836,6 +1028,113 @@ export default function DayZero() {
       Number.isFinite(geldIstProTagAvg) &&
       Number.isFinite(meltdownGeldSollProTagAvg)
         ? geldIstProTagAvg - meltdownGeldSollProTagAvg
+        : null;
+    /** Wie Diagramm „Meltdown‑Linie (ohne Fixkosten)“: Rest am Stichtag (nicht die lineare Soll-Rampe). */
+    const kontoMorgenMeltdownPfadRestHeute = (() => {
+      const serie = saldoReferenzMeltdownLineSeries(d);
+      const v = serie[idx];
+      return v != null && Number.isFinite(v) ? v : null;
+    })();
+    const kontoMorgenRestFuerGeldSollProTag =
+      kontoMorgenMeltdownPfadRestHeute != null
+        ? kontoMorgenMeltdownPfadRestHeute
+        : kontoMorgenSollHeute;
+    const kontoMorgenGeldSollProTagAvg =
+      daysLeftInclToday > 0 &&
+      kontoMorgenRestFuerGeldSollProTag != null &&
+      Number.isFinite(kontoMorgenRestFuerGeldSollProTag)
+        ? kontoMorgenRestFuerGeldSollProTag / daysLeftInclToday
+        : null;
+    const kontoMorgenGeldDeltaIstSoll =
+      geldIstProTagAvgExclContract != null &&
+      kontoMorgenGeldSollProTagAvg != null &&
+      Number.isFinite(geldIstProTagAvgExclContract) &&
+      Number.isFinite(kontoMorgenGeldSollProTagAvg)
+        ? geldIstProTagAvgExclContract - kontoMorgenGeldSollProTagAvg
+        : null;
+    const meltdownReferenzGeldSollProTagAvg =
+      daysLeftInclToday > 0 &&
+      meltdownReferenzSollHeute != null &&
+      Number.isFinite(meltdownReferenzSollHeute)
+        ? meltdownReferenzSollHeute / daysLeftInclToday
+        : null;
+    const meltdownReferenzGeldDeltaIstSoll =
+      geldIstProTagAvgExclContract != null &&
+      meltdownReferenzGeldSollProTagAvg != null &&
+      Number.isFinite(geldIstProTagAvgExclContract) &&
+      Number.isFinite(meltdownReferenzGeldSollProTagAvg)
+        ? geldIstProTagAvgExclContract - meltdownReferenzGeldSollProTagAvg
+        : null;
+    const kontoCompositeGeldSollProTagAvg =
+      daysLeftInclToday > 0 &&
+      kontoCompositeSollHeute != null &&
+      Number.isFinite(kontoCompositeSollHeute)
+        ? kontoCompositeSollHeute / daysLeftInclToday
+        : null;
+    const kontoCompositeGeldDeltaIstSoll =
+      geldIstProTagAvg != null &&
+      kontoCompositeGeldSollProTagAvg != null &&
+      Number.isFinite(geldIstProTagAvg) &&
+      Number.isFinite(kontoCompositeGeldSollProTagAvg)
+        ? geldIstProTagAvg - kontoCompositeGeldSollProTagAvg
+        : null;
+
+    /** Geld-Tabelle: Soll − Ist bzw. Fix/Tag (Start) − Ø Ist — negativ bei höherem Ist als Soll/Start-Rate. */
+    const kontoCompositeGeldSollMinusIst =
+      kontoCompositeGeldSollProTagAvg != null &&
+      geldIstProTagAvg != null &&
+      Number.isFinite(kontoCompositeGeldSollProTagAvg) &&
+      Number.isFinite(geldIstProTagAvg)
+        ? kontoCompositeGeldSollProTagAvg - geldIstProTagAvg
+        : null;
+    const kontoCompositeGeldStartMinusIst =
+      kontoCompositeFixProTag != null &&
+      geldIstProTagAvg != null &&
+      Number.isFinite(kontoCompositeFixProTag) &&
+      Number.isFinite(geldIstProTagAvg)
+        ? kontoCompositeFixProTag - geldIstProTagAvg
+        : null;
+    const kontoMorgenGeldSollMinusIst =
+      kontoMorgenGeldSollProTagAvg != null &&
+      geldIstProTagAvgExclContract != null &&
+      Number.isFinite(kontoMorgenGeldSollProTagAvg) &&
+      Number.isFinite(geldIstProTagAvgExclContract)
+        ? kontoMorgenGeldSollProTagAvg - geldIstProTagAvgExclContract
+        : null;
+    const kontoMorgenGeldStartMinusIst =
+      kontoMorgenFixProTag != null &&
+      geldIstProTagAvgExclContract != null &&
+      Number.isFinite(kontoMorgenFixProTag) &&
+      Number.isFinite(geldIstProTagAvgExclContract)
+        ? kontoMorgenFixProTag - geldIstProTagAvgExclContract
+        : null;
+    const meltdownGeldSollMinusIst =
+      meltdownGeldSollProTagAvg != null &&
+      geldIstProTagAvg != null &&
+      Number.isFinite(meltdownGeldSollProTagAvg) &&
+      Number.isFinite(geldIstProTagAvg)
+        ? meltdownGeldSollProTagAvg - geldIstProTagAvg
+        : null;
+    const meltdownGeldStartMinusIst =
+      meltdownFixProTag != null &&
+      geldIstProTagAvg != null &&
+      Number.isFinite(meltdownFixProTag) &&
+      Number.isFinite(geldIstProTagAvg)
+        ? meltdownFixProTag - geldIstProTagAvg
+        : null;
+    const meltdownReferenzGeldSollMinusIst =
+      meltdownReferenzGeldSollProTagAvg != null &&
+      geldIstProTagAvgExclContract != null &&
+      Number.isFinite(meltdownReferenzGeldSollProTagAvg) &&
+      Number.isFinite(geldIstProTagAvgExclContract)
+        ? meltdownReferenzGeldSollProTagAvg - geldIstProTagAvgExclContract
+        : null;
+    const meltdownReferenzGeldStartMinusIst =
+      meltdownReferenzFixProTag != null &&
+      geldIstProTagAvgExclContract != null &&
+      Number.isFinite(meltdownReferenzFixProTag) &&
+      Number.isFinite(geldIstProTagAvgExclContract)
+        ? meltdownReferenzFixProTag - geldIstProTagAvgExclContract
         : null;
 
     return {
@@ -857,6 +1156,31 @@ export default function DayZero() {
       meltdownGeldSollProTagAvg,
       kontoGeldDeltaIstSoll,
       meltdownGeldDeltaIstSoll,
+      vertrageGeldProTag,
+      kontoMorgenSollHeute,
+      kontoMorgenDeltaIstSoll,
+      kontoMorgenFixProTag,
+      kontoMorgenGeldSollProTagAvg,
+      kontoMorgenGeldDeltaIstSoll,
+      meltdownReferenzSollHeute,
+      meltdownReferenzDeltaIstSoll,
+      meltdownReferenzFixProTag,
+      meltdownReferenzGeldSollProTagAvg,
+      meltdownReferenzGeldDeltaIstSoll,
+      kontoCompositeSollHeute,
+      kontoCompositeDeltaIstSoll,
+      kontoCompositeFixProTag,
+      kontoCompositeGeldSollProTagAvg,
+      kontoCompositeGeldDeltaIstSoll,
+      geldIstProTagAvgExclContract,
+      kontoCompositeGeldSollMinusIst,
+      kontoCompositeGeldStartMinusIst,
+      kontoMorgenGeldSollMinusIst,
+      kontoMorgenGeldStartMinusIst,
+      meltdownGeldSollMinusIst,
+      meltdownGeldStartMinusIst,
+      meltdownReferenzGeldSollMinusIst,
+      meltdownReferenzGeldStartMinusIst,
     };
   }, [meltdownQ.data]);
 
@@ -867,68 +1191,47 @@ export default function DayZero() {
     return {
       saldo: buildSaldoChart({
         data: d,
-        showMeltdownIst,
-        showMeltdownSoll,
-        showSaldoIst,
-        showSaldoSoll,
-        showAusgaben: showSaldoAusgaben,
-        onToggleMeltdownIst: toggleMeltdownIst,
-        onToggleMeltdownSoll: toggleMeltdownSoll,
-        onToggleSaldoIst: toggleSaldoIst,
-        onToggleSaldoSoll: toggleSaldoSoll,
-        onToggleAusgaben: toggleSaldoAusgaben,
+        showKontoIst: showSaldoIst,
+        showReferenzMeltdownLine: showSaldoReferenzMeltdownLine,
+        showKontoReferenzSollLinear: showSaldoKontoReferenzSollLinear,
+        showBarSonstige: showSaldoBarSonstige,
+        showBarVertraege: showSaldoBarVertraege,
+        onToggleKontoIst: toggleSaldoIst,
+        onToggleReferenzMeltdownLine: toggleSaldoReferenzMeltdownLine,
+        onToggleKontoReferenzSollLinear: toggleSaldoKontoReferenzSollLinear,
+        onToggleBarSonstige: toggleSaldoBarSonstige,
+        onToggleBarVertraege: toggleSaldoBarVertraege,
         onPickSpendDay: pickSpendDay,
       }),
       spend: buildGeldProTagChart({
         data: d,
-        showKontoStart: showSpendSaldoFix,
-        showKontoIst: showSpendSaldoDyn,
-        showMeltdownStart: showSpendMeltdownFixSoll,
-        showMeltdownIst: showSpendMeltdownDynIst,
-        showAusgaben: showSpendAusgaben,
-        showAusgabenKumAvg: showSpendAusgabenKumAvg,
-        showKontoSollKumAvg: showSpendKontoSollKumAvg,
-        showMeltdownSollKumAvg: showSpendMeltdownSollKumAvg,
-        onToggleKontoStart: toggleSpendSaldoFix,
-        onToggleKontoIst: toggleSpendSaldoDyn,
-        onToggleMeltdownStart: toggleSpendMeltdownFixSoll,
-        onToggleMeltdownIst: toggleSpendMeltdownDynIst,
-        onToggleAusgaben: toggleSpendAusgaben,
-        onToggleAusgabenKumAvg: toggleSpendAusgabenKumAvg,
-        onToggleKontoSollKumAvg: toggleSpendKontoSollKumAvg,
-        onToggleMeltdownSollKumAvg: toggleSpendMeltdownSollKumAvg,
-        onPickSpendDay: pickSpendDay,
+        showFixTag: showSpendFixTag,
+        showIstTag: showSpendIstTag,
+        showSollTag: showSpendSollTag,
+        onToggleFixTag: toggleSpendFixTag,
+        onToggleIstTag: toggleSpendIstTag,
+        onToggleSollTag: toggleSpendSollTag,
       }),
     };
   }, [
     meltdownQ.data,
-    showMeltdownIst,
-    showMeltdownSoll,
     showSaldoIst,
-    showSaldoSoll,
-    showSaldoAusgaben,
-    toggleMeltdownIst,
-    toggleMeltdownSoll,
+    showSaldoReferenzMeltdownLine,
+    showSaldoKontoReferenzSollLinear,
+    showSaldoBarSonstige,
+    showSaldoBarVertraege,
     toggleSaldoIst,
-    toggleSaldoSoll,
-    toggleSaldoAusgaben,
+    toggleSaldoReferenzMeltdownLine,
+    toggleSaldoKontoReferenzSollLinear,
+    toggleSaldoBarSonstige,
+    toggleSaldoBarVertraege,
     pickSpendDay,
-    showSpendSaldoFix,
-    showSpendSaldoDyn,
-    showSpendMeltdownFixSoll,
-    showSpendMeltdownDynIst,
-    showSpendAusgaben,
-    showSpendAusgabenKumAvg,
-    showSpendKontoSollKumAvg,
-    showSpendMeltdownSollKumAvg,
-    toggleSpendSaldoFix,
-    toggleSpendSaldoDyn,
-    toggleSpendMeltdownFixSoll,
-    toggleSpendMeltdownDynIst,
-    toggleSpendAusgaben,
-    toggleSpendAusgabenKumAvg,
-    toggleSpendKontoSollKumAvg,
-    toggleSpendMeltdownSollKumAvg,
+    showSpendFixTag,
+    showSpendIstTag,
+    showSpendSollTag,
+    toggleSpendFixTag,
+    toggleSpendIstTag,
+    toggleSpendSollTag,
   ]);
 
   const spendTxQ = useQuery({
@@ -1025,200 +1328,344 @@ export default function DayZero() {
                       .
                     </Alert>
                   ) : null}
-                  <TableContainer>
-                    <Table size="small" sx={{ '& td, & th': { py: 0.75 } }}>
-                      <TableHead>
-                        <TableRow>
-                          <TableCell rowSpan={2} sx={{ verticalAlign: 'bottom' }} />
-                          <TableCell colSpan={4} align="center" sx={{ borderBottom: 0, fontWeight: 700 }}>
-                            Konto
-                          </TableCell>
-                          <TableCell
-                            colSpan={4}
-                            align="center"
-                            sx={{ borderBottom: 0, fontWeight: 700, ...dayZeroSaldoTableSectionDividerSx }}
-                          >
-                            Meltdown
-                          </TableCell>
-                          <TableCell
-                            colSpan={2}
-                            align="center"
-                            sx={{ borderBottom: 0, fontWeight: 700, ...dayZeroSaldoTableSectionDividerSx }}
-                          >
-                            Differenz
-                          </TableCell>
-                        </TableRow>
-                        <TableRow>
-                          <TableCell align="right">Start</TableCell>
-                          <TableCell align="right">Ist</TableCell>
-                          <TableCell align="right">Soll</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                            Δ (Ist−Soll)
-                          </TableCell>
-                          <TableCell align="right" sx={dayZeroSaldoTableSectionDividerSx}>
-                            Start
-                          </TableCell>
-                          <TableCell align="right">Ist</TableCell>
-                          <TableCell align="right">Soll</TableCell>
-                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
-                            Δ (Ist−Soll)
-                          </TableCell>
-                          <TableCell align="right" sx={dayZeroSaldoTableSectionDividerSx}>
-                            Δ Start
-                          </TableCell>
-                          <TableCell align="right">Δ Soll</TableCell>
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {(() => {
-                          const d = meltdownQ.data;
-                          const cur = d.currency;
-                          const saldoD0 = tableKontoStart(d);
-                          const meltdownD0 = tableMeltdownStart(d);
-                          const diffStartSaldo =
-                            saldoD0 != null &&
-                            meltdownD0 != null &&
-                            !Number.isNaN(saldoD0) &&
-                            !Number.isNaN(meltdownD0)
-                              ? saldoD0 - meltdownD0
-                              : null;
-                          const diffSollHeute =
-                            todaySummary?.inRange &&
-                            todaySummary.kontoSollHeute != null &&
-                            todaySummary.meltdownSollHeute != null &&
-                            Number.isFinite(todaySummary.kontoSollHeute) &&
-                            Number.isFinite(todaySummary.meltdownSollHeute)
-                              ? todaySummary.kontoSollHeute - todaySummary.meltdownSollHeute
-                              : null;
-                          const kontoDeltaIstSoll =
-                            todaySummary?.inRange &&
-                            todaySummary.kontoSaldoHeute != null &&
-                            todaySummary.kontoSollHeute != null &&
-                            Number.isFinite(todaySummary.kontoSaldoHeute) &&
-                            Number.isFinite(todaySummary.kontoSollHeute)
-                              ? todaySummary.kontoSaldoHeute - todaySummary.kontoSollHeute
-                              : null;
-                          const meltdownDeltaIstSoll =
-                            todaySummary?.inRange &&
-                            todaySummary.meltdownIstHeute != null &&
-                            todaySummary.meltdownSollHeute != null &&
-                            Number.isFinite(todaySummary.meltdownIstHeute) &&
-                            Number.isFinite(todaySummary.meltdownSollHeute)
-                              ? todaySummary.meltdownIstHeute - todaySummary.meltdownSollHeute
-                              : null;
-                          const money = (v: number | null) =>
-                            v == null || Number.isNaN(v) ? (
-                              '—'
-                            ) : (
-                              <Typography
-                                component="span"
-                                sx={{
-                                  color: valueSignColor(v),
-                                  fontWeight: 700,
-                                  fontVariantNumeric: 'tabular-nums',
-                                }}
-                              >
-                                {formatMoney(v.toFixed(2), cur)}
-                              </Typography>
-                            );
-                          return (
-                            <>
-                              <TableRow hover>
-                                <TableCell sx={{ maxWidth: 220 }}>
-                                  <Typography variant="body2" fontWeight={600}>
-                                    Saldo
-                                  </Typography>
-                                </TableCell>
-                                <TableCell align="right">{money(saldoD0)}</TableCell>
-                                <TableCell align="right">
-                                  {todaySummary?.inRange ? money(todaySummary.kontoSaldoHeute) : '—'}
-                                </TableCell>
-                                <TableCell align="right">
-                                  {todaySummary?.inRange ? money(todaySummary.kontoSollHeute) : '—'}
-                                </TableCell>
-                                <TableCell align="right">
-                                  {todaySummary?.inRange ? money(kontoDeltaIstSoll) : '—'}
-                                </TableCell>
-                                <TableCell align="right" sx={dayZeroSaldoTableSectionDividerSx}>
-                                  {money(meltdownD0)}
-                                </TableCell>
-                                <TableCell align="right">
-                                  {todaySummary?.inRange ? money(todaySummary.meltdownIstHeute) : '—'}
-                                </TableCell>
-                                <TableCell align="right">
-                                  {todaySummary?.inRange ? money(todaySummary.meltdownSollHeute) : '—'}
-                                </TableCell>
-                                <TableCell align="right">
-                                  {todaySummary?.inRange ? money(meltdownDeltaIstSoll) : '—'}
-                                </TableCell>
-                                <TableCell align="right" sx={dayZeroSaldoTableSectionDividerSx}>
-                                  {money(diffStartSaldo)}
-                                </TableCell>
-                                <TableCell align="right">{money(diffSollHeute)}</TableCell>
-                              </TableRow>
-                              {todaySummary ? (
+                  {(() => {
+                    const d = meltdownQ.data;
+                    const cur = d.currency;
+                    const kontoMorgenStartInklEinnahmen = tableKontoMorgenStartInklEinnahmen(d);
+                    const kontoSaldoRowStartTab = tableKontoSaldoRowStart(d);
+                    const meltdownReferenzStartTagNullTab = tableMeltdownReferenzStartTagNull(d);
+                    const meltdownD0 = tableMeltdownStart(d);
+                    const meltdownDeltaIstSoll =
+                      todaySummary?.inRange &&
+                      todaySummary.meltdownIstHeute != null &&
+                      todaySummary.meltdownSollHeute != null &&
+                      Number.isFinite(todaySummary.meltdownIstHeute) &&
+                      Number.isFinite(todaySummary.meltdownSollHeute)
+                        ? todaySummary.meltdownIstHeute - todaySummary.meltdownSollHeute
+                        : null;
+                    const money = (v: number | null) =>
+                      v == null || Number.isNaN(v) ? (
+                        '—'
+                      ) : (
+                        <Typography
+                          component="span"
+                          sx={{
+                            color: valueSignColor(v),
+                            fontWeight: 700,
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {formatMoney(v.toFixed(2), cur)}
+                        </Typography>
+                      );
+
+                    return (
+                      <Stack spacing={2.5}>
+                        <Box>
+                          <Typography variant="subtitle2" fontWeight={700} color="text.secondary" sx={{ mb: 0.75 }}>
+                            Saldo
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+                            Tag Null → heute. Alle Beträge in Euro (Bestand). Spalte Startwert: je Zeile der Bezug zu
+                            Periodenbeginn (bei <strong>Konto</strong>: Morgen-Saldo Tag Null zuzüglich Summe{' '}
+                            <em>positiver</em> Umbuchungen im Zeitraum und zusätzlicher Einnahmen ohne Umbuchungen; bei{' '}
+                            <strong>Konto · ohne Fixkosten</strong>: Morgen-Saldo zuzüglich Einnahmen und Vertrags-Netto
+                            im Zeitraum; bei <strong>Meltdown · ohne Fixkosten</strong>: Meltdown-Start plus Vertrags-Netto
+                            im Zeitraum — Bank-Vorzeichen, typisch negativ). Spalte Ist: aktueller Messwert zum Stichtag (bei{' '}
+                            <strong>Konto</strong>, <strong>Konto · ohne Fixkosten</strong> und{' '}
+                            <strong>Meltdown · ohne Fixkosten</strong>: Kontostand; bei <strong>Meltdown</strong>: Meltdown‑Ist).
+                            Spalte Soll: Vorgabe der linearen Soll‑Linie am Stichtag. Spalte Ist − Soll: Differenz (Ist
+                            abzüglich Soll).
+                          </Typography>
+                          <TableContainer>
+                            <Table size="small" sx={{ '& td, & th': { py: 0.75 } }}>
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell sx={{ fontWeight: 700 }} />
+                                  <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                    Startwert
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                    Ist
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                    Soll
+                                  </TableCell>
+                                  <TableCell align="right" sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                    Ist − Soll
+                                  </TableCell>
+                                </TableRow>
+                              </TableHead>
+                              <TableBody>
                                 <TableRow hover>
+                                  <TableCell sx={{ maxWidth: 360 }}>
+                                    <Typography variant="body2" fontWeight={600}>
+                                      Konto
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                      Start: Morgen-Saldo Tag Null plus positive Umbuchungen und sonstige Einnahmen (ohne
+                                      eingehende Umbuchungen). Soll: gleichmäßige Rampe auf 0; Ist: Kontostand.
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell align="right">{money(kontoSaldoRowStartTab)}</TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoSaldoHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoCompositeSollHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoCompositeDeltaIstSoll) : '—'}
+                                  </TableCell>
+                                </TableRow>
+                                <TableRow hover>
+                                  <TableCell sx={{ maxWidth: 360 }}>
+                                    <Typography variant="body2" fontWeight={600}>
+                                      Konto · ohne Fixkosten
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                      Wie Konto, zuzüglich Vertrags-Netto im Zeitraum (Fixkosten-Anteil im Startwert).
+                                      Vergleich mit gleichem Kontostand, anderer Soll-Bezug.
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell align="right">{money(kontoMorgenStartInklEinnahmen)}</TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoSaldoHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoMorgenSollHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoMorgenDeltaIstSoll) : '—'}
+                                  </TableCell>
+                                </TableRow>
+                                <TableRow hover>
+                                  <TableCell sx={{ maxWidth: 360 }}>
+                                    <Typography variant="body2" fontWeight={600}>
+                                      Meltdown
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                      Start aus Summe positiver Umbuchungen. Soll: lineare Rampe; Ist: abgeleitete
+                                      Meltdown-Kurve (Ausgaben ohne Verträge) — nicht roher Kontostand.
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell align="right">{money(meltdownD0)}</TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.meltdownIstHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.meltdownSollHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(meltdownDeltaIstSoll) : '—'}
+                                  </TableCell>
+                                </TableRow>
+                                <TableRow hover>
+                                  <TableCell sx={{ maxWidth: 360 }}>
+                                    <Typography variant="body2" fontWeight={600}>
+                                      Meltdown · ohne Fixkosten
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                      Meltdown-Start plus Vertrags-Netto; Ist weiterhin Kontostand — gleicher Messwert wie
+                                      bei „Konto“, anderer Soll-Pfad.
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell align="right">{money(meltdownReferenzStartTagNullTab)}</TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.kontoSaldoHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.meltdownReferenzSollHeute) : '—'}
+                                  </TableCell>
+                                  <TableCell align="right">
+                                    {todaySummary?.inRange ? money(todaySummary.meltdownReferenzDeltaIstSoll) : '—'}
+                                  </TableCell>
+                                </TableRow>
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
+                        </Box>
+
+                        {todaySummary ? (
+                          <Box>
+                            <Typography variant="subtitle2" fontWeight={700} color="text.secondary" sx={{ mb: 0.75 }}>
+                              Geld pro Tag
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+                              Alle Beträge in Euro pro Kalendertag. Fix/Tag = fixe Tagesrate aus der Soll‑Rechnung (wie
+                              Diagramm); Ø Ist/Tag = durchschnittliche Ausgaben/Tag ohne Umbuchungen bis heute; Ø Soll/Tag
+                              = verbleibender Soll‑Stand (lineare Rampe) an diesem Tag geteilt durch die restlichen
+                              Kalendertage <strong>inkl. heute</strong>;{' '}
+                              <strong>Soll − Ist</strong> = Ø Soll/Tag (Rest‑Soll zu Resttagen) minus Ø‑Ist (negativ, wenn
+                              dein bisheriger Tages‑Ist‑Mittel über diesem Rest‑Soll‑Pro‑Tag liegt); <strong>Start − Ist</strong>{' '}
+                              = Fix/Tag (Start
+                              geteilt durch Periodentage) minus Ø‑Ist — negativ bei Überausgabe gegenüber der gleichmäßigen
+                              Start‑Tagesrate. Zeile <strong>Konto</strong> entspricht der Saldo‑Zeile „Konto“
+                              (Start: Morgen Tag Null + pos. Umbuchungen + sonst. Einnahmen). Bei{' '}
+                              <strong>Konto · ohne Fixkosten</strong> und <strong>Meltdown · ohne Fixkosten</strong> ist
+                              Ø Ist/Tag <strong>ohne Vertragsausgaben</strong> (tägliche Ausgaben ohne vertragsverknüpfte
+                              Buchungen), passend zur Logik „ohne Fixkosten“; die übrigen Zeilen nutzen die volle
+                              Tagesausgabe inkl. Verträge. Zeile <strong>Konto · ohne Fixkosten</strong>: Fix/Tag aus dem
+                              erweiterten Startwert inkl. Vertrags‑Netto; Ø Soll/Tag nutzt den <strong>Rest</strong> der
+                              Meltdown‑Linie ohne Fixkosten (wie im Saldo‑Diagramm) geteilt durch Resttage — z. B. 219,68�
+                              16 Tage � 13,73 €/Tag. Zeile{' '}
+                              <strong>Meltdown</strong>: wie im Diagramm (Summe pos. Umbuchungen / Tage). Zeile{' '}
+                              <strong>Meltdown · ohne Fixkosten</strong>: Fix/Tag und Ø Soll/Tag vom Startwert
+                              Meltdown‑Start + Vertrags‑Netto (Bank‑Vorzeichen, typisch negativ). Verträge: Summe
+                              Vertrags‑Buchungen im Zeitraum ÷ Kalendertage
+                              (gleichmäßiger Tagesanteil).
+                            </Typography>
+                            <TableContainer>
+                              <Table size="small" sx={{ '& td, & th': { py: 0.75 } }}>
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell sx={{ fontWeight: 700 }} />
+                                    <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                      Fix/Tag
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                      Ø Ist/Tag
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontWeight: 700 }}>
+                                      Ø Soll/Tag
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                      Soll − Ist
+                                    </TableCell>
+                                    <TableCell align="right" sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+                                      Start − Ist
+                                    </TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
                                   {(() => {
                                     const ts = todaySummary;
-                                    const diffStartGpt =
-                                      ts.kontoFixProTag != null &&
-                                      ts.meltdownFixProTag != null &&
-                                      !Number.isNaN(ts.kontoFixProTag) &&
-                                      !Number.isNaN(ts.meltdownFixProTag)
-                                        ? ts.kontoFixProTag - ts.meltdownFixProTag
-                                        : null;
-                                    const diffSollGpt =
-                                      ts.inRange &&
-                                      ts.kontoGeldSollProTagAvg != null &&
-                                      ts.meltdownGeldSollProTagAvg != null &&
-                                      Number.isFinite(ts.kontoGeldSollProTagAvg) &&
-                                      Number.isFinite(ts.meltdownGeldSollProTagAvg)
-                                        ? ts.kontoGeldSollProTagAvg - ts.meltdownGeldSollProTagAvg
-                                        : null;
                                     return (
                                       <>
-                                        <TableCell sx={{ maxWidth: 220 }}>
-                                          <Typography variant="body2" fontWeight={600}>
-                                            Geld pro Tag
-                                          </Typography>
-                                        </TableCell>
-                                        <TableCell align="right">{money(ts.kontoFixProTag)}</TableCell>
-                                        <TableCell align="right">
-                                          {ts.inRange ? money(ts.geldIstProTagAvg) : '—'}
-                                        </TableCell>
-                                        <TableCell align="right">
-                                          {ts.inRange ? money(ts.kontoGeldSollProTagAvg) : '—'}
-                                        </TableCell>
-                                        <TableCell align="right">
-                                          {ts.inRange ? money(ts.kontoGeldDeltaIstSoll) : '—'}
-                                        </TableCell>
-                                        <TableCell align="right" sx={dayZeroSaldoTableSectionDividerSx}>
-                                          {money(ts.meltdownFixProTag)}
-                                        </TableCell>
-                                        <TableCell align="right">
-                                          {ts.inRange ? money(ts.geldIstProTagAvg) : '—'}
-                                        </TableCell>
-                                        <TableCell align="right">
-                                          {ts.inRange ? money(ts.meltdownGeldSollProTagAvg) : '—'}
-                                        </TableCell>
-                                        <TableCell align="right">
-                                          {ts.inRange ? money(ts.meltdownGeldDeltaIstSoll) : '—'}
-                                        </TableCell>
-                                        <TableCell align="right" sx={dayZeroSaldoTableSectionDividerSx}>
-                                          {money(diffStartGpt)}
-                                        </TableCell>
-                                        <TableCell align="right">{money(diffSollGpt)}</TableCell>
+                                        <TableRow hover>
+                                          <TableCell sx={{ maxWidth: 360 }}>
+                                            <Typography variant="body2" fontWeight={600}>
+                                              Konto
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                              Ø Ist/Tag inkl. aller Ausgaben (ohne Umbuchungen); Vergleich mit Soll aus
+                                              linearem Abbau des zusammengesetzten Konto‑Starts.
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell align="right">{money(ts.kontoCompositeFixProTag)}</TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.geldIstProTagAvg) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.kontoCompositeGeldSollProTagAvg) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.kontoCompositeGeldSollMinusIst) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.kontoCompositeGeldStartMinusIst) : '—'}
+                                          </TableCell>
+                                        </TableRow>
+                                        <TableRow hover>
+                                          <TableCell sx={{ maxWidth: 360 }}>
+                                            <Typography variant="body2" fontWeight={600}>
+                                              Konto · ohne Fixkosten
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                              Ø Ist/Tag <strong>ohne</strong> Vertragsausgaben. Ø Soll/Tag = Stand der blauen
+                                              Diagrammlinie „Meltdown‑Linie (ohne Fixkosten)“ geteilt durch Resttage (nicht die
+                                              grüne lineare Soll‑Rampe).
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell align="right">{money(ts.kontoMorgenFixProTag)}</TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.geldIstProTagAvgExclContract) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.kontoMorgenGeldSollProTagAvg) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.kontoMorgenGeldSollMinusIst) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.kontoMorgenGeldStartMinusIst) : '—'}
+                                          </TableCell>
+                                        </TableRow>
+                                        <TableRow hover>
+                                          <TableCell>
+                                            <Typography variant="body2" fontWeight={600}>
+                                              Meltdown
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell align="right">{money(ts.meltdownFixProTag)}</TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.geldIstProTagAvg) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.meltdownGeldSollProTagAvg) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.meltdownGeldSollMinusIst) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.meltdownGeldStartMinusIst) : '—'}
+                                          </TableCell>
+                                        </TableRow>
+                                        <TableRow hover>
+                                          <TableCell sx={{ maxWidth: 360 }}>
+                                            <Typography variant="body2" fontWeight={600}>
+                                              Meltdown · ohne Fixkosten
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                              Ø Ist/Tag <strong>ohne</strong> Vertragsausgaben; Soll‑Bezug Meltdown‑Start
+                                              + Vertrags‑Netto.
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell align="right">{money(ts.meltdownReferenzFixProTag)}</TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.geldIstProTagAvgExclContract) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.meltdownReferenzGeldSollProTagAvg) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.meltdownReferenzGeldSollMinusIst) : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.inRange ? money(ts.meltdownReferenzGeldStartMinusIst) : '—'}
+                                          </TableCell>
+                                        </TableRow>
+                                        <TableRow hover>
+                                          <TableCell>
+                                            <Typography variant="body2" fontWeight={600}>
+                                              Verträge
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.vertrageGeldProTag != null && ts.vertrageGeldProTag > 0
+                                              ? money(ts.vertrageGeldProTag)
+                                              : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">
+                                            {ts.vertrageGeldProTag != null && ts.vertrageGeldProTag > 0
+                                              ? money(ts.vertrageGeldProTag)
+                                              : '—'}
+                                          </TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                        </TableRow>
                                       </>
                                     );
                                   })()}
-                                </TableRow>
-                              ) : null}
-                            </>
-                          );
-                        })()}
-                      </TableBody>
-                    </Table>
-                  </TableContainer>
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          </Box>
+                        ) : null}
+                      </Stack>
+                    );
+                  })()}
                   {todaySummary && !todaySummary.inRange ? (
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 1.25 }}>
                       Heute ({formatEuropeanDate(todaySummary.todayIso, getAppTimeZone())}) liegt nicht im Tag‑Null‑Zeitraum dieses Kontos.
@@ -1227,10 +1674,31 @@ export default function DayZero() {
                 </Paper>
               ) : null}
               {meltdownQ.data ? (
-                <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
-                  <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                    Grundlagen &amp; Buchungen im Zeitraum
-                  </Typography>
+                <Accordion
+                  defaultExpanded={false}
+                  disableGutters
+                  elevation={0}
+                  sx={{
+                    border: 1,
+                    borderColor: 'divider',
+                    borderRadius: 1,
+                    '&:before': { display: 'none' },
+                    boxShadow: 'none',
+                  }}
+                >
+                  <AccordionSummary
+                    expandIcon={<ExpandMoreIcon />}
+                    sx={{
+                      px: 2,
+                      minHeight: 52,
+                      '& .MuiAccordionSummary-content': { my: 1 },
+                    }}
+                  >
+                    <Typography variant="subtitle1" fontWeight={700}>
+                      Grundlagen &amp; Buchungen im Zeitraum
+                    </Typography>
+                  </AccordionSummary>
+                  <AccordionDetails sx={{ px: 2, pt: 0, pb: 2 }}>
                   <Stack spacing={2}>
                     <Stack spacing={0.75}>
                       <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.5 }}>
@@ -1292,12 +1760,71 @@ export default function DayZero() {
                                   </TableCell>
                                   <TableCell>
                                     {r.transfer_target_bank_account_id != null
-                                      ? `#${r.transfer_target_bank_account_id}`
+                                      ? (() => {
+                                          const tid = r.transfer_target_bank_account_id;
+                                          const nm = accountNameById.get(tid)?.trim();
+                                          return nm ? `${nm} (#${tid})` : `#${tid}`;
+                                        })()
                                       : '—'}
                                   </TableCell>
                                 </TableRow>
                               ))}
                             </TableBody>
+                            <MeltdownBookingSumFooter
+                              sum={sumBookingRefAmounts(meltdownQ.data.transfer_bookings ?? [])}
+                              currency={meltdownQ.data.currency}
+                            />
+                          </Table>
+                        </TableContainer>
+                      )}
+                    </Stack>
+                    <Stack spacing={1}>
+                      <Typography variant="body2" fontWeight={600}>
+                        Zusätzliche Einnahmen (im Zeitraum, ohne eingehende Umbuchungen)
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.25 }}>
+                        Ohne eingehende Umbuchungen (siehe Tabelle Umbuchungen). Der Startwert „Konto · ohne Fixkosten“
+                        rechnet Einnahmen weiterhin inkl. eingehender Umbuchungen mit.
+                      </Typography>
+                      {(meltdownQ.data.income_bookings ?? []).length === 0 ? (
+                        <Typography variant="body2" color="text.secondary">
+                          Keine.
+                        </Typography>
+                      ) : (
+                        <TableContainer>
+                          <Table size="small">
+                            <TableHead>
+                              <TableRow>
+                                <TableCell>Datum</TableCell>
+                                <TableCell align="right">Betrag</TableCell>
+                                <TableCell>Vertrag</TableCell>
+                                <TableCell>Gegenpart / Text</TableCell>
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {(meltdownQ.data.income_bookings ?? []).map((r) => (
+                                <TableRow key={r.id}>
+                                  <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
+                                  <TableCell align="right">{formatMoney(r.amount, meltdownQ.data.currency)}</TableCell>
+                                  <TableCell>
+                                    {r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')}
+                                  </TableCell>
+                                  <TableCell sx={{ maxWidth: 280 }}>
+                                    {(r.counterparty_name || '').trim() || '—'}
+                                    {r.description?.trim() ? (
+                                      <Typography component="span" variant="caption" color="text.secondary" display="block">
+                                        {r.description.slice(0, 120)}
+                                        {r.description.length > 120 ? '…' : ''}
+                                      </Typography>
+                                    ) : null}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                            <MeltdownBookingSumFooter
+                              sum={sumBookingRefAmounts(meltdownQ.data.income_bookings ?? [])}
+                              currency={meltdownQ.data.currency}
+                            />
                           </Table>
                         </TableContainer>
                       )}
@@ -1333,72 +1860,59 @@ export default function DayZero() {
                                 </TableRow>
                               ))}
                             </TableBody>
+                            <MeltdownBookingSumFooter
+                              sum={sumBookingRefAmounts(meltdownQ.data.contract_bookings ?? [])}
+                              currency={meltdownQ.data.currency}
+                            />
                           </Table>
                         </TableContainer>
                       )}
                     </Stack>
                   </Stack>
-                </Paper>
+                  </AccordionDetails>
+                </Accordion>
               ) : null}
               <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
                 <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                  Saldo Ist/Soll
+                  Saldo &amp; Ausgaben
                 </Typography>
                 <Chart options={charts.saldo.options} series={charts.saldo.series} type="line" height={340} />
                 <Stack spacing={1} sx={{ mt: 1.5 }}>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Meltdown · Ist</strong> und <strong>Konto · Ist</strong> zeigen denselben tatsächlichen
-                    Kontostand über die Periode (Ist); zwei Legenden-Einträge erlauben, Meltdown- und Konto-Soll-Linien
-                    getrennt ein- und auszublenden. Per Klick in der Legende blendest du einzelne Reihen aus.
+                    <strong>Konto · Ist</strong> ist der tatsächliche Kontostand (Saldoverlauf) je Kalendertag bis „heute“
+                    (App‑Zeitzone). <strong>Meltdown‑Linie (ohne Fixkosten)</strong> startet am Tabellenwert{' '}
+                    <strong>Konto · ohne Fixkosten</strong> und wird pro Tag um die Ausgaben <em>ohne</em>{' '}
+                    Vertragsbuchungen verringert; Vertragsausgaben ändern diese Linie nicht.{' '}
+                    <strong>Konto · ohne Fixkosten · Soll (linear)</strong> ist die gleichmäßige Rampe von „Konto · ohne
+                    Fixkosten“ auf 0 über die Periodenlänge (Spalte Soll der Tabelle).
                   </Typography>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Meltdown · Soll</strong> ist die lineare Rampe vom Meltdown-Start am Periodenbeginn bis 0 am
-                    letzten Tag (gleichmäßiger „Verbrauch“ des Meltdown-Betrags). <strong>Konto · Soll</strong> ist der
-                    geplante Kontostand pro Tag laut Zielkurve (Soll-Saldo aus den Tagesdaten).
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Ausgaben</strong> sind die tatsächlichen Tagesausgaben (Balken). Per Klick auf einen Balken
-                    öffnest du die Buchungen dieses Tags darunter.
+                    <strong>Ausgaben · sonstige</strong> und <strong>Ausgaben · Verträge</strong> sind gestapelte
+                    Tagesbalken (nicht‑Vertrags‑ vs. Vertrags‑Ausgaben, gleiche Logik wie in den Tagesdaten). Klick auf
+                    einen Balken öffnet die Buchungen dieses Tags darunter. Legende: Reihen ein-/ausblenden.
                   </Typography>
                 </Stack>
               </Paper>
               <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
                 <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                  Geld pro Tag (Soll/Ist, Ausgaben, kumul. Ø)
+                  Geld pro Tag — nur „Konto · ohne Fixkosten“
                 </Typography>
                 <Chart options={charts.spend.options} series={charts.spend.series} type="line" height={340} />
                 <Stack spacing={1} sx={{ mt: 1.5 }}>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    Achse: Beträge <strong>pro Tag</strong>. <strong>Ist (Meltdown · Ist / Konto · Ist):</strong> aktueller
-                    Kontosaldo Ist geteilt durch die <strong>noch verbleibenden</strong> Tage bis Periodenende — „Rest
-                    gleichmäßig auf die verbleibenden Tage verteilt“. Beide Legenden-Linien sind rechnerisch gleich; getrennt
-                    zum Ein- und Ausblenden wie im Saldo-Diagramm. <strong>Feste Soll-Linien:</strong> Meltdown-Start geteilt
-                    durch die Gesamttage (Meltdown · Soll) bzw. Soll-Anker am ersten Tag geteilt durch n (Konto · Soll).
+                    <strong>Fix/Tag:</strong> Tabellen‑Start „Konto · ohne Fixkosten“ geteilt durch die Periodentage —
+                    gleichmäßige Soll‑Rate der linearen Rampe (grüne Linie im Saldo‑Diagramm). Entspricht der Spalte Fix/Tag.
                   </Typography>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Meltdown · Soll:</strong> Meltdown-Start geteilt durch die Anzahl Periodentage — konstante tägliche
-                    Soll-Rate bei linearer Rampe. <strong>Konto · Soll:</strong> konstante tägliche Soll-Rate aus dem Soll-Saldo
-                    am ersten Tag (sonst Tabellen-Start geteilt durch n), zum Saldo-Diagramm passend.
+                    <strong>Ø Ist/Tag:</strong> kumulativer Mittelwert der täglichen Ausgaben <em>ohne</em> Vertragsbuchungen
+                    bis zum jeweiligen Tag (wie Spalte Ø Ist/Tag der Zeile „Konto · ohne Fixkosten“).
                   </Typography>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Ausgaben · Ø kumul.:</strong> Summe der Ausgaben von Periodenbeginn bis zum jeweiligen Tag (inkl.),
-                    geteilt durch die Anzahl dieser Tage — dein realer durchschnittlicher Tageswert, analog zur Zeile „Geld
-                    pro Tag“ in der Tabelle.
+                    <strong>Ø Soll/Tag:</strong> wie die blaue Meltdown‑Linie im Saldo‑Diagramm — Rest des Pfads geteilt durch
+                    die verbleibenden Kalendertage inkl. heute (Spalte Ø Soll/Tag).
                   </Typography>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Konto · Soll Ø kumul.</strong> und <strong>Meltdown · Soll Ø kumul.:</strong> (Tabellen-Start minus
-                    Soll an diesem Tag), geteilt durch die vergangenen Tage — Durchschnitt der geplanten täglichen Absenkung
-                    laut linearer Soll-Linie bis zu diesem Tag. Ergänzt die <strong>festen</strong> Soll-Linien (pro verbleibendem
-                    Tag) durch einen <strong>rückblickenden Mittelwert</strong> zum Vergleich mit den Ausgaben.
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Ausgaben</strong> (Balken): Tagesausgaben; Klick öffnet wie im Saldo-Diagramm die Buchungen des
-                    Tags.
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" component="div">
-                    <strong>Vergleich:</strong> Liegt „Ausgaben · Ø kumul.“ über „Konto · Soll Ø kumul.“, war dein
-                    Ausgabentempo im Mittel höher als der Konto-Plan; darunter niedriger. Entsprechend mit „Meltdown · Soll Ø
-                    kumul.“.
+                    Legende: alle drei Reihen ein‑/ausblendbar.
                   </Typography>
                 </Stack>
               </Paper>

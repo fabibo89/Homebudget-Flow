@@ -683,9 +683,14 @@ export type DayZeroMeltdownDay = {
   balance_actual: string;
   balance_target: string;
   konto_balance_actual?: string;
+  konto_balance_excl_contract_smooth?: string;
   konto_balance_target?: string;
   net_actual: string;
   spend_actual: string;
+  spend_excl_contract?: string;
+  spend_contract?: string;
+  /** Summe Vertrags-Nettos im Zeitraum ÷ Kalendertage (signed); gleicher Wert je Tag. */
+  contract_net_daily_avg?: string;
   spend_target_fixed: string;
   spend_target_dynamic: string;
   remaining: string;
@@ -709,7 +714,7 @@ export type DayZeroMeltdownOut = {
   tag_zero_amount?: string | null;
   /** Betrag der neuesten Buchung, die der Tag-Null-Regel entspricht. */
   tag_zero_rule_booking_amount?: string | null;
-  /** Meltdown-Start (Anzeige), inkl. Umbuchungs-Anpassung. */
+  /** Meltdown-Start (Anzeige): Summe aller positiven Umbuchungen im Zeitraum. */
   meltdown_start_amount?: string | null;
   /** Ob der Tag-Null-Saldo die Regel-Buchung schon enthält (Snapshot-Heuristik). */
   tag_zero_saldo_includes_rule_booking?: boolean | null;
@@ -719,11 +724,21 @@ export type DayZeroMeltdownOut = {
   days: DayZeroMeltdownDay[];
   transfer_bookings: DayZeroMeltdownBookingRef[];
   contract_bookings: DayZeroMeltdownBookingRef[];
+  /** Zusätzliche Einnahmen im Zeitraum (positiv, ohne Umbuchungen; Umbuchungen → transfer_bookings). */
+  income_bookings?: DayZeroMeltdownBookingRef[];
   konto_saldo_ist?: string;
   konto_saldo_ist_at?: string | null;
   konto_saldo_ledger_day?: string | null;
   konto_saldo_not_tagesaktuell?: boolean;
   konto_saldo_start_backcalc?: string;
+  /** Sync-Saldo minus Buchungen Tag Null…Ledger: Kontostand zu Beginn des Tag-Null-Tags (Morgen). */
+  konto_saldo_morgen_tag_null?: string;
+  /** Summe positiver Buchungen im Day-Zero-Zeitraum (inkl. eingehender Umbuchungen). */
+  einnahmen_summe_tag_zero_zeitraum?: string;
+  /** Netto-Summe vertragsverknüpfter Buchungen im Zeitraum (Bank-Vorzeichen; Belastungen negativ). */
+  vertraege_netto_summe_tag_zero_zeitraum?: string;
+  /** Konto · ohne Fixkosten: Morgen-Saldo + Einnahmen + Vertrags-Netto (Tabellen-Spalte Start). */
+  konto_morgen_start_inkl_einnahmen?: string;
 };
 
 export async function fetchDayZeroMeltdown(bankAccountId: number, months = 1): Promise<DayZeroMeltdownOut> {

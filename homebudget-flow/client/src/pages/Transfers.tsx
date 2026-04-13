@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import GroupsIcon from '@mui/icons-material/Groups';
 import PersonIcon from '@mui/icons-material/Person';
 import SyncAltIcon from '@mui/icons-material/SyncAlt';
@@ -20,7 +20,8 @@ import {
 } from '@mui/material';
 import { useQuery } from '@tanstack/react-query';
 import { apiErrorMessage, fetchAccounts, fetchTransferPairs, type TransferPair } from '../api/client';
-import { formatDate, formatDateTime, formatMoney } from '../lib/transactionUi';
+import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
+import { amountSxColorFromTransaction, formatDate, formatMoney } from '../lib/transactionUi';
 
 function kindLabel(k: TransferPair['out_transaction']['transfer_kind']): string {
   if (k === 'own_internal') return 'Eigene Umbuchung';
@@ -144,37 +145,76 @@ export default function Transfers() {
               const toName = accountNameById.get(inTx.bank_account_id) ?? `#${inTx.bank_account_id}`;
               const transferAmount = Math.abs(Number(outTx.amount || '0')).toFixed(2);
               return (
-                <TableRow key={p.id} hover>
-                  <TableCell>{formatDate(outTx.booking_date)}</TableCell>
-                  <TableCell>
-                    <Stack direction="row" alignItems="center" spacing={0.75}>
-                      {ki ? (
-                        <Tooltip title={ki.label} enterDelay={400}>
-                          <span>
-                            <ki.Icon fontSize="small" color="action" />
-                          </span>
-                        </Tooltip>
-                      ) : null}
-                      <span>{kindLabel(kind)}</span>
-                    </Stack>
-                  </TableCell>
-                  <TableCell>
-                    <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                      {fromName} → {toName}
-                    </Typography>
-                  </TableCell>
-                  <TableCell align="right">{formatMoney(transferAmount, outTx.currency)}</TableCell>
-                  <TableCell>
-                    <Tooltip
-                      title={`Ausgang #${outTx.id} (${formatDateTime(outTx.imported_at)}) · Eingang #${inTx.id} (${formatDateTime(inTx.imported_at)})`}
-                      enterDelay={400}
-                    >
-                      <Typography variant="caption" color="text.secondary" sx={{ cursor: 'default' }}>
-                        Paar #{p.id} · Buch-ID Ausgang #{outTx.id}
+                <Fragment key={p.id}>
+                  <TableRow hover>
+                    <TableCell>{formatDate(outTx.booking_date)}</TableCell>
+                    <TableCell>
+                      <Stack direction="row" alignItems="center" spacing={0.75}>
+                        {ki ? (
+                          <Tooltip title={ki.label} enterDelay={400}>
+                            <span>
+                              <ki.Icon fontSize="small" color="action" />
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                        <span>{kindLabel(kind)}</span>
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                        {fromName} → {toName}
                       </Typography>
-                    </Tooltip>
-                  </TableCell>
-                </TableRow>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Stack direction="row" alignItems="center" spacing={0.75} justifyContent="flex-end">
+                        {ki ? (
+                          <Tooltip title={ki.label} enterDelay={400}>
+                            <span>
+                              <ki.Icon fontSize="small" color="action" />
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                        <Typography
+                          component="span"
+                          sx={{
+                            fontVariantNumeric: 'tabular-nums',
+                            fontWeight: 600,
+                            color: amountSxColorFromTransaction(outTx),
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {formatMoney(transferAmount, outTx.currency)}
+                        </Typography>
+                      </Stack>
+                    </TableCell>
+                    <TableCell>
+                      <Typography variant="caption" color="text.secondary">
+                        Paar #{p.id}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                  <TableRow
+                    sx={{
+                      '& > td': {
+                        borderTop: 0,
+                        bgcolor: 'action.hover',
+                        py: { xs: 1, sm: 1.25 },
+                        px: { xs: 0.5, sm: 1 },
+                        verticalAlign: 'top',
+                      },
+                    }}
+                  >
+                    <TableCell colSpan={5}>
+                      <TransactionBookingsTable
+                        rows={[outTx, inTx]}
+                        accounts={accountsQ.data ?? []}
+                        hideInlineHint
+                        embedded
+                        emptyMessage="Keine Buchungen."
+                      />
+                    </TableCell>
+                  </TableRow>
+                </Fragment>
               );
             })}
           </TableBody>

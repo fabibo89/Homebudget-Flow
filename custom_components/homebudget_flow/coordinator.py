@@ -96,6 +96,14 @@ class HomeBudgetFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._jwt_cached = str(token)
                 return self._jwt_cached
 
+    async def async_bearer_token(self) -> str:
+        """Gültiges JWT für zusätzliche HA-Endpunkte (z. B. Diagramm-PNG)."""
+        return await self._async_get_bearer_token()
+
+    def invalidate_bearer_token(self) -> None:
+        """Nach 401 erneut einloggen (z. B. Kameraabruf)."""
+        self._jwt_cached = None
+
     async def _async_update_data(self) -> dict[str, Any]:
         session = async_get_clientsession(self.hass)
         try:
@@ -123,9 +131,39 @@ class HomeBudgetFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     if resp.status != 200:
                         raise UpdateFailed(f"HTTP {resp.status}")
                     try:
-                        return await resp.json()
+                        snapshot = await resp.json()
                     except (ValueError, TypeError) as err:
                         raise UpdateFailed("Invalid JSON") from err
+
+                dayzero: dict[str, Any] = {"accounts": []}
+                async with session.get(
+                    f"{self.api_url}/api/ha/dayzero-meltdown",
+                    headers=headers,
+                    timeout=60,
+                ) as dz_resp:
+                    if dz_resp.status == 200:
+                        try:
+                            dayzero = await dz_resp.json()
+                        except (ValueError, TypeError):
+                            dayzero = {"accounts": []}
+                    elif dz_resp.status == 401:
+                        if attempt == 0:
+                            self._jwt_cached = None
+                            bearer = await self._async_get_bearer_token()
+                            headers = {"Authorization": f"Bearer {bearer}"}
+                            continue
+                        raise UpdateFailed("Unauthorized")
+
+                dz_by_id = {
+                    int(a["bank_account_id"]): a
+                    for a in dayzero.get("accounts", [])
+                    if a.get("bank_account_id") is not None
+                }
+                for acc in snapshot.get("accounts", []):
+                    aid = acc.get("bank_account_id")
+                    if aid is not None and aid in dz_by_id:
+                        acc["dayzero"] = dz_by_id[aid]
+                return snapshot
         except TimeoutError as err:
             raise UpdateFailed("Timeout") from err
         except OSError as err:

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import logging
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -669,6 +669,114 @@ async def list_income_transactions_in_meltdown_period(
         q = q.where(Transaction.id.notin_(transfer_ids))
     r = await session.execute(q)
     return list(r.unique().scalars().all())
+
+
+def ha_dayzero_pick_today_row_index(day_rows: list[dict]) -> int:
+    """Index der Tabellenzeile für APP_TIMEZONE-„heute“ (clamp auf Periodenanfang/-ende)."""
+    if not day_rows:
+        return -1
+    t = app_today()
+    t_iso = t.isoformat()
+    for i, row in enumerate(day_rows):
+        if row.get("day") == t_iso:
+            return i
+    first_s = day_rows[0].get("day")
+    last_s = day_rows[-1].get("day")
+    if not first_s or not last_s:
+        return len(day_rows) - 1
+    first = date.fromisoformat(str(first_s)[:10])
+    last = date.fromisoformat(str(last_s)[:10])
+    if t < first:
+        return 0
+    if t > last:
+        return len(day_rows) - 1
+    return len(day_rows) - 1
+
+
+def ha_konto_ohne_fixkosten_tabellen_start(inp: DayZeroInputs) -> Decimal:
+    """Wie DayZero.tsx ``tableKontoMorgenStartInklEinnahmen``: Konto-Startzeile + Vertrags-Netto + abgehende Umbuchungen."""
+    return (
+        inp.konto_saldo_morgen_tag_null
+        + inp.einnahmen_summe_tag_zero_zeitraum
+        + inp.vertraege_netto_summe_tag_zero_zeitraum
+        + inp.outgoing_internal_transfer_adjustment
+    ).quantize(Decimal("0.01"))
+
+
+def ha_saldo_referenz_meltdown_line_series(days: list[dict], ref: Decimal) -> list[Decimal]:
+    """Meltdown-Linie (ohne Fixkosten): Start ``ref``, pro Tag − ``spend_excl_contract`` (wie Web-UI)."""
+    run = ref
+    out: list[Decimal] = []
+    for row in days:
+        excl = Decimal(str(row.get("spend_excl_contract", "0")))
+        s = excl if excl >= 0 else Decimal("0")
+        run = (run - s).quantize(Decimal("0.01"))
+        out.append(run)
+    return out
+
+
+def ha_konto_linear_soll_from_referenz(n: int, ref: Decimal) -> list[Decimal]:
+    """Lineare Soll-Rampe von ``ref`` auf 0 über die Periodenlänge (wie Referenz-linear im Diagramm)."""
+    if n <= 0:
+        return []
+    denom = max(1, n - 1)
+    return [
+        (ref * (Decimal(1) - Decimal(i) / Decimal(denom))).quantize(Decimal("0.01")) for i in range(n)
+    ]
+
+
+def build_ha_dayzero_derived_fields(inp: DayZeroInputs, days: list[dict]) -> dict[str, Any]:
+    """Zusatzfelder + Chart-Reihen für Home Assistant (Konto · ohne Fixkosten / Geld pro Tag)."""
+    if not days:
+        return {
+            "konto_ohne_fixkosten_start": None,
+            "konto_ohne_fixkosten_saldo_ist": None,
+            "konto_ohne_fixkosten_saldo_soll": None,
+            "konto_ohne_fixkosten_saldo_delta_ist_minus_soll": None,
+            "konto_ohne_fixkosten_pfad_heute": None,
+            "konto_ohne_fixkosten_geld_pro_tag": None,
+            "chart_days": [],
+            "chart_konto_ist": [],
+            "chart_meltdown_line": [],
+            "chart_konto_linear_soll": [],
+        }
+    ref = ha_konto_ohne_fixkosten_tabellen_start(inp)
+    line = ha_saldo_referenz_meltdown_line_series(days, ref)
+    linear = ha_konto_linear_soll_from_referenz(len(days), ref)
+    idx = ha_dayzero_pick_today_row_index(days)
+    if idx < 0:
+        idx = len(days) - 1
+    day_row = days[idx]
+    pfad = line[idx]
+    n = len(days)
+    days_left = max(0, n - idx)
+    geld_pt = (
+        (pfad / Decimal(days_left)).quantize(Decimal("0.01")) if days_left > 0 else Decimal("0")
+    )
+    # Saldo-Tabelle „Konto · ohne Fixkosten“: Ist = Bank-Saldo (wie Web, bevorzugt ``konto_saldo_ist``).
+    try:
+        ist_day = Decimal(str(day_row.get("konto_balance_actual", "0"))).quantize(Decimal("0.01"))
+    except (ArithmeticError, ValueError, TypeError):
+        ist_day = Decimal("0")
+    ist_sync = inp.konto_saldo_ist.quantize(Decimal("0.01"))
+    ist = ist_sync if ist_sync.is_finite() else ist_day
+    denom = max(1, n - 1)
+    soll = (ref * (Decimal(1) - Decimal(idx) / Decimal(denom))).quantize(Decimal("0.01"))
+    delta = (ist - soll).quantize(Decimal("0.01"))
+    return {
+        "konto_ohne_fixkosten_start": str(ref),
+        "konto_ohne_fixkosten_saldo_ist": str(ist),
+        "konto_ohne_fixkosten_saldo_soll": str(soll),
+        "konto_ohne_fixkosten_saldo_delta_ist_minus_soll": str(delta),
+        "konto_ohne_fixkosten_pfad_heute": str(pfad),
+        "konto_ohne_fixkosten_geld_pro_tag": str(geld_pt),
+        "chart_days": [str(row.get("day", "")) for row in days],
+        "chart_konto_ist": [
+            str(Decimal(str(row.get("konto_balance_actual", "0"))).quantize(Decimal("0.01"))) for row in days
+        ],
+        "chart_meltdown_line": [str(x) for x in line],
+        "chart_konto_linear_soll": [str(x) for x in linear],
+    }
 
 
 async def list_contract_transactions_in_meltdown_period(

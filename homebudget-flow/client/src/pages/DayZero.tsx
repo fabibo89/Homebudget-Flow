@@ -135,6 +135,12 @@ function yAxisMaxSaldoMixed(args: {
   return hi;
 }
 
+/** Tages-Ausgaben im Saldo- und Geld/Tag-Diagramm (gestapelte Balken, gleiche Legende). */
+const CHART_SPEND_BAR_SONSTIGE_NAME = 'Ausgaben · sonstige';
+const CHART_SPEND_BAR_VERTRAEGE_NAME = 'Ausgaben · Verträge';
+const CHART_COLOR_SPEND_SONSTIGE = '#FEB019';
+const CHART_COLOR_SPEND_VERTRAEGE = '#FF4560';
+
 function diffColor(args: { goodWhen: 'positive' | 'negative' | 'zeroOrPositive' | 'zeroOrNegative'; diff: number }): string {
   const { goodWhen, diff } = args;
   const ok =
@@ -513,13 +519,13 @@ function buildSaldoChart(args: {
     { name: 'Meltdown‑Linie (ohne Fixkosten)', data: referenzLineMasked },
     { name: 'Konto · ohne Fixkosten · Soll (linear)', data: referenzLinearSollData },
     {
-      name: 'Ausgaben · sonstige',
+      name: CHART_SPEND_BAR_SONSTIGE_NAME,
       type: 'column',
       stack: 'ausgaben',
       data: showBarSonstige ? spendSonstige : nullLine,
     },
     {
-      name: 'Ausgaben · Verträge',
+      name: CHART_SPEND_BAR_VERTRAEGE_NAME,
       type: 'column',
       stack: 'ausgaben',
       data: showBarVertraege ? spendVertraege : nullLine,
@@ -529,16 +535,14 @@ function buildSaldoChart(args: {
   const COLOR_KONTO_IST = '#00E396';
   const COLOR_REFERENZ_MELTDOWN = '#008FFB';
   const COLOR_REFERENZ_SOLL_LINEAR = '#69F0AE';
-  const COLOR_BAR_SONSTIGE = '#FEB019';
-  const COLOR_BAR_VERTRAEGE = '#FF4560';
   const strokeStyles = series.map((s: { name?: string; type?: string }) => {
     const n = String(s.name ?? '');
     if (n === 'Konto · Ist') return { w: 2, dash: 0, color: COLOR_KONTO_IST };
     if (n === 'Meltdown‑Linie (ohne Fixkosten)') return { w: 3, dash: 6, color: COLOR_REFERENZ_MELTDOWN };
     if (n === 'Konto · ohne Fixkosten · Soll (linear)') return { w: 2, dash: 6, color: COLOR_REFERENZ_SOLL_LINEAR };
-    if (n === 'Ausgaben · sonstige') return { w: 0, dash: 0, color: COLOR_BAR_SONSTIGE };
-    if (n === 'Ausgaben · Verträge') return { w: 0, dash: 0, color: COLOR_BAR_VERTRAEGE };
-    return { w: 0, dash: 0, color: COLOR_BAR_SONSTIGE };
+    if (n === CHART_SPEND_BAR_SONSTIGE_NAME) return { w: 0, dash: 0, color: CHART_COLOR_SPEND_SONSTIGE };
+    if (n === CHART_SPEND_BAR_VERTRAEGE_NAME) return { w: 0, dash: 0, color: CHART_COLOR_SPEND_VERTRAEGE };
+    return { w: 0, dash: 0, color: CHART_COLOR_SPEND_SONSTIGE };
   });
 
   const options: ApexOptions = {
@@ -546,6 +550,7 @@ function buildSaldoChart(args: {
       type: 'line',
       height: 340,
       stacked: true,
+      stackType: 'normal',
       stackOnlyBar: true,
       toolbar: { show: false },
       zoom: { enabled: false },
@@ -557,8 +562,8 @@ function buildSaldoChart(args: {
           if (name === 'Konto · Ist') onToggleKontoIst();
           else if (name === 'Meltdown‑Linie (ohne Fixkosten)') onToggleReferenzMeltdownLine();
           else if (name === 'Konto · ohne Fixkosten · Soll (linear)') onToggleKontoReferenzSollLinear();
-          else if (name === 'Ausgaben · sonstige') onToggleBarSonstige();
-          else if (name === 'Ausgaben · Verträge') onToggleBarVertraege();
+          else if (name === CHART_SPEND_BAR_SONSTIGE_NAME) onToggleBarSonstige();
+          else if (name === CHART_SPEND_BAR_VERTRAEGE_NAME) onToggleBarVertraege();
           return false; // prevent Apex default hide/show
         },
         dataPointSelection: (_event, _chartCtx, cfg) => {
@@ -566,10 +571,10 @@ function buildSaldoChart(args: {
           const di = cfg?.dataPointIndex;
           const sNames = cfg?.w?.globals?.seriesNames;
           const name = typeof si === 'number' && sNames ? String(sNames[si] ?? '') : '';
-          const isSpend = name === 'Ausgaben · Verträge' || name === 'Ausgaben · sonstige';
+          const isSpend = name === CHART_SPEND_BAR_VERTRAEGE_NAME || name === CHART_SPEND_BAR_SONSTIGE_NAME;
           if (!isSpend) return;
-          if (name === 'Ausgaben · Verträge' && !showBarVertraege) return;
-          if (name === 'Ausgaben · sonstige' && !showBarSonstige) return;
+          if (name === CHART_SPEND_BAR_VERTRAEGE_NAME && !showBarVertraege) return;
+          if (name === CHART_SPEND_BAR_SONSTIGE_NAME && !showBarSonstige) return;
           const day = typeof di === 'number' ? cats?.[di] : undefined;
           if (isIsoDay(day)) onPickSpendDay(day);
         },
@@ -659,8 +664,8 @@ function buildSaldoChart(args: {
           (seriesName === 'Konto · Ist' && !showKontoIst) ||
           (seriesName === 'Meltdown‑Linie (ohne Fixkosten)' && !showReferenzMeltdownLine) ||
           (seriesName === 'Konto · ohne Fixkosten · Soll (linear)' && !showKontoReferenzSollLinear) ||
-          (seriesName === 'Ausgaben · sonstige' && !showBarSonstige) ||
-          (seriesName === 'Ausgaben · Verträge' && !showBarVertraege);
+          (seriesName === CHART_SPEND_BAR_SONSTIGE_NAME && !showBarSonstige) ||
+          (seriesName === CHART_SPEND_BAR_VERTRAEGE_NAME && !showBarVertraege);
         return disabled ? `<span style="opacity:0.45">${seriesName}</span>` : seriesName;
       },
     },
@@ -670,18 +675,32 @@ function buildSaldoChart(args: {
 
 /**
  * Geld pro Tag nur für die Zeile „Konto · ohne Fixkosten“: Fix/Tag, Ø Ist/Tag (kumul., ohne Verträge), Ø Soll/Tag
- * (Rest der Meltdown‑Linie ohne Fixkosten geteilt durch Resttage).
+ * (Rest der Meltdown‑Linie ohne Fixkosten geteilt durch Resttage), plus Tagesbalken nur für Ausgaben ohne Verträge.
  */
 function buildGeldProTagChart(args: {
   data: DayZeroMeltdownOut;
   showFixTag: boolean;
   showIstTag: boolean;
   showSollTag: boolean;
+  showBarSonstige: boolean;
   onToggleFixTag: () => void;
   onToggleIstTag: () => void;
   onToggleSollTag: () => void;
+  onToggleBarSonstige: () => void;
+  onPickSpendDay: (isoDay: string) => void;
 }): { options: ApexOptions; series: any[] } {
-  const { data, showFixTag, showIstTag, showSollTag, onToggleFixTag, onToggleIstTag, onToggleSollTag } = args;
+  const {
+    data,
+    showFixTag,
+    showIstTag,
+    showSollTag,
+    showBarSonstige,
+    onToggleFixTag,
+    onToggleIstTag,
+    onToggleSollTag,
+    onToggleBarSonstige,
+    onPickSpendDay,
+  } = args;
   const tz = getAppTimeZone();
   const todayIso = isoDayInTimeZone(new Date(), tz);
   const dayIsos = data.days.map((x) => x.day);
@@ -714,13 +733,21 @@ function buildGeldProTagChart(args: {
     });
   })();
 
+  const spendSonstige = data.days.map((d) => Number(d.spend_excl_contract ?? 0));
+
   const nullLine = data.days.map(() => null);
   const kontoOhneFixDynMasked = maskSeriesAfterCalendarDay(dayIsos, kontoOhneFixSollDynPerDay, todayIso);
   const istKumAvgExclMasked = maskSeriesAfterCalendarDay(dayIsos, istKumAvgExclRaw, todayIso);
   const geldLinesForYMin = [kontoOhneFixSollFixPerDay, istKumAvgExclMasked, kontoOhneFixDynMasked];
+  /** Ohne sichtbare Ausgaben-Balken: Skala nur aus den Linien — sonst bleibt viel Leerraum durch hohe Tageswerte. */
   const yAxisMinGeld = yAxisMinTrimZeroGap({
     linesForMin: geldLinesForYMin,
-    allForMax: geldLinesForYMin,
+    allForMax: showBarSonstige ? [...geldLinesForYMin, spendSonstige] : geldLinesForYMin,
+  });
+  const yAxisMaxGeld = yAxisMaxSaldoMixed({
+    linesForMax: geldLinesForYMin,
+    stackedBarsPerDay: showBarSonstige ? spendSonstige : nullLine,
+    yMinHint: yAxisMinGeld,
   });
 
   const COLOR_FIX = '#AB47BC';
@@ -735,19 +762,28 @@ function buildGeldProTagChart(args: {
     { name: nameFixTag, data: showFixTag ? kontoOhneFixSollFixPerDay : nullLine },
     { name: nameIstTag, data: showIstTag ? istKumAvgExclMasked : nullLine },
     { name: nameSollTag, data: showSollTag ? kontoOhneFixDynMasked : nullLine },
+    {
+      name: CHART_SPEND_BAR_SONSTIGE_NAME,
+      type: 'column',
+      stack: 'ausgaben',
+      data: showBarSonstige ? spendSonstige : nullLine,
+    },
   ];
 
   const strokeStyles = [
     { w: 2, dash: 6, color: COLOR_FIX },
     { w: 2, dash: 0, color: COLOR_IST },
     { w: 4, dash: 0, color: COLOR_SOLL },
+    { w: 0, dash: 0, color: CHART_COLOR_SPEND_SONSTIGE },
   ];
 
   const options: ApexOptions = {
     chart: {
       type: 'line',
       height: 340,
-      stacked: false,
+      stacked: true,
+      stackType: 'normal',
+      stackOnlyBar: true,
       toolbar: { show: false },
       zoom: { enabled: false },
       events: {
@@ -758,11 +794,23 @@ function buildGeldProTagChart(args: {
           if (name === nameFixTag) onToggleFixTag();
           else if (name === nameIstTag) onToggleIstTag();
           else if (name === nameSollTag) onToggleSollTag();
+          else if (name === CHART_SPEND_BAR_SONSTIGE_NAME) onToggleBarSonstige();
           return false;
+        },
+        dataPointSelection: (_event, _chartCtx, cfg) => {
+          const si = cfg?.seriesIndex;
+          const di = cfg?.dataPointIndex;
+          const sNames = cfg?.w?.globals?.seriesNames;
+          const name = typeof si === 'number' && sNames ? String(sNames[si] ?? '') : '';
+          if (name !== CHART_SPEND_BAR_SONSTIGE_NAME) return;
+          if (!showBarSonstige) return;
+          const day = typeof di === 'number' ? cats?.[di] : undefined;
+          if (isIsoDay(day)) onPickSpendDay(day);
         },
       },
     },
     colors: strokeStyles.map((s) => s.color),
+    plotOptions: { bar: { columnWidth: '55%' } },
     stroke: { width: strokeStyles.map((s) => s.w), curve: 'smooth', dashArray: strokeStyles.map((s) => s.dash) },
     markers: { size: 0 },
     grid: {
@@ -795,6 +843,7 @@ function buildGeldProTagChart(args: {
     },
     yaxis: {
       ...(yAxisMinGeld != null ? { min: yAxisMinGeld } : {}),
+      ...(yAxisMaxGeld != null ? { max: yAxisMaxGeld } : {}),
       axisBorder: { show: true, color: 'rgba(255,255,255,0.12)' },
       axisTicks: { show: true, color: 'rgba(255,255,255,0.12)' },
       labels: { formatter: (v: number) => formatMoney(String(v.toFixed(2)), data.currency) },
@@ -839,7 +888,8 @@ function buildGeldProTagChart(args: {
         const disabled =
           (seriesName === nameFixTag && !showFixTag) ||
           (seriesName === nameIstTag && !showIstTag) ||
-          (seriesName === nameSollTag && !showSollTag);
+          (seriesName === nameSollTag && !showSollTag) ||
+          (seriesName === CHART_SPEND_BAR_SONSTIGE_NAME && !showBarSonstige);
         return disabled ? `<span style="opacity:0.45">${seriesName}</span>` : seriesName;
       },
     },
@@ -868,6 +918,7 @@ export default function DayZero() {
   const [showSpendFixTag, setShowSpendFixTag] = useState(true);
   const [showSpendIstTag, setShowSpendIstTag] = useState(true);
   const [showSpendSollTag, setShowSpendSollTag] = useState(true);
+  const [showGeldBarSonstige, setShowGeldBarSonstige] = useState(true);
 
   const effectiveAccountId = pick === '' ? (accounts[0]?.id ?? null) : pick;
 
@@ -886,6 +937,7 @@ export default function DayZero() {
   const toggleSpendFixTag = useCallback(() => setShowSpendFixTag((v) => !v), []);
   const toggleSpendIstTag = useCallback(() => setShowSpendIstTag((v) => !v), []);
   const toggleSpendSollTag = useCallback(() => setShowSpendSollTag((v) => !v), []);
+  const toggleGeldBarSonstige = useCallback(() => setShowGeldBarSonstige((v) => !v), []);
 
   const todaySummary = useMemo(() => {
     const d = meltdownQ.data;
@@ -1286,9 +1338,12 @@ export default function DayZero() {
         showFixTag: showSpendFixTag,
         showIstTag: showSpendIstTag,
         showSollTag: showSpendSollTag,
+        showBarSonstige: showGeldBarSonstige,
         onToggleFixTag: toggleSpendFixTag,
         onToggleIstTag: toggleSpendIstTag,
         onToggleSollTag: toggleSpendSollTag,
+        onToggleBarSonstige: toggleGeldBarSonstige,
+        onPickSpendDay: pickSpendDay,
       }),
     };
   }, [
@@ -1307,9 +1362,11 @@ export default function DayZero() {
     showSpendFixTag,
     showSpendIstTag,
     showSpendSollTag,
+    showGeldBarSonstige,
     toggleSpendFixTag,
     toggleSpendIstTag,
     toggleSpendSollTag,
+    toggleGeldBarSonstige,
   ]);
 
   const spendTxQ = useQuery({
@@ -2059,7 +2116,7 @@ export default function DayZero() {
               </Paper>
               <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
                 <Typography variant="subtitle1" fontWeight={700} gutterBottom>
-                  Geld pro Tag — nur „Konto · ohne Fixkosten“
+                  Geld pro Tag — „Konto · ohne Fixkosten“ + sonstige Ausgaben
                 </Typography>
                 <Chart options={charts.spend.options} series={charts.spend.series} type="line" height={340} />
                 <Stack spacing={1} sx={{ mt: 1.5 }}>
@@ -2076,7 +2133,12 @@ export default function DayZero() {
                     die verbleibenden Kalendertage inkl. heute (Spalte Ø Soll/Tag).
                   </Typography>
                   <Typography variant="body2" color="text.secondary" component="div">
-                    Legende: alle drei Reihen ein‑/ausblendbar.
+                    <strong>Ausgaben · sonstige:</strong> Tagesbalken nur für Ausgaben <em>ohne</em> Vertragsbuchungen
+                    (Farbe wie im Saldo‑Diagramm); Legende unabhängig vom Saldo‑Chart. Klick auf einen Balken öffnet die
+                    Buchungen dieses Tags darunter.
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" component="div">
+                    Legende: alle vier Reihen ein‑/ausblendbar.
                   </Typography>
                 </Stack>
               </Paper>

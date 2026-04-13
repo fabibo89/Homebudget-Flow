@@ -11,6 +11,7 @@ from homeassistant.helpers.typing import ConfigType
 
 from .config_flow import _normalize_api_url
 from .const import CONF_API_URL, CONF_EMAIL, CONF_PASSWORD, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .coordinator import HomeBudgetFlowCoordinator
 
 CONFIG_SCHEMA = vol.Schema(
     {
@@ -49,7 +50,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+    coordinator = HomeBudgetFlowCoordinator(hass, entry)
+    await coordinator.async_config_entry_first_refresh()
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor", "camera"])
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
@@ -59,4 +63,7 @@ async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    return await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+    ok = await hass.config_entries.async_unload_platforms(entry, ["sensor", "camera"])
+    if ok:
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+    return ok

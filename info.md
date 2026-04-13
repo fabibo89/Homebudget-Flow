@@ -45,6 +45,7 @@ Pro Bankkonto (Namen enthalten den Kontonamen):
 |--------|----------------|
 | **Balance** | Kontostand (Zahl, monetär) |
 | **Sync** | Gesamtstatus (`ok`, `error`, …), `last_error` als Attribut |
+| **Zuletzt synchronisiert** | Zeitstempel (`device_class: timestamp`): spätester erfolgreicher Saldo- oder Umsatz-Sync; Attribute mit `balance_success_at` / `transactions_success_at` |
 | **Saldo-Import** | `ok` / `error` / `unknown`: ob der letzte Saldo-Abruf zum letzten Versuch passt (`balance_success_at` ≥ `balance_attempt_at`). Attribute mit ISO-Zeitstempeln. |
 | **Umsätze-Import** | `ok` / `error` / `unknown`: ob der letzte Umsatz-Abruf zum letzten Versuch passt (`transactions_*`). Attribute mit ISO-Zeitstempeln. |
 | **Gehalt zuletzt (Datum)** | Buchungsdatum der letzten Buchung mit Standard-Kategorie „Gehalt“ unter „Geldeingang“ (Server-Cache), ISO-Datum `YYYY-MM-DD` oder leer. |

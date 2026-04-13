@@ -183,6 +183,22 @@ class HaDayZeroAccountToday(BaseModel):
     tag_zero_date: Optional[str] = None
     period_end_exclusive: Optional[str] = None
     today: Optional[DayZeroMeltdownDay] = None
+    #: Tabellen-Start „Konto · ohne Fixkosten“ (Morgen + Einnahmen + Vertrags-Netto + abgehende Umbuchungen).
+    konto_ohne_fixkosten_start: Optional[str] = None
+    #: Saldo-Tabelle Spalte „Ist“: Bank-Saldo (wie Web, ``konto_saldo_ist``).
+    konto_ohne_fixkosten_saldo_ist: Optional[str] = None
+    #: Saldo-Tabelle Spalte „Soll“: lineare Rampe vom Startwert auf 0.
+    konto_ohne_fixkosten_saldo_soll: Optional[str] = None
+    #: Saldo-Tabelle Spalte „Ist − Soll“.
+    konto_ohne_fixkosten_saldo_delta_ist_minus_soll: Optional[str] = None
+    #: Meltdown-Referenzpfad am Stichtag (APP_TIMEZONE-„heute“, clamp Periodenende): wie Saldo-Diagramm.
+    konto_ohne_fixkosten_pfad_heute: Optional[str] = None
+    #: Geld-Tabelle: Referenzrest geteilt durch verbleibende Periodentage inkl. heute (wie Web-UI).
+    konto_ohne_fixkosten_geld_pro_tag: Optional[str] = None
+    chart_days: list[str] = Field(default_factory=list)
+    chart_konto_ist: list[str] = Field(default_factory=list)
+    chart_meltdown_line: list[str] = Field(default_factory=list)
+    chart_konto_linear_soll: list[str] = Field(default_factory=list)
 
 
 class HaDayZeroMeltdownSnapshot(BaseModel):

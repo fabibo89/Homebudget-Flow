@@ -21,6 +21,22 @@ from .const import DOMAIN
 from .coordinator import HomeBudgetFlowCoordinator
 
 
+def _parse_ha_timestamp(iso: str | None) -> datetime | None:
+    """ISO-Zeit aus der API → timezone-aware datetime (UTC falls ohne TZ)."""
+    if not iso or not isinstance(iso, str):
+        return None
+    s = iso.strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _account_device_info(coordinator: HomeBudgetFlowCoordinator, bank_account_id: int, account_name: str | None) -> dict[str, Any]:
     """DeviceInfo pro Bankkonto, gruppiert mehrere Sensoren unter einem Device."""
     entry_id = coordinator.entry.entry_id
@@ -80,8 +96,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator = HomeBudgetFlowCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
+    coordinator: HomeBudgetFlowCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities: list[SensorEntity] = []
     for acc in coordinator.data.get("accounts", []):
@@ -101,6 +116,14 @@ async def async_setup_entry(
                 aid,
                 f"{name} Sync",
                 f"{DOMAIN}_sync_{aid}",
+            )
+        )
+        entities.append(
+            HomeBudgetLastSyncSensor(
+                coordinator,
+                aid,
+                f"{name} Zuletzt synchronisiert",
+                f"{DOMAIN}_last_sync_at_{aid}",
             )
         )
         entities.append(
@@ -137,6 +160,31 @@ async def async_setup_entry(
                 f"{DOMAIN}_last_salary_amount_{aid}",
             )
         )
+        dz = acc.get("dayzero")
+        if dz and dz.get("tag_zero_date"):
+            for col, suffix, label in (
+                ("start", "ofix_saldo_start", "Day Zero · o. Fix · Start"),
+                ("ist", "ofix_saldo_ist", "Day Zero · o. Fix · Ist"),
+                ("soll", "ofix_saldo_soll", "Day Zero · o. Fix · Soll"),
+                ("delta", "ofix_saldo_delta", "Day Zero · o. Fix · Ist−Soll"),
+            ):
+                entities.append(
+                    HomeBudgetDayZeroOhneFixSaldoSensor(
+                        coordinator,
+                        aid,
+                        f"{name} {label}",
+                        f"{DOMAIN}_dayzero_{suffix}_{aid}",
+                        col,
+                    )
+                )
+            entities.append(
+                HomeBudgetDayZeroGeldProTagSensor(
+                    coordinator,
+                    aid,
+                    f"{name} Day Zero · Geld/Tag (o. Fix)",
+                    f"{DOMAIN}_dayzero_geld_pro_tag_{aid}",
+                )
+            )
 
     async_add_entities(entities)
 
@@ -252,6 +300,57 @@ class HomeBudgetSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], SensorE
         )
 
 
+class HomeBudgetLastSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity):
+    """Zeitpunkt des letzten erfolgreichen Saldo- oder Umsatz-Syncs."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = False
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(
+        self,
+        coordinator: HomeBudgetFlowCoordinator,
+        bank_account_id: int,
+        name: str,
+        unique_id: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._bank_account_id = bank_account_id
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+
+    def _account(self) -> dict[str, Any] | None:
+        for acc in self.coordinator.data.get("accounts", []):
+            if acc.get("bank_account_id") == self._bank_account_id:
+                return acc
+        return None
+
+    @property
+    def native_value(self) -> datetime | None:
+        acc = self._account()
+        if not acc:
+            return None
+        return _parse_ha_timestamp(acc.get("last_sync_at"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        acc = self._account() or {}
+        return {
+            "bank_account_id": self._bank_account_id,
+            "balance_success_at": acc.get("balance_success_at"),
+            "transactions_success_at": acc.get("transactions_success_at"),
+        }
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
+
+
 class HomeBudgetPartImportSensor(
     CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
 ):
@@ -308,6 +407,160 @@ class HomeBudgetPartImportSensor(
             "bank_account_id": self._bank_account_id,
             "transactions_attempt_at": acc.get("transactions_attempt_at"),
             "transactions_success_at": acc.get("transactions_success_at"),
+        }
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
+
+
+def _dayzero_payload(acc: dict[str, Any] | None) -> dict[str, Any]:
+    if not acc:
+        return {}
+    raw = acc.get("dayzero")
+    return raw if isinstance(raw, dict) else {}
+
+
+class HomeBudgetDayZeroOhneFixSaldoSensor(
+    CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
+):
+    """Saldo-Tabelle „Konto · ohne Fixkosten“: Startwert, Ist, Soll, Ist−Soll (APP-Zeitzone-Stichtag)."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = False
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_suggested_display_precision = 2
+
+    _KEYS: dict[str, str] = {
+        "start": "konto_ohne_fixkosten_start",
+        "ist": "konto_ohne_fixkosten_saldo_ist",
+        "soll": "konto_ohne_fixkosten_saldo_soll",
+        "delta": "konto_ohne_fixkosten_saldo_delta_ist_minus_soll",
+    }
+
+    def __init__(
+        self,
+        coordinator: HomeBudgetFlowCoordinator,
+        bank_account_id: int,
+        name: str,
+        unique_id: str,
+        column: Literal["start", "ist", "soll", "delta"],
+    ) -> None:
+        super().__init__(coordinator)
+        self._bank_account_id = bank_account_id
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+        self._column = column
+        self._attr_state_class = (
+            SensorStateClass.MEASUREMENT if column == "delta" else SensorStateClass.TOTAL
+        )
+
+    def _account(self) -> dict[str, Any] | None:
+        for acc in self.coordinator.data.get("accounts", []):
+            if acc.get("bank_account_id") == self._bank_account_id:
+                return acc
+        return None
+
+    @property
+    def native_value(self) -> float | None:
+        dz = _dayzero_payload(self._account())
+        return _parse_balance(dz.get(self._KEYS[self._column]))
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        acc = self._account() or {}
+        cur = acc.get("currency")
+        if cur and str(cur).strip():
+            return str(cur).strip().upper()
+        return "EUR"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        acc = self._account() or {}
+        dz = _dayzero_payload(acc)
+        base: dict[str, Any] = {
+            "bank_account_id": self._bank_account_id,
+            "tag_zero_date": dz.get("tag_zero_date"),
+            "period_end_exclusive": dz.get("period_end_exclusive"),
+            "column": self._column,
+        }
+        if self._column == "ist":
+            base.update(
+                {
+                    "konto_ohne_fixkosten_pfad_heute": dz.get("konto_ohne_fixkosten_pfad_heute"),
+                    "chart_days": dz.get("chart_days"),
+                    "chart_konto_ist": dz.get("chart_konto_ist"),
+                    "chart_meltdown_line": dz.get("chart_meltdown_line"),
+                    "chart_konto_linear_soll": dz.get("chart_konto_linear_soll"),
+                }
+            )
+        return base
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        acc = self._account() or {}
+        return _account_device_info(
+            self.coordinator,
+            self._bank_account_id,
+            acc.get("name"),
+        )
+
+
+class HomeBudgetDayZeroGeldProTagSensor(
+    CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
+):
+    """„Geld pro Tag“-Soll zur Referenzlinie ohne Fixkosten (Rest durch verbleibende Tage)."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_has_entity_name = False
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+
+    def __init__(
+        self,
+        coordinator: HomeBudgetFlowCoordinator,
+        bank_account_id: int,
+        name: str,
+        unique_id: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._bank_account_id = bank_account_id
+        self._attr_unique_id = unique_id
+        self._attr_name = name
+
+    def _account(self) -> dict[str, Any] | None:
+        for acc in self.coordinator.data.get("accounts", []):
+            if acc.get("bank_account_id") == self._bank_account_id:
+                return acc
+        return None
+
+    @property
+    def native_value(self) -> float | None:
+        dz = _dayzero_payload(self._account())
+        return _parse_balance(dz.get("konto_ohne_fixkosten_geld_pro_tag"))
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        acc = self._account() or {}
+        cur = acc.get("currency")
+        if cur and str(cur).strip():
+            return str(cur).strip().upper()
+        return "EUR"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        acc = self._account() or {}
+        dz = _dayzero_payload(acc)
+        return {
+            "bank_account_id": self._bank_account_id,
+            "konto_ohne_fixkosten_pfad_heute": dz.get("konto_ohne_fixkosten_pfad_heute"),
+            "konto_ohne_fixkosten_start": dz.get("konto_ohne_fixkosten_start"),
         }
 
     @property

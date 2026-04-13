@@ -714,7 +714,7 @@ export type DayZeroMeltdownOut = {
   tag_zero_amount?: string | null;
   /** Betrag der neuesten Buchung, die der Tag-Null-Regel entspricht. */
   tag_zero_rule_booking_amount?: string | null;
-  /** Meltdown-Start (Anzeige): Summe aller positiven Umbuchungen im Zeitraum. */
+  /** Meltdown-Start (Anzeige): Summe aller positiven Buchungen im Zeitraum (inkl. eingehender Umbuchungen) = einnahmen_summe_tag_zero_zeitraum. */
   meltdown_start_amount?: string | null;
   /** Ob der Tag-Null-Saldo die Regel-Buchung schon enthält (Snapshot-Heuristik). */
   tag_zero_saldo_includes_rule_booking?: boolean | null;

@@ -30,6 +30,7 @@ import {
   fetchDayZeroMeltdown,
   fetchTransactions,
   type BankAccount,
+  type DayZeroMeltdownBookingRef,
   type DayZeroMeltdownOut,
   type Transaction,
 } from '../api/client';
@@ -161,15 +162,48 @@ function sumBookingRefAmounts(rows: readonly { amount?: string | null }[]): numb
   return s;
 }
 
+function transferBookingsBySign(
+  rows: readonly DayZeroMeltdownBookingRef[] | undefined,
+  sign: 'positive' | 'negative',
+): DayZeroMeltdownBookingRef[] {
+  return (rows ?? []).filter((r) => {
+    const n = Number(r.amount);
+    if (!Number.isFinite(n)) return false;
+    return sign === 'positive' ? n > 0 : n < 0;
+  });
+}
+
+type GeldeingangRow = { kind: 'income' | 'transfer_in'; row: DayZeroMeltdownBookingRef };
+
+function mergeGeldeingaengeRows(
+  income: DayZeroMeltdownBookingRef[] | undefined,
+  transfersIn: DayZeroMeltdownBookingRef[],
+): GeldeingangRow[] {
+  const out: GeldeingangRow[] = [];
+  for (const r of income ?? []) out.push({ kind: 'income', row: r });
+  for (const r of transfersIn) out.push({ kind: 'transfer_in', row: r });
+  out.sort((a, b) => {
+    const c = String(a.row.booking_date).localeCompare(String(b.row.booking_date));
+    if (c !== 0) return c;
+    return a.row.id - b.row.id;
+  });
+  return out;
+}
+
 /**
- * Saldo-Tabelle „Konto“ · Startwert: errechneter Morgen-Saldo Tag Null + Summe positiver Umbuchungen im Zeitraum +
- * zusätzliche Einnahmen (``income_bookings``, ohne eingehende Umbuchungen).
+ * Saldo-Tabelle „Konto“ · Startwert: **Konto · Day Zero** (``tableKontoMorningTagNull``) + **Summe Geldeingänge**
+ * im Zeitraum — API ``einnahmen_summe_tag_zero_zeitraum`` (alle positiven Buchungen inkl. eingehender Umbuchungen,
+ * wie Accordion „Geldeingänge“). Fallback nur wenn die Summe fehlt: Morgen-Saldo + ``meltdown_start_amount`` +
+ * ``income_bookings``.
  */
 function tableKontoSaldoRowStart(data: DayZeroMeltdownOut): number | null {
-  const mRaw = data.konto_saldo_morgen_tag_null;
-  if (mRaw == null || String(mRaw).trim() === '') return null;
-  const m = Number(mRaw);
-  if (!Number.isFinite(m)) return null;
+  const m = tableKontoMorningTagNull(data);
+  if (m == null) return null;
+  const eRaw = data.einnahmen_summe_tag_zero_zeitraum;
+  if (eRaw != null && String(eRaw).trim() !== '') {
+    const e = Number(eRaw);
+    if (Number.isFinite(e)) return m + e;
+  }
   let s = m;
   const mdRaw = data.meltdown_start_amount;
   if (mdRaw != null && String(mdRaw).trim() !== '') {
@@ -178,6 +212,14 @@ function tableKontoSaldoRowStart(data: DayZeroMeltdownOut): number | null {
   }
   s += sumBookingRefAmounts(data.income_bookings ?? []);
   return Number.isFinite(s) ? s : null;
+}
+
+/** Nur errechneter Morgen-Saldo am Tag Null (API ``konto_saldo_morgen_tag_null``) — ohne Umbuchungen, Einnahmen, Verträge. */
+function tableKontoMorningTagNull(data: DayZeroMeltdownOut): number | null {
+  const mRaw = data.konto_saldo_morgen_tag_null;
+  if (mRaw == null || String(mRaw).trim() === '') return null;
+  const m = Number(mRaw);
+  return Number.isFinite(m) ? m : null;
 }
 
 function MeltdownBookingSumFooter(props: { sum: number; currency: string }) {
@@ -231,8 +273,32 @@ function tableKontoStart(data: DayZeroMeltdownOut): number | null {
   return Number.isNaN(v) ? null : v;
 }
 
-/** Konto · ohne Fixkosten: Morgen-Saldo + Einnahmen + Vertrags-Netto im Zeitraum (API ``konto_morgen_start_inkl_einnahmen``). */
+/** Summe der negativen Beträge unter ``transfer_bookings`` (abgehende Umbuchungen, Bank-Vorzeichen). */
+function sumNegativeTransferBookings(data: DayZeroMeltdownOut): number {
+  let s = 0;
+  for (const r of data.transfer_bookings ?? []) {
+    const n = Number(r.amount);
+    if (Number.isFinite(n) && n < 0) s += n;
+  }
+  return s;
+}
+
+/**
+ * Konto · ohne Fixkosten · Startwert: **Konto**-Start (Saldo-Zeile) + Vertrags-Netto im Zeitraum + Summe negativer
+ * Umbuchungen — rechnerisch „Konto abzüglich Vertragslast und abgehender Umbuchungen“ (alles Bank-Vorzeichen;
+ * typisch sind Vertrags-Netto und Umbuchungen ≤ 0).
+ */
 function tableKontoMorgenStartInklEinnahmen(data: DayZeroMeltdownOut): number | null {
+  const kontoStart = tableKontoSaldoRowStart(data);
+  if (kontoStart != null && Number.isFinite(kontoStart)) {
+    const vRaw = data.vertraege_netto_summe_tag_zero_zeitraum;
+    const v =
+      vRaw != null && String(vRaw).trim() !== '' ? Number(vRaw) : 0;
+    if (vRaw != null && String(vRaw).trim() !== '' && !Number.isFinite(v)) return null;
+    const negTr = sumNegativeTransferBookings(data);
+    const out = kontoStart + v + negTr;
+    return Number.isFinite(out) ? out : null;
+  }
   const c =
     data.konto_morgen_start_inkl_einnahmen != null && String(data.konto_morgen_start_inkl_einnahmen).trim() !== ''
       ? Number(data.konto_morgen_start_inkl_einnahmen)
@@ -297,7 +363,7 @@ function kontoReferenzstartLinearSollSeries(data: DayZeroMeltdownOut): (number |
 }
 
 /**
- * Meltdown · ohne Fixkosten: Meltdown-Start (Summe positiver Umbuchungen) + Vertrags-Netto im Zeitraum
+ * Meltdown · ohne Fixkosten: Meltdown-Start (Summe aller Einnahmen im Zeitraum) + Vertrags-Netto im Zeitraum
  * (Bank-Vorzeichen; Vertrags-Netto typischerweise negativ → rechnerisch Abzug der Belastung).
  */
 function tableMeltdownReferenzStartTagNull(data: DayZeroMeltdownOut): number | null {
@@ -356,7 +422,7 @@ function kontoFixProTagRate(data: DayZeroMeltdownOut): number | null {
   return ts != null && Number.isFinite(Number(ts)) ? Number(ts) / n : null;
 }
 
-/** Startwert für Meltdown Soll/Ist: ``meltdown_start_amount`` (Summe pos. Umbuchungen), sonst erster Meltdown-Saldo. */
+/** Startwert für Meltdown Soll/Ist: ``meltdown_start_amount`` (Summe aller Einnahmen), sonst erster Meltdown-Saldo. */
 function meltdownDayZeroStart(data: DayZeroMeltdownOut): number | null {
   const mdStart =
     data.meltdown_start_amount != null && String(data.meltdown_start_amount).trim() !== ''
@@ -829,7 +895,7 @@ export default function DayZero() {
     const md0 = meltdownDayZeroStart(d);
     const hasMd = md0 != null && !Number.isNaN(md0);
     const kontoFixProTag = kontoFixProTagRate(d);
-    /** Meltdown Fix/Tag: meltdown_start_amount / n (Summe pos. Umbuchungen / Periodentage). */
+    /** Meltdown Fix/Tag: meltdown_start_amount / n (Summe Einnahmen / Periodentage). */
     const meltdownFixProTag = n > 0 && hasMd ? (md0 as number) / n : null;
     /** Vertrags-Netto im Zeitraum ÷ Kalendertage, als positive Tagesbelastung (wie Diagramm-Balken). */
     const vertrageGeldProTag = n > 0 ? contractBarPerDay(d.days[0]) : null;
@@ -874,6 +940,7 @@ export default function DayZero() {
         meltdownGeldStartMinusIst: null as number | null,
         meltdownReferenzGeldSollMinusIst: null as number | null,
         meltdownReferenzGeldStartMinusIst: null as number | null,
+        kontoDayZeroFixProTag: null as number | null,
       };
     }
 
@@ -925,6 +992,16 @@ export default function DayZero() {
       Number.isFinite(kontoSaldoHeute) &&
       Number.isFinite(kontoCompositeSollHeute)
         ? kontoSaldoHeute - kontoCompositeSollHeute
+        : null;
+
+    /** Konto · Day Zero (Geld-Tabelle): Fix/Tag = Morgen-Saldo Tag Null / Periodentage — nur Referenz zum Start. */
+    const kontoMorningTagNullTab = tableKontoMorningTagNull(d);
+    const kontoDayZeroFixProTag =
+      n > 0 &&
+      kontoMorningTagNullTab != null &&
+      Number.isFinite(kontoMorningTagNullTab) &&
+      !Number.isNaN(kontoMorningTagNullTab)
+        ? kontoMorningTagNullTab / n
         : null;
 
     /** Wie Konto-Fix/Tag, aber Startwert = „Konto · ohne Fixkosten“ (Startwert-Spalte). */
@@ -1181,6 +1258,7 @@ export default function DayZero() {
       meltdownGeldStartMinusIst,
       meltdownReferenzGeldSollMinusIst,
       meltdownReferenzGeldStartMinusIst,
+      kontoDayZeroFixProTag,
     };
   }, [meltdownQ.data]);
 
@@ -1332,6 +1410,7 @@ export default function DayZero() {
                     const d = meltdownQ.data;
                     const cur = d.currency;
                     const kontoMorgenStartInklEinnahmen = tableKontoMorgenStartInklEinnahmen(d);
+                    const kontoMorningTagNullTab = tableKontoMorningTagNull(d);
                     const kontoSaldoRowStartTab = tableKontoSaldoRowStart(d);
                     const meltdownReferenzStartTagNullTab = tableMeltdownReferenzStartTagNull(d);
                     const meltdownD0 = tableMeltdownStart(d);
@@ -1367,10 +1446,13 @@ export default function DayZero() {
                           </Typography>
                           <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
                             Tag Null → heute. Alle Beträge in Euro (Bestand). Spalte Startwert: je Zeile der Bezug zu
-                            Periodenbeginn (bei <strong>Konto</strong>: Morgen-Saldo Tag Null zuzüglich Summe{' '}
-                            <em>positiver</em> Umbuchungen im Zeitraum und zusätzlicher Einnahmen ohne Umbuchungen; bei{' '}
-                            <strong>Konto · ohne Fixkosten</strong>: Morgen-Saldo zuzüglich Einnahmen und Vertrags-Netto
-                            im Zeitraum; bei <strong>Meltdown · ohne Fixkosten</strong>: Meltdown-Start plus Vertrags-Netto
+                            Periodenbeginn (bei <strong>Konto · Day Zero</strong>: ausschließlich der errechnete
+                            Morgen-Saldo am Tag Null — <strong>nur diese Spalte</strong>, ohne Ist/Soll-Vergleich; bei{' '}
+                            <strong>Konto</strong>: <strong>Konto · Day Zero</strong> (Morgen-Saldo Tag Null) zuzüglich
+                            Summe <strong>Geldeingänge</strong> im Zeitraum (alle positiven Zuflüsse inkl. eingehender
+                            Umbuchungen, vgl. Grundlagen); bei{' '}
+                            <strong>Konto · ohne Fixkosten</strong>: Konto-Start zuzüglich Vertrags-Netto und negativer
+                            Umbuchungen (Bank-Vorzeichen); bei <strong>Meltdown · ohne Fixkosten</strong>: Meltdown-Start plus Vertrags-Netto
                             im Zeitraum — Bank-Vorzeichen, typisch negativ). Spalte Ist: aktueller Messwert zum Stichtag (bei{' '}
                             <strong>Konto</strong>, <strong>Konto · ohne Fixkosten</strong> und{' '}
                             <strong>Meltdown · ohne Fixkosten</strong>: Kontostand; bei <strong>Meltdown</strong>: Meltdown‑Ist).
@@ -1400,6 +1482,21 @@ export default function DayZero() {
                                 <TableRow hover>
                                   <TableCell sx={{ maxWidth: 360 }}>
                                     <Typography variant="body2" fontWeight={600}>
+                                      Konto · Day Zero
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                      Nur Referenz: errechneter Morgen-Saldo am Tag Null (ohne positive Umbuchungen,
+                                      sonstige Einnahmen oder Vertrags-Netto). Kein Ist/Soll-Vergleich in dieser Zeile.
+                                    </Typography>
+                                  </TableCell>
+                                  <TableCell align="right">{money(kontoMorningTagNullTab)}</TableCell>
+                                  <TableCell align="right">—</TableCell>
+                                  <TableCell align="right">—</TableCell>
+                                  <TableCell align="right">—</TableCell>
+                                </TableRow>
+                                <TableRow hover>
+                                  <TableCell sx={{ maxWidth: 360 }}>
+                                    <Typography variant="body2" fontWeight={600}>
                                       Konto
                                     </Typography>
                                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
@@ -1424,8 +1521,9 @@ export default function DayZero() {
                                       Konto · ohne Fixkosten
                                     </Typography>
                                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
-                                      Wie Konto, zuzüglich Vertrags-Netto im Zeitraum (Fixkosten-Anteil im Startwert).
-                                      Vergleich mit gleichem Kontostand, anderer Soll-Bezug.
+                                      Start = <strong>Konto</strong>-Start (Saldo) + Vertrags-Netto im Zeitraum + Summe
+                                      negativer Umbuchungen — rechnerisch Konto abzüglich Vertragslast und abgehender
+                                      Umbuchungen (Bank-Vorzeichen). Gleicher Kontostand in Ist, anderer Soll-Bezug.
                                     </Typography>
                                   </TableCell>
                                   <TableCell align="right">{money(kontoMorgenStartInklEinnahmen)}</TableCell>
@@ -1445,8 +1543,9 @@ export default function DayZero() {
                                       Meltdown
                                     </Typography>
                                     <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
-                                      Start aus Summe positiver Umbuchungen. Soll: lineare Rampe; Ist: abgeleitete
-                                      Meltdown-Kurve (Ausgaben ohne Verträge) — nicht roher Kontostand.
+                                      Start = Summe aller Einnahmen im Zeitraum (positive Buchungen, inkl. eingehender
+                                      Umbuchungen). Soll: lineare Rampe; Ist: abgeleitete Meltdown-Kurve (Ausgaben ohne
+                                      Verträge) — nicht roher Kontostand.
                                     </Typography>
                                   </TableCell>
                                   <TableCell align="right">{money(meltdownD0)}</TableCell>
@@ -1500,8 +1599,10 @@ export default function DayZero() {
                               dein bisheriger Tages‑Ist‑Mittel über diesem Rest‑Soll‑Pro‑Tag liegt); <strong>Start − Ist</strong>{' '}
                               = Fix/Tag (Start
                               geteilt durch Periodentage) minus Ø‑Ist — negativ bei Überausgabe gegenüber der gleichmäßigen
-                              Start‑Tagesrate. Zeile <strong>Konto</strong> entspricht der Saldo‑Zeile „Konto“
-                              (Start: Morgen Tag Null + pos. Umbuchungen + sonst. Einnahmen). Bei{' '}
+                              Start‑Tagesrate. Zeile <strong>Konto · Day Zero</strong> steht zuerst und zeigt nur{' '}
+                              <strong>Fix/Tag</strong> (= Morgen-Saldo am Tag Null geteilt durch die Periodentage); die übrigen Spalten
+                              entfallen. Zeile                               <strong>Konto</strong> entspricht der Saldo‑Zeile „Konto“
+                              (Start: Konto · Day Zero + Summe Geldeingänge im Zeitraum). Bei{' '}
                               <strong>Konto · ohne Fixkosten</strong> und <strong>Meltdown · ohne Fixkosten</strong> ist
                               Ø Ist/Tag <strong>ohne Vertragsausgaben</strong> (tägliche Ausgaben ohne vertragsverknüpfte
                               Buchungen), passend zur Logik „ohne Fixkosten“; die übrigen Zeilen nutzen die volle
@@ -1509,7 +1610,7 @@ export default function DayZero() {
                               erweiterten Startwert inkl. Vertrags‑Netto; Ø Soll/Tag nutzt den <strong>Rest</strong> der
                               Meltdown‑Linie ohne Fixkosten (wie im Saldo‑Diagramm) geteilt durch Resttage — z. B. 219,68�
                               16 Tage � 13,73 €/Tag. Zeile{' '}
-                              <strong>Meltdown</strong>: wie im Diagramm (Summe pos. Umbuchungen / Tage). Zeile{' '}
+                              <strong>Meltdown</strong>: wie im Diagramm (Summe Einnahmen / Periodentage). Zeile{' '}
                               <strong>Meltdown · ohne Fixkosten</strong>: Fix/Tag und Ø Soll/Tag vom Startwert
                               Meltdown‑Start + Vertrags‑Netto (Bank‑Vorzeichen, typisch negativ). Verträge: Summe
                               Vertrags‑Buchungen im Zeitraum ÷ Kalendertage
@@ -1542,6 +1643,23 @@ export default function DayZero() {
                                     const ts = todaySummary;
                                     return (
                                       <>
+                                        <TableRow hover>
+                                          <TableCell sx={{ maxWidth: 360 }}>
+                                            <Typography variant="body2" fontWeight={600}>
+                                              Konto · Day Zero
+                                            </Typography>
+                                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                                              Nur <strong>Fix/Tag</strong>: Morgen-Saldo am Tag Null geteilt durch die
+                                              Periodentage (Referenz zum Startwert der Saldo-Zeile). Keine weiteren
+                                              Kennzahlen in dieser Zeile.
+                                            </Typography>
+                                          </TableCell>
+                                          <TableCell align="right">{money(ts.kontoDayZeroFixProTag)}</TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                          <TableCell align="right">—</TableCell>
+                                        </TableRow>
                                         <TableRow hover>
                                           <TableCell sx={{ maxWidth: 360 }}>
                                             <Typography variant="body2" fontWeight={600}>
@@ -1727,107 +1845,153 @@ export default function DayZero() {
                     </Stack>
                     <Stack spacing={1}>
                       <Typography variant="body2" fontWeight={600}>
-                        Umbuchungen (im Zeitraum, als interne Umbuchung erkannt)
+                        Geldeingänge (im Zeitraum)
                       </Typography>
-                      {(meltdownQ.data.transfer_bookings ?? []).length === 0 ? (
-                        <Typography variant="body2" color="text.secondary">
-                          Keine.
-                        </Typography>
-                      ) : (
-                        <TableContainer>
-                          <Table size="small">
-                            <TableHead>
-                              <TableRow>
-                                <TableCell>Datum</TableCell>
-                                <TableCell align="right">Betrag</TableCell>
-                                <TableCell>Gegenpart / Text</TableCell>
-                                <TableCell>Zielkonto</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {(meltdownQ.data.transfer_bookings ?? []).map((r) => (
-                                <TableRow key={r.id}>
-                                  <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
-                                  <TableCell align="right">{formatMoney(r.amount, meltdownQ.data.currency)}</TableCell>
-                                  <TableCell sx={{ maxWidth: 280 }}>
-                                    {(r.counterparty_name || '').trim() || '—'}
-                                    {r.description?.trim() ? (
-                                      <Typography component="span" variant="caption" color="text.secondary" display="block">
-                                        {r.description.slice(0, 120)}
-                                        {r.description.length > 120 ? '…' : ''}
-                                      </Typography>
-                                    ) : null}
-                                  </TableCell>
-                                  <TableCell>
-                                    {r.transfer_target_bank_account_id != null
-                                      ? (() => {
-                                          const tid = r.transfer_target_bank_account_id;
-                                          const nm = accountNameById.get(tid)?.trim();
-                                          return nm ? `${nm} (#${tid})` : `#${tid}`;
-                                        })()
-                                      : '—'}
-                                  </TableCell>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.25 }}>
+                        Alle Zuflüsse: sonstige Einnahmen (ohne Umbuchungs-Erkennung) <strong>und</strong> eingehende
+                        Umbuchungen (positive Beträge). Summe positiver Buchungen inkl. eingehender Umbuchungen (API):{' '}
+                        <strong>
+                          {meltdownQ.data.einnahmen_summe_tag_zero_zeitraum != null &&
+                          String(meltdownQ.data.einnahmen_summe_tag_zero_zeitraum).trim() !== ''
+                            ? formatMoney(
+                                String(meltdownQ.data.einnahmen_summe_tag_zero_zeitraum),
+                                meltdownQ.data.currency,
+                              )
+                            : '—'}
+                        </strong>
+                        . Der Startwert „Konto · ohne Fixkosten“ rechnet diese Einnahmen weiterhin mit.
+                      </Typography>
+                      {(() => {
+                        const d = meltdownQ.data;
+                        const transfersIn = transferBookingsBySign(d.transfer_bookings, 'positive');
+                        const rows = mergeGeldeingaengeRows(d.income_bookings, transfersIn);
+                        const sumRows = rows.reduce((s, x) => {
+                          const n = Number(x.row.amount);
+                          return s + (Number.isFinite(n) ? n : 0);
+                        }, 0);
+                        if (rows.length === 0) {
+                          return (
+                            <Typography variant="body2" color="text.secondary">
+                              Keine.
+                            </Typography>
+                          );
+                        }
+                        return (
+                          <TableContainer>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell>Datum</TableCell>
+                                  <TableCell align="right">Betrag</TableCell>
+                                  <TableCell>Art</TableCell>
+                                  <TableCell>Vertrag</TableCell>
+                                  <TableCell>Gegenpart / Text</TableCell>
+                                  <TableCell>Zielkonto</TableCell>
                                 </TableRow>
-                              ))}
-                            </TableBody>
-                            <MeltdownBookingSumFooter
-                              sum={sumBookingRefAmounts(meltdownQ.data.transfer_bookings ?? [])}
-                              currency={meltdownQ.data.currency}
-                            />
-                          </Table>
-                        </TableContainer>
-                      )}
+                              </TableHead>
+                              <TableBody>
+                                {rows.map(({ kind, row: r }) => (
+                                  <TableRow key={`${kind}-${r.id}`}>
+                                    <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
+                                    <TableCell align="right">{formatMoney(r.amount, d.currency)}</TableCell>
+                                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                                      {kind === 'income' ? 'Einnahme' : 'Umbuchung (eingehend)'}
+                                    </TableCell>
+                                    <TableCell>
+                                      {kind === 'income'
+                                        ? r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')
+                                        : '—'}
+                                    </TableCell>
+                                    <TableCell sx={{ maxWidth: 280 }}>
+                                      {(r.counterparty_name || '').trim() || '—'}
+                                      {r.description?.trim() ? (
+                                        <Typography component="span" variant="caption" color="text.secondary" display="block">
+                                          {r.description.slice(0, 120)}
+                                          {r.description.length > 120 ? '…' : ''}
+                                        </Typography>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell>
+                                      {kind === 'transfer_in' && r.transfer_target_bank_account_id != null
+                                        ? (() => {
+                                            const tid = r.transfer_target_bank_account_id;
+                                            const nm = accountNameById.get(tid)?.trim();
+                                            return nm ? `${nm} (#${tid})` : `#${tid}`;
+                                          })()
+                                        : '—'}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                              <MeltdownBookingSumFooter sum={sumRows} currency={d.currency} />
+                            </Table>
+                          </TableContainer>
+                        );
+                      })()}
                     </Stack>
                     <Stack spacing={1}>
                       <Typography variant="body2" fontWeight={600}>
-                        Zusätzliche Einnahmen (im Zeitraum, ohne eingehende Umbuchungen)
+                        Umbuchungen (Geldausgang, im Zeitraum)
                       </Typography>
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.25 }}>
-                        Ohne eingehende Umbuchungen (siehe Tabelle Umbuchungen). Der Startwert „Konto · ohne Fixkosten“
-                        rechnet Einnahmen weiterhin inkl. eingehender Umbuchungen mit.
+                        Nur ausgehende Umbuchungen: Buchungen, die als interne Umbuchung erkannt wurden und einen{' '}
+                        <strong>negativen</strong> Betrag haben (Abfluss vom Konto).
                       </Typography>
-                      {(meltdownQ.data.income_bookings ?? []).length === 0 ? (
-                        <Typography variant="body2" color="text.secondary">
-                          Keine.
-                        </Typography>
-                      ) : (
-                        <TableContainer>
-                          <Table size="small">
-                            <TableHead>
-                              <TableRow>
-                                <TableCell>Datum</TableCell>
-                                <TableCell align="right">Betrag</TableCell>
-                                <TableCell>Vertrag</TableCell>
-                                <TableCell>Gegenpart / Text</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {(meltdownQ.data.income_bookings ?? []).map((r) => (
-                                <TableRow key={r.id}>
-                                  <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
-                                  <TableCell align="right">{formatMoney(r.amount, meltdownQ.data.currency)}</TableCell>
-                                  <TableCell>
-                                    {r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')}
-                                  </TableCell>
-                                  <TableCell sx={{ maxWidth: 280 }}>
-                                    {(r.counterparty_name || '').trim() || '—'}
-                                    {r.description?.trim() ? (
-                                      <Typography component="span" variant="caption" color="text.secondary" display="block">
-                                        {r.description.slice(0, 120)}
-                                        {r.description.length > 120 ? '…' : ''}
-                                      </Typography>
-                                    ) : null}
-                                  </TableCell>
+                      {(() => {
+                        const d = meltdownQ.data;
+                        const transfersOut = transferBookingsBySign(d.transfer_bookings, 'negative');
+                        if (transfersOut.length === 0) {
+                          return (
+                            <Typography variant="body2" color="text.secondary">
+                              Keine.
+                            </Typography>
+                          );
+                        }
+                        return (
+                          <TableContainer>
+                            <Table size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell>Datum</TableCell>
+                                  <TableCell align="right">Betrag</TableCell>
+                                  <TableCell>Gegenpart / Text</TableCell>
+                                  <TableCell>Zielkonto</TableCell>
                                 </TableRow>
-                              ))}
-                            </TableBody>
-                            <MeltdownBookingSumFooter
-                              sum={sumBookingRefAmounts(meltdownQ.data.income_bookings ?? [])}
-                              currency={meltdownQ.data.currency}
-                            />
-                          </Table>
-                        </TableContainer>
-                      )}
+                              </TableHead>
+                              <TableBody>
+                                {transfersOut.map((r) => (
+                                  <TableRow key={r.id}>
+                                    <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
+                                    <TableCell align="right">{formatMoney(r.amount, d.currency)}</TableCell>
+                                    <TableCell sx={{ maxWidth: 280 }}>
+                                      {(r.counterparty_name || '').trim() || '—'}
+                                      {r.description?.trim() ? (
+                                        <Typography component="span" variant="caption" color="text.secondary" display="block">
+                                          {r.description.slice(0, 120)}
+                                          {r.description.length > 120 ? '…' : ''}
+                                        </Typography>
+                                      ) : null}
+                                    </TableCell>
+                                    <TableCell>
+                                      {r.transfer_target_bank_account_id != null
+                                        ? (() => {
+                                            const tid = r.transfer_target_bank_account_id;
+                                            const nm = accountNameById.get(tid)?.trim();
+                                            return nm ? `${nm} (#${tid})` : `#${tid}`;
+                                          })()
+                                        : '—'}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                              <MeltdownBookingSumFooter
+                                sum={sumBookingRefAmounts(transfersOut)}
+                                currency={d.currency}
+                              />
+                            </Table>
+                          </TableContainer>
+                        );
+                      })()}
                     </Stack>
                     <Stack spacing={1}>
                       <Typography variant="body2" fontWeight={600}>

@@ -233,12 +233,9 @@ async def dayzero_meltdown_for_account(
         start=inputs.start,
         end_exclusive=inputs.end_exclusive,
     )
-    pos_transfer_sum = Decimal("0")
-    for t in tx_transfer:
-        a = Decimal(str(t.amount))
-        if a > 0:
-            pos_transfer_sum += a
-    meltdown_start_display = str(pos_transfer_sum.quantize(Decimal("0.01")))
+    # Meltdown-Start (Anzeige) = Summe aller positiven Buchungen im Zeitraum (inkl. eingehender Umbuchungen) —
+    # identisch zu ``einnahmen_summe_tag_zero_zeitraum`` (siehe DayZeroInputs).
+    meltdown_start_display = str(inputs.einnahmen_summe_tag_zero_zeitraum.quantize(Decimal("0.01")))
     tx_contract = await list_contract_transactions_in_meltdown_period(
         session,
         bank_account_id=acc.id,

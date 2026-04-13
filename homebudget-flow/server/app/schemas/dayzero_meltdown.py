@@ -93,12 +93,12 @@ class DayZeroMeltdownOut(BaseModel):
         default=None,
         description="Betrag der neuesten Buchung, die der Tag-Null-Kontoregel entspricht.",
     )
-    #: Meltdown-Start (Anzeige/Diagramm): Summe aller positiven Umbuchungsbeträge auf dem Konto im Meltdown-Zeitraum.
+    #: Meltdown-Start (Anzeige/Diagramm): Summe aller positiven Buchungsbeträge im Meltdown-Zeitraum (inkl. eingehender Umbuchungen).
     meltdown_start_amount: Optional[str] = Field(
         default=None,
         description=(
-            "Meltdown-Startwert (Anzeige): Summe der positiven Buchungsbeträge aller im Zeitraum als Umbuchung "
-            "erkannten Buchungen auf diesem Konto (gleiche Menge wie Summe positiver Beträge in transfer_bookings)."
+            "Meltdown-Startwert (Anzeige): Summe aller positiven Buchungsbeträge im Zeitraum "
+            "[period_start, period_end_exclusive) — gleich ``einnahmen_summe_tag_zero_zeitraum`` (alle Einnahmen inkl. Umbuchungen)."
         ),
     )
     #: Ob der für ``tag_zero_amount`` genutzte Saldo (v. a. Snapshot) die Tag-Null-Regel-Buchung schon enthält; None = kein Snapshot / nicht anwendbar.

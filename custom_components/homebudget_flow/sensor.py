@@ -37,6 +37,27 @@ def _parse_ha_timestamp(iso: str | None) -> datetime | None:
     return dt
 
 
+def _coordinator_account_row(
+    coordinator: HomeBudgetFlowCoordinator, bank_account_id: int
+) -> dict[str, Any] | None:
+    """Kontozeile aus dem Snapshot; IDs robust als int vergleichen (JSON kann str liefern)."""
+    data = coordinator.data
+    if not isinstance(data, dict):
+        return None
+    for acc in data.get("accounts", []):
+        if not isinstance(acc, dict):
+            continue
+        aid = acc.get("bank_account_id")
+        if aid is None:
+            continue
+        try:
+            if int(aid) == int(bank_account_id):
+                return acc
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _account_device_info(coordinator: HomeBudgetFlowCoordinator, bank_account_id: int, account_name: str | None) -> dict[str, Any]:
     """DeviceInfo pro Bankkonto, gruppiert mehrere Sensoren unter einem Device."""
     entry_id = coordinator.entry.entry_id
@@ -61,34 +82,6 @@ def _parse_balance(raw: Any) -> float | None:
         return float(Decimal(s))
     except (InvalidOperation, ValueError):
         return None
-
-
-def _parse_iso_timestamp(raw: Any) -> datetime | None:
-    if raw is None or raw == "":
-        return None
-    s = str(raw).strip()
-    if not s:
-        return None
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def _import_state(attempt_raw: Any, success_raw: Any) -> Literal["ok", "error", "unknown"]:
-    """Letzter Abruf erfolgreich, wenn Erfolg nicht älter ist als der letzte Versuch."""
-    attempt = _parse_iso_timestamp(attempt_raw)
-    success = _parse_iso_timestamp(success_raw)
-    if attempt is None and success is None:
-        return "unknown"
-    if success is None:
-        return "error"
-    if attempt is None:
-        return "ok"
-    return "ok" if success >= attempt else "error"
 
 
 async def async_setup_entry(
@@ -126,47 +119,12 @@ async def async_setup_entry(
                 f"{DOMAIN}_last_sync_at_{aid}",
             )
         )
-        entities.append(
-            HomeBudgetPartImportSensor(
-                coordinator,
-                aid,
-                f"{name} Saldo-Import",
-                f"{DOMAIN}_balance_import_{aid}",
-                "balance",
-            )
-        )
-        entities.append(
-            HomeBudgetPartImportSensor(
-                coordinator,
-                aid,
-                f"{name} Umsätze-Import",
-                f"{DOMAIN}_transactions_import_{aid}",
-                "transactions",
-            )
-        )
-        entities.append(
-            HomeBudgetLastSalaryDateSensor(
-                coordinator,
-                aid,
-                f"{name} Gehalt zuletzt (Datum)",
-                f"{DOMAIN}_last_salary_date_{aid}",
-            )
-        )
-        entities.append(
-            HomeBudgetLastSalaryAmountSensor(
-                coordinator,
-                aid,
-                f"{name} Gehalt zuletzt (Betrag)",
-                f"{DOMAIN}_last_salary_amount_{aid}",
-            )
-        )
-        dz = acc.get("dayzero")
-        if dz and dz.get("tag_zero_date"):
+        if acc.get("tag_zero_date"):
             for col, suffix, label in (
-                ("start", "ofix_saldo_start", "Day Zero · o. Fix · Start"),
-                ("ist", "ofix_saldo_ist", "Day Zero · o. Fix · Ist"),
-                ("soll", "ofix_saldo_soll", "Day Zero · o. Fix · Soll"),
-                ("delta", "ofix_saldo_delta", "Day Zero · o. Fix · Ist−Soll"),
+                ("start", "ofix_saldo_start", "Konto · ohne Fixkosten · Start"),
+                ("ist", "ofix_saldo_ist", "Konto · ohne Fixkosten · Ist"),
+                ("soll", "ofix_saldo_soll", "Konto · ohne Fixkosten · Soll"),
+                ("delta", "ofix_saldo_delta", "Konto · ohne Fixkosten · Ist−Soll"),
             ):
                 entities.append(
                     HomeBudgetDayZeroOhneFixSaldoSensor(
@@ -181,7 +139,7 @@ async def async_setup_entry(
                 HomeBudgetDayZeroGeldProTagSensor(
                     coordinator,
                     aid,
-                    f"{name} Day Zero · Geld/Tag (o. Fix)",
+                    f"{name} Konto · ohne Fixkosten · Geld pro Tag",
                     f"{DOMAIN}_dayzero_geld_pro_tag_{aid}",
                 )
             )
@@ -212,10 +170,7 @@ class HomeBudgetBalanceSensor(
         self._attr_name = name
 
     def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
+        return _coordinator_account_row(self.coordinator, self._bank_account_id)
 
     @property
     def native_value(self) -> float | None:
@@ -270,10 +225,7 @@ class HomeBudgetSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], SensorE
         self._attr_name = name
 
     def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
+        return _coordinator_account_row(self.coordinator, self._bank_account_id)
 
     @property
     def native_value(self) -> str | None:
@@ -320,10 +272,7 @@ class HomeBudgetLastSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], Sen
         self._attr_name = name
 
     def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
+        return _coordinator_account_row(self.coordinator, self._bank_account_id)
 
     @property
     def native_value(self) -> datetime | None:
@@ -351,74 +300,6 @@ class HomeBudgetLastSyncSensor(CoordinatorEntity[HomeBudgetFlowCoordinator], Sen
         )
 
 
-class HomeBudgetPartImportSensor(
-    CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
-):
-    """Ob der letzte Saldo- bzw. Umsatz-Abruf zum letzten Versuch passt (ok / error / unknown)."""
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = False
-
-    def __init__(
-        self,
-        coordinator: HomeBudgetFlowCoordinator,
-        bank_account_id: int,
-        name: str,
-        unique_id: str,
-        part: Literal["balance", "transactions"],
-    ) -> None:
-        super().__init__(coordinator)
-        self._bank_account_id = bank_account_id
-        self._part = part
-        self._attr_unique_id = unique_id
-        self._attr_name = name
-
-    def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
-
-    @property
-    def native_value(self) -> str | None:
-        acc = self._account()
-        if not acc:
-            return None
-        if self._part == "balance":
-            return _import_state(
-                acc.get("balance_attempt_at"),
-                acc.get("balance_success_at"),
-            )
-        return _import_state(
-            acc.get("transactions_attempt_at"),
-            acc.get("transactions_success_at"),
-        )
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        acc = self._account() or {}
-        if self._part == "balance":
-            return {
-                "bank_account_id": self._bank_account_id,
-                "balance_attempt_at": acc.get("balance_attempt_at"),
-                "balance_success_at": acc.get("balance_success_at"),
-            }
-        return {
-            "bank_account_id": self._bank_account_id,
-            "transactions_attempt_at": acc.get("transactions_attempt_at"),
-            "transactions_success_at": acc.get("transactions_success_at"),
-        }
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        acc = self._account() or {}
-        return _account_device_info(
-            self.coordinator,
-            self._bank_account_id,
-            acc.get("name"),
-        )
-
-
 def _dayzero_payload(acc: dict[str, Any] | None) -> dict[str, Any]:
     if not acc:
         return {}
@@ -429,7 +310,7 @@ def _dayzero_payload(acc: dict[str, Any] | None) -> dict[str, Any]:
 class HomeBudgetDayZeroOhneFixSaldoSensor(
     CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
 ):
-    """Saldo-Tabelle „Konto · ohne Fixkosten“: Startwert, Ist, Soll, Ist−Soll (APP-Zeitzone-Stichtag)."""
+    """Meltdown / Day-Zero: Spalten der Tabelle „Konto · ohne Fixkosten“ (API-Felder konto_ohne_fixkosten_*)."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_has_entity_name = False
@@ -456,15 +337,11 @@ class HomeBudgetDayZeroOhneFixSaldoSensor(
         self._attr_unique_id = unique_id
         self._attr_name = name
         self._column = column
-        self._attr_state_class = (
-            SensorStateClass.MEASUREMENT if column == "delta" else SensorStateClass.TOTAL
-        )
+        # MONETARY erlaubt kein MEASUREMENT; Delta ist keine laufende Messgröße → kein state_class.
+        self._attr_state_class = None if column == "delta" else SensorStateClass.TOTAL
 
     def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
+        return _coordinator_account_row(self.coordinator, self._bank_account_id)
 
     @property
     def native_value(self) -> float | None:
@@ -483,11 +360,15 @@ class HomeBudgetDayZeroOhneFixSaldoSensor(
     def extra_state_attributes(self) -> dict[str, Any]:
         acc = self._account() or {}
         dz = _dayzero_payload(acc)
+        diag = self.coordinator.data.get("_homebudget_flow") if isinstance(self.coordinator.data, dict) else {}
         base: dict[str, Any] = {
             "bank_account_id": self._bank_account_id,
             "tag_zero_date": dz.get("tag_zero_date"),
             "period_end_exclusive": dz.get("period_end_exclusive"),
             "column": self._column,
+            "dayzero_payload_merged": bool(dz),
+            "dayzero_meltdown_http_status": diag.get("dayzero_meltdown_http_status"),
+            "dayzero_merged_accounts": diag.get("dayzero_merged_into_snapshot_accounts"),
         }
         if self._column == "ist":
             base.update(
@@ -535,10 +416,7 @@ class HomeBudgetDayZeroGeldProTagSensor(
         self._attr_name = name
 
     def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
+        return _coordinator_account_row(self.coordinator, self._bank_account_id)
 
     @property
     def native_value(self) -> float | None:
@@ -557,122 +435,14 @@ class HomeBudgetDayZeroGeldProTagSensor(
     def extra_state_attributes(self) -> dict[str, Any]:
         acc = self._account() or {}
         dz = _dayzero_payload(acc)
+        diag = self.coordinator.data.get("_homebudget_flow") if isinstance(self.coordinator.data, dict) else {}
         return {
             "bank_account_id": self._bank_account_id,
             "konto_ohne_fixkosten_pfad_heute": dz.get("konto_ohne_fixkosten_pfad_heute"),
             "konto_ohne_fixkosten_start": dz.get("konto_ohne_fixkosten_start"),
-        }
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        acc = self._account() or {}
-        return _account_device_info(
-            self.coordinator,
-            self._bank_account_id,
-            acc.get("name"),
-        )
-
-
-class HomeBudgetLastSalaryDateSensor(
-    CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
-):
-    """Letztes Buchungsdatum einer als „Gehalt“ (Geldeingang) kategorisierten Buchung (API-Cache)."""
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = False
-
-    def __init__(
-        self,
-        coordinator: HomeBudgetFlowCoordinator,
-        bank_account_id: int,
-        name: str,
-        unique_id: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._bank_account_id = bank_account_id
-        self._attr_unique_id = unique_id
-        self._attr_name = name
-
-    def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
-
-    @property
-    def native_value(self) -> str | None:
-        acc = self._account()
-        if not acc:
-            return None
-        raw = acc.get("last_salary_booking_date")
-        if raw is None or raw == "":
-            return None
-        return str(raw).strip()
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        return {"bank_account_id": self._bank_account_id}
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        acc = self._account() or {}
-        return _account_device_info(
-            self.coordinator,
-            self._bank_account_id,
-            acc.get("name"),
-        )
-
-
-class HomeBudgetLastSalaryAmountSensor(
-    CoordinatorEntity[HomeBudgetFlowCoordinator], SensorEntity
-):
-    """Betrag der zuletzt erkannten Gehalt-Buchung (API-Cache)."""
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = False
-    _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_state_class = SensorStateClass.TOTAL
-    _attr_suggested_display_precision = 2
-
-    def __init__(
-        self,
-        coordinator: HomeBudgetFlowCoordinator,
-        bank_account_id: int,
-        name: str,
-        unique_id: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._bank_account_id = bank_account_id
-        self._attr_unique_id = unique_id
-        self._attr_name = name
-
-    def _account(self) -> dict[str, Any] | None:
-        for acc in self.coordinator.data.get("accounts", []):
-            if acc.get("bank_account_id") == self._bank_account_id:
-                return acc
-        return None
-
-    @property
-    def native_value(self) -> float | None:
-        acc = self._account()
-        if not acc:
-            return None
-        return _parse_balance(acc.get("last_salary_amount"))
-
-    @property
-    def native_unit_of_measurement(self) -> str | None:
-        acc = self._account() or {}
-        cur = acc.get("currency")
-        if cur and str(cur).strip():
-            return str(cur).strip().upper()
-        return "EUR"
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        acc = self._account() or {}
-        return {
-            "bank_account_id": self._bank_account_id,
-            "last_salary_booking_date": acc.get("last_salary_booking_date"),
+            "dayzero_payload_merged": bool(dz),
+            "dayzero_meltdown_http_status": diag.get("dayzero_meltdown_http_status"),
+            "dayzero_merged_accounts": diag.get("dayzero_merged_into_snapshot_accounts"),
         }
 
     @property

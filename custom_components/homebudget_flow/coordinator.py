@@ -136,16 +136,19 @@ class HomeBudgetFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         raise UpdateFailed("Invalid JSON") from err
 
                 dayzero: dict[str, Any] = {"accounts": []}
+                dz_http: int | None = None
                 async with session.get(
                     f"{self.api_url}/api/ha/dayzero-meltdown",
                     headers=headers,
                     timeout=60,
                 ) as dz_resp:
+                    dz_http = dz_resp.status
                     if dz_resp.status == 200:
                         try:
                             dayzero = await dz_resp.json()
                         except (ValueError, TypeError):
                             dayzero = {"accounts": []}
+                            _LOGGER.warning("HomeBudget Flow: dayzero-meltdown Antwort kein gültiges JSON")
                     elif dz_resp.status == 401:
                         if attempt == 0:
                             self._jwt_cached = None
@@ -153,16 +156,42 @@ class HomeBudgetFlowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                             headers = {"Authorization": f"Bearer {bearer}"}
                             continue
                         raise UpdateFailed("Unauthorized")
+                    else:
+                        _LOGGER.warning(
+                            "HomeBudget Flow: dayzero-meltdown HTTP %s — Day-Zero-Sensoren/Kamera ohne API-Daten",
+                            dz_resp.status,
+                        )
 
-                dz_by_id = {
-                    int(a["bank_account_id"]): a
-                    for a in dayzero.get("accounts", [])
-                    if a.get("bank_account_id") is not None
-                }
+                dz_by_id: dict[int, dict[str, Any]] = {}
+                for a in dayzero.get("accounts", []):
+                    if not isinstance(a, dict):
+                        continue
+                    rid = a.get("bank_account_id")
+                    if rid is None:
+                        continue
+                    try:
+                        dz_by_id[int(rid)] = a
+                    except (TypeError, ValueError):
+                        continue
+
+                merged = 0
                 for acc in snapshot.get("accounts", []):
                     aid = acc.get("bank_account_id")
-                    if aid is not None and aid in dz_by_id:
-                        acc["dayzero"] = dz_by_id[aid]
+                    if aid is None:
+                        continue
+                    try:
+                        aid_int = int(aid)
+                    except (TypeError, ValueError):
+                        continue
+                    if aid_int in dz_by_id:
+                        acc["dayzero"] = dz_by_id[aid_int]
+                        merged += 1
+
+                snapshot["_homebudget_flow"] = {
+                    "dayzero_meltdown_http_status": dz_http,
+                    "dayzero_meltdown_account_rows": len(dayzero.get("accounts", [])),
+                    "dayzero_merged_into_snapshot_accounts": merged,
+                }
                 return snapshot
         except TimeoutError as err:
             raise UpdateFailed("Timeout") from err

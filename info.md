@@ -46,14 +46,12 @@ Pro Bankkonto (Namen enthalten den Kontonamen):
 | **Balance** | Kontostand (Zahl, monetär) |
 | **Sync** | Gesamtstatus (`ok`, `error`, …), `last_error` als Attribut |
 | **Zuletzt synchronisiert** | Zeitstempel (`device_class: timestamp`): spätester erfolgreicher Saldo- oder Umsatz-Sync; Attribute mit `balance_success_at` / `transactions_success_at` |
-| **Saldo-Import** | `ok` / `error` / `unknown`: ob der letzte Saldo-Abruf zum letzten Versuch passt (`balance_success_at` ≥ `balance_attempt_at`). Attribute mit ISO-Zeitstempeln. |
-| **Umsätze-Import** | `ok` / `error` / `unknown`: ob der letzte Umsatz-Abruf zum letzten Versuch passt (`transactions_*`). Attribute mit ISO-Zeitstempeln. |
-| **Gehalt zuletzt (Datum)** | Buchungsdatum der letzten Buchung mit Standard-Kategorie „Gehalt“ unter „Geldeingang“ (Server-Cache), ISO-Datum `YYYY-MM-DD` oder leer. |
-| **Gehalt zuletzt (Betrag)** | Betrag derselben Buchung (monetär); Attribut `last_salary_booking_date`. |
+
+Zusätzlich (falls **Tag-Null-Datum** am Konto gesetzt): Sensoren **Konto · ohne Fixkosten** (Start, Ist, Soll, Ist−Soll), **Geld pro Tag**, und eine **Kamera** „… Day Zero · Saldo-Diagramm“ (PNG vom Server; Daten aus `/api/ha/dayzero-meltdown`). Die Kamera steht am selben Gerät wie die Sensoren; im Dashboard z. B. mit einer **Bild**-Karte (`camera.*`) anzeigen.
 
 Daten kommen aus `/api/ha/snapshot` im eingestellten Intervall.
 
-**Automationen:** z. B. wenn der Zustand von **Saldo-Import** oder **Umsätze-Import** `error` ist.
+**Automationen:** z. B. wenn **Sync** nicht `ok` ist oder `last_error` gesetzt ist.
 
 ## Dokumentation in Home Assistant
 

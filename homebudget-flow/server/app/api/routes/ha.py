@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -24,11 +25,24 @@ from app.schemas.dayzero_meltdown import (
 from app.services.dayzero_meltdown import (
     build_ha_dayzero_derived_fields,
     compute_dayzero_meltdown_for_account,
-    eligible_accounts_with_tag_zero_rule,
     ha_dayzero_pick_today_row_index,
 )
 
 router = APIRouter(prefix="/ha", tags=["home-assistant"])
+logger = logging.getLogger(__name__)
+
+
+def _ha_dayzero_meltdown_accounts(accounts: list[BankAccount]) -> list[BankAccount]:
+    """Alle Konten mit Tag-Null-Datum oder Tag-Null-Regel (HA/Web sollen dieselbe Menge sehen)."""
+    seen: set[int] = set()
+    out: list[BankAccount] = []
+    for acc in accounts:
+        if acc.id in seen:
+            continue
+        if acc.day_zero_date is not None or bank_account_has_tag_zero_rule(acc):
+            out.append(acc)
+            seen.add(acc.id)
+    return out
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
@@ -114,7 +128,7 @@ async def ha_dayzero_meltdown(
     session: AsyncSession = Depends(get_session),
 ) -> HaDayZeroMeltdownSnapshot:
     r = await session.execute(select(BankAccount))
-    accounts = eligible_accounts_with_tag_zero_rule(r.scalars().all())
+    accounts = _ha_dayzero_meltdown_accounts(list(r.scalars().all()))
 
     out: list[HaDayZeroAccountToday] = []
     for acc in accounts:
@@ -131,65 +145,92 @@ async def ha_dayzero_meltdown(
                 )
             )
             continue
-        inputs, days = await compute_dayzero_meltdown_for_account(
-            session,
-            account=acc,
-            tag_zero_date=d0,
-            months=1,
-        )
-        idx = ha_dayzero_pick_today_row_index(days)
-        today_row = days[idx] if days and idx >= 0 else None
-        derived = build_ha_dayzero_derived_fields(inputs, days)
-        out.append(
-            HaDayZeroAccountToday(
-                bank_account_id=acc.id,
-                name=acc.name,
-                currency=acc.currency,
-                tag_zero_date=d0.isoformat(),
-                period_end_exclusive=inputs.end_exclusive.isoformat(),
-                today=DayZeroMeltdownDay(**today_row) if today_row else None,
-                konto_ohne_fixkosten_start=derived["konto_ohne_fixkosten_start"],
-                konto_ohne_fixkosten_saldo_ist=derived["konto_ohne_fixkosten_saldo_ist"],
-                konto_ohne_fixkosten_saldo_soll=derived["konto_ohne_fixkosten_saldo_soll"],
-                konto_ohne_fixkosten_saldo_delta_ist_minus_soll=derived[
-                    "konto_ohne_fixkosten_saldo_delta_ist_minus_soll"
-                ],
-                konto_ohne_fixkosten_pfad_heute=derived["konto_ohne_fixkosten_pfad_heute"],
-                konto_ohne_fixkosten_geld_pro_tag=derived["konto_ohne_fixkosten_geld_pro_tag"],
-                chart_days=derived["chart_days"],
-                chart_konto_ist=derived["chart_konto_ist"],
-                chart_meltdown_line=derived["chart_meltdown_line"],
-                chart_konto_linear_soll=derived["chart_konto_linear_soll"],
+        try:
+            inputs, days = await compute_dayzero_meltdown_for_account(
+                session,
+                account=acc,
+                tag_zero_date=d0,
+                months=1,
             )
-        )
+            idx = ha_dayzero_pick_today_row_index(days)
+            today_row = days[idx] if days and idx >= 0 else None
+            derived = build_ha_dayzero_derived_fields(inputs, days)
+            out.append(
+                HaDayZeroAccountToday(
+                    bank_account_id=acc.id,
+                    name=acc.name,
+                    currency=acc.currency,
+                    tag_zero_date=d0.isoformat(),
+                    period_end_exclusive=inputs.end_exclusive.isoformat(),
+                    today=DayZeroMeltdownDay(**today_row) if today_row else None,
+                    konto_ohne_fixkosten_start=derived["konto_ohne_fixkosten_start"],
+                    konto_ohne_fixkosten_saldo_ist=derived["konto_ohne_fixkosten_saldo_ist"],
+                    konto_ohne_fixkosten_saldo_soll=derived["konto_ohne_fixkosten_saldo_soll"],
+                    konto_ohne_fixkosten_saldo_delta_ist_minus_soll=derived[
+                        "konto_ohne_fixkosten_saldo_delta_ist_minus_soll"
+                    ],
+                    konto_ohne_fixkosten_pfad_heute=derived["konto_ohne_fixkosten_pfad_heute"],
+                    konto_ohne_fixkosten_geld_pro_tag=derived["konto_ohne_fixkosten_geld_pro_tag"],
+                    chart_days=derived["chart_days"],
+                    chart_konto_ist=derived["chart_konto_ist"],
+                    chart_meltdown_line=derived["chart_meltdown_line"],
+                    chart_konto_linear_soll=derived["chart_konto_linear_soll"],
+                )
+            )
+        except Exception:
+            logger.exception("dayzero-meltdown: compute failed for bank_account_id=%s", acc.id)
+            # Ein defektes Konto darf nicht die ganze HA-Antwort killen.
     return HaDayZeroMeltdownSnapshot(accounts=out)
 
 
 @router.get("/dayzero-chart/{bank_account_id}")
 async def ha_dayzero_chart_png(
     bank_account_id: int,
+    chart_format: str = Query(
+        "png",
+        alias="format",
+        description="png (Standard) oder jpeg (Home-Assistant-Kamera / MJPEG-Großansicht)",
+    ),
     _auth: None = Depends(require_ha_user_jwt),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """PNG: Saldo-Diagramm (Konto Ist, Meltdown-Linie o. Fix, Soll linear) für Home Assistant."""
+    """Saldo-Diagramm (Konto Ist, Meltdown-Linie o. Fix, Soll linear) als PNG oder JPEG."""
     acc = await session.get(BankAccount, bank_account_id)
-    if acc is None or not bank_account_has_tag_zero_rule(acc):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bank account not found or no Tag-Null rule")
+    if acc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Bank account not found")
     d0 = acc.day_zero_date
     if d0 is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No Tag-Null date on account")
-    inputs, days = await compute_dayzero_meltdown_for_account(
-        session,
-        account=acc,
-        tag_zero_date=d0,
-        months=1,
-    )
-    derived = build_ha_dayzero_derived_fields(inputs, days)
-    png = render_dayzero_saldo_png(
-        list(derived["chart_days"]),
-        list(derived["chart_konto_ist"]),
-        list(derived["chart_meltdown_line"]),
-        list(derived["chart_konto_linear_soll"]),
-        title=f"Day Zero · {acc.name}",
-    )
-    return Response(content=png, media_type="image/png")
+    try:
+        inputs, days = await compute_dayzero_meltdown_for_account(
+            session,
+            account=acc,
+            tag_zero_date=d0,
+            months=1,
+        )
+        derived = build_ha_dayzero_derived_fields(inputs, days)
+        cf = (chart_format or "png").strip().lower()
+        if cf == "jpg":
+            cf = "jpeg"
+        if cf not in ("png", "jpeg"):
+            cf = "png"
+        body = render_dayzero_saldo_png(
+            list(derived["chart_days"]),
+            list(derived["chart_konto_ist"]),
+            list(derived["chart_meltdown_line"]),
+            list(derived["chart_konto_linear_soll"]),
+            title=f"Day Zero · {acc.name or acc.id}",
+            image_format=cf,
+        )
+    except ValueError as err:
+        logger.warning("dayzero-chart account=%s: %s", bank_account_id, err)
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(err)) from err
+    except Exception as err:
+        logger.exception("dayzero-chart account=%s", bank_account_id)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Chart generation failed",
+        ) from err
+
+    media = "image/jpeg" if cf == "jpeg" else "image/png"
+    return Response(content=body, media_type=media)

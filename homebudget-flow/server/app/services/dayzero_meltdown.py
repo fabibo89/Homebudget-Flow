@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import logging
 from typing import Any, Iterable, Optional
 
@@ -16,6 +16,17 @@ from app.services.tag_zero_rule import bank_account_has_tag_zero_rule, find_tag_
 
 
 logger = logging.getLogger(__name__)
+
+
+def _bank_balance_decimal(account: BankAccount) -> Decimal:
+    """Kontostand als Decimal; None/ungültig → 0 (vermeidet Decimal('None') / 500 in Meltdown & Chart)."""
+    raw = getattr(account, "balance", None)
+    if raw is None:
+        return Decimal("0").quantize(Decimal("0.01"))
+    try:
+        return Decimal(str(raw)).quantize(Decimal("0.01"))
+    except (ArithmeticError, InvalidOperation, ValueError, TypeError):
+        return Decimal("0").quantize(Decimal("0.01"))
 
 
 def _add_months(d: date, months: int) -> date:
@@ -105,9 +116,11 @@ class DayZeroInputs:
 
 
 async def _household_id_for_bank_account(session: AsyncSession, account: BankAccount) -> int:
-    if account.account_group is not None:
-        return int(account.account_group.household_id)
-    ag = await session.get(AccountGroup, account.account_group_id)
+    """Immer explizit laden — kein ``account.account_group`` (Lazy-Load bricht in Async-Kontext mit 500)."""
+    ag_id = getattr(account, "account_group_id", None)
+    if ag_id is None:
+        raise ValueError("BankAccount ohne AccountGroup")
+    ag = await session.get(AccountGroup, int(ag_id))
     if ag is None:
         raise ValueError("BankAccount ohne AccountGroup")
     return int(ag.household_id)
@@ -243,10 +256,14 @@ async def _anchor_balance_near_start(
     if best is None and rows:
         best = rows[0]
     if best is not None:
-        return Decimal(str(best.balance)), best.recorded_at.date()
+        try:
+            bal = Decimal(str(best.balance)).quantize(Decimal("0.01"))
+            return bal, best.recorded_at.date()
+        except (ArithmeticError, InvalidOperation, ValueError, TypeError):
+            pass
     # Fallback: aktueller Kontostand (balance) am balance_at Tag oder start
     anchor_day = account.balance_at.date() if getattr(account, "balance_at", None) else start
-    return Decimal(str(account.balance)), anchor_day
+    return _bank_balance_decimal(account), anchor_day
 
 
 async def _latest_balance_snapshot_for_day(
@@ -281,7 +298,7 @@ async def compute_dayzero_meltdown_for_account(
     end_exclusive = _add_months(start, months)
     days = _date_range(start, end_exclusive)
     if not days:
-        L0 = Decimal(str(account.balance)).quantize(Decimal("0.01"))
+        L0 = _bank_balance_decimal(account)
         la0 = getattr(account, "balance_at", None)
         ld0 = _utc_naive_to_app_date(la0) if la0 is not None else None
         return (
@@ -454,7 +471,7 @@ async def compute_dayzero_meltdown_for_account(
                 spend_excl_contract_by_day[bd] += out_amt
 
     # --- Konto: Ist = Bank-Saldo; Start = Bank-Rückrechnung + Tag-Null-Regelbetrag + out_adj (ausgehende Umbuchungen) ---
-    L = Decimal(str(account.balance)).quantize(Decimal("0.01"))
+    L = _bank_balance_decimal(account)
     bal_at = getattr(account, "balance_at", None)
     ledger_app: Optional[date] = _utc_naive_to_app_date(bal_at) if bal_at is not None else None
     today_app = app_today()
@@ -684,8 +701,11 @@ def ha_dayzero_pick_today_row_index(day_rows: list[dict]) -> int:
     last_s = day_rows[-1].get("day")
     if not first_s or not last_s:
         return len(day_rows) - 1
-    first = date.fromisoformat(str(first_s)[:10])
-    last = date.fromisoformat(str(last_s)[:10])
+    try:
+        first = date.fromisoformat(str(first_s)[:10])
+        last = date.fromisoformat(str(last_s)[:10])
+    except ValueError:
+        return len(day_rows) - 1
     if t < first:
         return 0
     if t > last:

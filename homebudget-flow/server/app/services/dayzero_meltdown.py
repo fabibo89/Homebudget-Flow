@@ -783,6 +783,11 @@ def build_ha_dayzero_derived_fields(inp: DayZeroInputs, days: list[dict]) -> dic
     denom = max(1, n - 1)
     soll = (ref * (Decimal(1) - Decimal(idx) / Decimal(denom))).quantize(Decimal("0.01"))
     delta = (ist - soll).quantize(Decimal("0.01"))
+
+    # Charts: Ist/Meltdown nur bis heute zeichnen; Soll-linear bis Periodenende weiterlaufen.
+    # Matplotlib bricht Linien bei NaN → wir maskieren Zukunftswerte als "nan".
+    nan_s = "nan"
+    mask_future = idx < len(days) - 1
     return {
         "konto_ohne_fixkosten_start": str(ref),
         "konto_ohne_fixkosten_saldo_ist": str(ist),
@@ -792,9 +797,16 @@ def build_ha_dayzero_derived_fields(inp: DayZeroInputs, days: list[dict]) -> dic
         "konto_ohne_fixkosten_geld_pro_tag": str(geld_pt),
         "chart_days": [str(row.get("day", "")) for row in days],
         "chart_konto_ist": [
-            str(Decimal(str(row.get("konto_balance_actual", "0"))).quantize(Decimal("0.01"))) for row in days
+            (
+                nan_s
+                if mask_future and i > idx
+                else str(Decimal(str(row.get("konto_balance_actual", "0"))).quantize(Decimal("0.01")))
+            )
+            for i, row in enumerate(days)
         ],
-        "chart_meltdown_line": [str(x) for x in line],
+        "chart_meltdown_line": [
+            nan_s if mask_future and i > idx else str(x) for i, x in enumerate(line)
+        ],
         "chart_konto_linear_soll": [str(x) for x in linear],
     }
 

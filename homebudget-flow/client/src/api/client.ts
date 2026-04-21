@@ -155,68 +155,166 @@ export async function fetchHouseholds(): Promise<Household[]> {
 }
 
 /** Persistente Verträge (Vorschlag / bestätigt / ignoriert). */
-export type ContractOut = {
+export type ContractRuleOut = {
   id: number;
-  household_id: number;
-  bank_account_id: number;
-  bank_account_name: string;
-  status: 'suggested' | 'confirmed' | 'ignored';
-  label: string;
-  amount_typical: string;
-  currency: string;
-  rhythm: string;
-  rhythm_display: string;
-  occurrences: number;
-  first_booking: string | null;
-  last_booking: string | null;
-  confidence: number;
-  signature_hash: string;
-  sample_transaction_ids: number[];
-  transaction_count: number;
-  /** Einheitliche Kategorie aller Buchungen, sonst „Divers“, alle ohne „—“ */
-  category_summary: string;
-  category_color_hex?: string | null;
+  contract_id: number;
+  category_rule_id: number;
+  category_rule_display_name: string;
+  category_id: number | null;
+  category_name: string | null;
+  enabled: boolean;
+  priority: number;
+  /** Effektive Bedingungen der verknüpften Kategorie-Regel (nur Anzeige). */
+  conditions: any[];
+  normalize_dot_space: boolean;
+  display_name_override?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
-export type ContractRecognizeResult = {
-  suggestions_updated: number;
-  confirmed_links_touched: number;
+export type ContractOut = {
+  id: number;
+  bank_account_id: number;
+  bank_account_name: string;
+  label: string;
+  rules: ContractRuleOut[];
+  /** Buchungen mit diesem Vertrag (contract_id). */
+  transaction_count: number;
+  /** Geschätzter Rhythmus (z. B. monatlich) aus Buchungsdaten. */
+  recurrence_label: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContractCreateIn = {
+  bank_account_id: number;
+  label: string;
+};
+
+export type ContractUpdateIn = {
+  label: string;
+};
+
+export type ContractRuleCreateIn = {
+  category_rule_id: number;
+  enabled?: boolean;
+  priority?: number;
+};
+
+export type ContractRuleUpdateIn = {
+  enabled?: boolean | null;
+  priority?: number | null;
+};
+
+export type ContractApplyResult = {
+  ok: boolean;
+  transactions_updated: number;
+};
+
+export type ContractSuggestionSimilarRule = {
+  id: number;
+  display_name: string;
+  category_name?: string | null;
+};
+
+export type ContractSuggestionOut = {
+  fingerprint: string;
+  bank_account_id: number;
+  label: string;
+  conditions: any[];
+  normalize_dot_space: boolean;
+  /** Treffer in den betrachteten unkontraktierten Buchungen (Gruppe). */
+  occurrence_count: number;
+  scanned_transactions_returned: number;
+  scan_limit: number;
+  recurrence_label: string;
+  similar_category_rules: ContractSuggestionSimilarRule[];
+  transactions_preview: Array<{
+    id: number;
+    booking_date: string;
+    amount: string;
+    description: string;
+    counterparty?: string | null;
+  }>;
+};
+
+export type ContractSuggestionIgnoreOut = {
+  fingerprint: string;
+  bank_account_id: number;
+  created_at: string;
 };
 
 export async function fetchContracts(
   bankAccountId: number | 'all',
-  status?: 'suggested' | 'confirmed' | 'ignored',
 ): Promise<ContractOut[]> {
   const { data } = await api.get<ContractOut[]>('/api/contracts', {
     params: {
       ...(bankAccountId === 'all' ? {} : { bank_account_id: bankAccountId }),
-      ...(status ? { status } : {}),
     },
   });
   return data;
 }
 
-/** Vertragserkennung nur für ein Bankkonto (sichtbare Konten). */
-export async function recognizeContracts(
-  bankAccountId: number,
-  monthsBack = 60,
-): Promise<ContractRecognizeResult> {
-  const { data } = await api.post<ContractRecognizeResult>('/api/contracts/recognize', null, {
-    params: { bank_account_id: bankAccountId, months_back: monthsBack },
+export async function createContract(body: ContractCreateIn): Promise<ContractOut> {
+  const { data } = await api.post<ContractOut>('/api/contracts', body);
+  return data;
+}
+
+export async function updateContract(contractId: number, body: ContractUpdateIn): Promise<ContractOut> {
+  const { data } = await api.patch<ContractOut>(`/api/contracts/${contractId}`, body);
+  return data;
+}
+
+export async function deleteContract(contractId: number): Promise<void> {
+  await api.delete(`/api/contracts/${contractId}`);
+}
+
+export async function createContractRule(contractId: number, body: ContractRuleCreateIn): Promise<ContractRuleOut> {
+  const { data } = await api.post<ContractRuleOut>(`/api/contracts/${contractId}/rules`, body);
+  return data;
+}
+
+export async function updateContractRule(ruleId: number, body: ContractRuleUpdateIn): Promise<ContractRuleOut> {
+  const { data } = await api.patch<ContractRuleOut>(`/api/contracts/rules/${ruleId}`, body);
+  return data;
+}
+
+export async function deleteContractRule(ruleId: number): Promise<void> {
+  await api.delete(`/api/contracts/rules/${ruleId}`);
+}
+
+export async function applyContract(contractId: number): Promise<ContractApplyResult> {
+  const { data } = await api.post<ContractApplyResult>(`/api/contracts/${contractId}/apply`);
+  return data;
+}
+
+export async function fetchContractSuggestions(bankAccountId: number, limit = 30): Promise<ContractSuggestionOut[]> {
+  const { data } = await api.get<ContractSuggestionOut[]>('/api/contracts/suggestions', {
+    params: { bank_account_id: bankAccountId, limit },
   });
   return data;
 }
 
-export async function confirmContract(contractId: number): Promise<{ ok: boolean; transactions_linked: number }> {
-  const { data } = await api.post<{ ok: boolean; transactions_linked: number }>(
-    `/api/contracts/${contractId}/confirm`,
-  );
+export async function fetchIgnoredContractSuggestions(
+  bankAccountId: number,
+  limit = 200,
+): Promise<ContractSuggestionIgnoreOut[]> {
+  const { data } = await api.get<ContractSuggestionIgnoreOut[]>('/api/contracts/suggestions/ignored', {
+    params: { bank_account_id: bankAccountId, limit },
+  });
   return data;
 }
 
-export async function ignoreContract(contractId: number): Promise<{ ok: boolean }> {
-  const { data } = await api.post<{ ok: boolean }>(`/api/contracts/${contractId}/ignore`);
-  return data;
+export async function ignoreContractSuggestion(bankAccountId: number, fingerprint: string): Promise<void> {
+  await api.post(`/api/contracts/suggestions/${encodeURIComponent(fingerprint)}/ignore`, null, {
+    params: { bank_account_id: bankAccountId },
+  });
+}
+
+export async function unignoreContractSuggestion(bankAccountId: number, fingerprint: string): Promise<void> {
+  await api.delete(`/api/contracts/suggestions/${encodeURIComponent(fingerprint)}/ignore`, {
+    params: { bank_account_id: bankAccountId },
+  });
 }
 
 export async function createHousehold(name: string): Promise<Household> {
@@ -924,6 +1022,10 @@ export async function fetchTransactions(params: {
   from?: string;
   to?: string;
   bank_account_id?: number;
+  contract_id?: number;
+  uncontracted_only?: boolean;
+  amount_gte?: string;
+  amount_lte?: string;
   description_contains?: string;
   counterparty_contains?: string;
   /** Nur ganze Wörter (Wortgrenzen), gilt für Verwendungszweck- und Gegenpartei-Filter. */
@@ -936,6 +1038,10 @@ export async function fetchTransactions(params: {
       from: params.from,
       to: params.to,
       bank_account_id: params.bank_account_id,
+      contract_id: params.contract_id,
+      uncontracted_only: params.uncontracted_only === true ? true : undefined,
+      amount_gte: params.amount_gte,
+      amount_lte: params.amount_lte,
       description_contains: params.description_contains?.trim() || undefined,
       counterparty_contains: params.counterparty_contains?.trim() || undefined,
       whole_words: params.whole_words === true ? true : undefined,

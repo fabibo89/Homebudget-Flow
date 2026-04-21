@@ -1,62 +1,107 @@
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Optional
+from datetime import datetime
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
 
-class ContractCandidateOut(BaseModel):
-    """@deprecated — nur für Abwärtskompatibilität; Liste kommt aus DB (ContractOut)."""
-
-    bank_account_id: int
-    bank_account_name: str
-    label: str = Field(description="Gegenpart oder Beschreibungs-Muster")
-    amount_typical: str
-    currency: str
-    rhythm: str
-    rhythm_display: str
-    occurrences: int
-    first_booking: date
-    last_booking: date
-    confidence: float = Field(ge=0, le=1)
-    sample_transaction_ids: list[int]
+class ContractRuleOut(BaseModel):
+    id: int
+    contract_id: int
+    category_rule_id: int
+    category_rule_display_name: str = ""
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
+    enabled: bool
+    priority: int
+    conditions: list[dict[str, Any]] = Field(default_factory=list)
+    normalize_dot_space: bool = False
+    display_name_override: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class ContractOut(BaseModel):
     id: int
-    household_id: int
     bank_account_id: int
     bank_account_name: str
-    status: str
     label: str
-    amount_typical: str
-    currency: str
-    rhythm: str
-    rhythm_display: str
-    occurrences: int
-    first_booking: Optional[date]
-    last_booking: Optional[date]
-    confidence: float
-    signature_hash: str
-    sample_transaction_ids: list[int] = Field(default_factory=list)
-    transaction_count: int = 0
-    category_summary: str = Field(
-        default="—",
-        description="Einheitliche Kategorie aller Buchungen, sonst „Divers“, alle ohne Kategorie „—“.",
+    rules: list[ContractRuleOut] = Field(default_factory=list)
+    transaction_count: int = Field(
+        0,
+        description="Buchungen mit contract_id = dieser Vertrag (Zählung aller Zuordnungen am Konto).",
     )
-    category_color_hex: Optional[str] = Field(default=None, description="Effektive Farbe nur bei einheitlicher Kategorie")
+    recurrence_label: str = Field(
+        "",
+        description="Geschätzter Rhythmus aus Buchungsdaten (z. B. monatlich, jährlich).",
+    )
+    created_at: datetime
+    updated_at: datetime
 
 
-class ContractRecognizeResult(BaseModel):
-    suggestions_updated: int
-    confirmed_links_touched: int
+class ContractCreateIn(BaseModel):
+    bank_account_id: int
+    label: str = Field(..., min_length=1, max_length=512)
 
 
-class ContractIgnoreResult(BaseModel):
+class ContractUpdateIn(BaseModel):
+    label: str = Field(..., min_length=1, max_length=512)
+
+
+class ContractRuleCreateIn(BaseModel):
+    category_rule_id: int = Field(..., ge=1)
+    enabled: bool = True
+    priority: int = 0
+
+
+class ContractRuleUpdateIn(BaseModel):
+    enabled: Optional[bool] = None
+    priority: Optional[int] = None
+
+
+class ContractApplyResult(BaseModel):
     ok: bool = True
+    transactions_updated: int
 
 
-class ContractConfirmResult(BaseModel):
-    ok: bool = True
-    transactions_linked: int
+class ContractSuggestionSimilarRuleOut(BaseModel):
+    id: int
+    display_name: str
+    category_name: Optional[str] = None
+
+
+class ContractSuggestionTransactionPreviewOut(BaseModel):
+    id: int
+    booking_date: str
+    amount: str
+    description: str
+    counterparty: Optional[str] = None
+
+
+class ContractSuggestionOut(BaseModel):
+    """Ein Vorschlag entspricht einer potentiellen Regel (conditions) + Label für UX."""
+
+    fingerprint: str
+    bank_account_id: int
+    label: str
+    conditions: list[dict[str, Any]] = Field(default_factory=list)
+    normalize_dot_space: bool = False
+    occurrence_count: int = Field(0, description="Trefferhäufigkeit der Gruppe in den betrachteten Buchungen.")
+    scanned_transactions_returned: int = Field(
+        0,
+        description="Anzahl geladener Buchungen für die Heuristik (neueste zuerst, Limit scan_limit).",
+    )
+    scan_limit: int = Field(2000, description="Max. Anzahl Buchungen pro Vorschlags-Lauf.")
+    recurrence_label: str = Field(
+        "",
+        description="Geschätzter Rhythmus aus den Buchungsterminen der Gruppe im Scan-Fenster.",
+    )
+    similar_category_rules: list[ContractSuggestionSimilarRuleOut] = Field(default_factory=list)
+    transactions_preview: list[ContractSuggestionTransactionPreviewOut] = Field(default_factory=list)
+
+
+class ContractSuggestionIgnoreOut(BaseModel):
+    fingerprint: str
+    bank_account_id: int
+    created_at: datetime

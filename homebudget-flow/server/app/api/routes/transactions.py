@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -206,6 +207,10 @@ async def list_transactions(
     from_date: Optional[date] = Query(None, alias="from"),
     to_date: Optional[date] = Query(None, alias="to"),
     bank_account_id: Optional[int] = None,
+    contract_id: Optional[int] = Query(None, ge=1),
+    uncontracted_only: bool = Query(False, description="Nur Buchungen ohne Vertrag (contract_id IS NULL)."),
+    amount_gte: Optional[Decimal] = Query(None, description="Untergrenze inkl. (signed amount)."),
+    amount_lte: Optional[Decimal] = Query(None, description="Obergrenze inkl. (signed amount)."),
     description_contains: Optional[str] = Query(None, max_length=_LIKE_MAX),
     counterparty_contains: Optional[str] = Query(None, max_length=_LIKE_MAX),
     whole_words: bool = Query(False, description="Nur ganze Wörter (Wortgrenzen), statt Teilstring."),
@@ -217,6 +222,14 @@ async def list_transactions(
         if not await bank_account_visible_to_user(session, user, bank_account_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to account")
         q = q.where(Transaction.bank_account_id == bank_account_id)
+    if contract_id is not None:
+        q = q.where(Transaction.contract_id == int(contract_id))
+    if uncontracted_only:
+        q = q.where(Transaction.contract_id.is_(None))
+    if amount_gte is not None:
+        q = q.where(Transaction.amount >= amount_gte)
+    if amount_lte is not None:
+        q = q.where(Transaction.amount <= amount_lte)
     if from_date is not None:
         q = q.where(Transaction.booking_date >= from_date)
     if to_date is not None:

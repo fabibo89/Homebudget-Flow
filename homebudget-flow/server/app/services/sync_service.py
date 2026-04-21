@@ -4,7 +4,7 @@ from __future__ import annotations
 
 Nach erfolgreichem Umsatzabruf: bei neu übernommenen Buchungen werden Zuordnungsregeln des Haushalts
 automatisch auf alle noch unkategorisierten Buchungen dieses Haushalts angewendet (wie „Regeln anwenden“).
-Bestätigte Verträge auf dem Konto werden ebenfalls neu verknüpft (passende neue Ausgaben erhalten ``contract_id``).
+Vertragsregeln auf dem Konto werden neu angewendet (passende Buchungen erhalten ``contract_id``).
 
 Abruflogic:
 - Saldo: eigene Versuch-/Erfolgszeitstempel (``balance_*_at``); jeder erfolgreiche Abruf → Zeile in
@@ -40,7 +40,7 @@ from app.services.bank.registry import get_connector
 from app.services.bank.transaction_tan_channel import TransactionTanChannel
 from app.services.bank_account_provision import normalize_iban
 from app.services.category_rules import apply_category_rules_to_uncategorized
-from app.services.contracts_service import refresh_confirmed_contract_links_for_bank_account
+from app.services.contracts_service import apply_contracts_for_bank_account
 from app.services.credential_crypto import decrypt_secret
 from app.app_time import app_today
 from app.schemas.category_rule_conditions import (
@@ -919,10 +919,10 @@ async def sync_bank_account(
                             n_tagged,
                             household_id,
                         )
-                n_contract_links = await refresh_confirmed_contract_links_for_bank_account(session, int(acc.id))
+                n_contract_links = await apply_contracts_for_bank_account(session, int(acc.id))
                 if n_contract_links:
                     logger.info(
-                        "Sync[%s] confirmed contract link updates: %d (bank_account_id=%s)",
+                        "Sync[%s] contract link updates: %d (bank_account_id=%s)",
                         acc.id,
                         n_contract_links,
                         acc.id,

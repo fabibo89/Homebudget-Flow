@@ -31,6 +31,8 @@ export type CategoryRuleConditionsPayload = {
 
 type Props = {
   disabled?: boolean;
+  /** Steuert Hilfetexte (z. B. Tag-Null vs. Vertragsregeln). */
+  context?: 'tag_zero' | 'contract';
   /** Bei Änderung (Laden, Dialog) Formular neu aus initial füllen */
   hydrateKey: string | number;
   initial: CategoryRuleConditionsPayload | null;
@@ -39,6 +41,7 @@ type Props = {
 
 export default function CategoryRuleConditionsEditor({
   disabled = false,
+  context = 'tag_zero',
   hydrateKey,
   initial,
   onPayloadChange,
@@ -192,7 +195,9 @@ export default function CategoryRuleConditionsEditor({
         size="small"
         helperText={
           ruleDisplayNameOverride.trim()
-            ? 'Nur für die Anzeige dieser Tag-Null-Konfiguration (keine Kategorie-Regel).'
+            ? context === 'contract'
+              ? 'Optionaler Anzeigename für diese Vertragsregel.'
+              : 'Nur für die Anzeige dieser Tag-Null-Konfiguration (keine Kategorie-Regel).'
             : `Vorgabe: ${defaultDisplayNamePreview || '—'} (Mustertext in Großbuchstaben)`
         }
       />

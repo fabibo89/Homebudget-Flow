@@ -1,32 +1,27 @@
-"""Persistente Verträge: Erkennung, Bestätigen (Buchungen verknüpfen), Ignorieren."""
+"""Contracts v2: nutzerdefinierte Verträge aus mehreren Regeln (OR) + Zuordnung zu Buchungen."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
-from decimal import Decimal
+from datetime import date
 from typing import Optional
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload
 
 from app.db.models import (
     AccountGroup,
     BankAccount,
-    Category,
-    ContractStatus,
-    HouseholdContract,
+    Contract,
+    ContractRule,
     Transaction,
     TransferPair,
 )
-from app.schemas.transaction import _effective_hex_for_category
-from app.services.contracts_detection import (
-    _amount_abs,
-    _norm_counterparty_or_desc,
-    contract_signature_hash,
-    detect_contract_candidates,
-    transaction_is_internal_transfer,
+from app.schemas.category_rule_conditions import (
+    rule_effective_conditions,
+    transaction_matches_conditions,
 )
+from app.services.contracts_detection import transaction_is_internal_transfer
 
 
 async def household_id_for_bank_account(session: AsyncSession, bank_account_id: int) -> Optional[int]:
@@ -67,302 +62,107 @@ async def transaction_ids_on_bank_account(session: AsyncSession, bank_account_id
     return [int(i) for i in r.scalars().all()]
 
 
-def transaction_matches_contract(
-    tx: Transaction,
-    hc: HouseholdContract,
-    *,
-    pair_transaction_ids: Optional[set[int]] = None,
-) -> bool:
-    if transaction_is_internal_transfer(tx, pair_transaction_ids):
-        return False
-    if int(tx.bank_account_id) != int(hc.bank_account_id):
-        return False
-    if Decimal(str(tx.amount)) >= 0:
-        return False
-    if _amount_abs(tx) != Decimal(str(hc.amount_abs)).quantize(Decimal("0.01")):
-        return False
-    return _norm_counterparty_or_desc(tx) == (hc.party_norm or "").strip()
-
-
-async def link_transactions_for_confirmed_contract(session: AsyncSession, hc: HouseholdContract) -> int:
-    """Setzt contract_id auf alle passenden Ausgabenbuchungen; entfernt Verknüpfung wenn nicht mehr passend."""
-    r_all = await session.execute(
-        select(Transaction).where(Transaction.bank_account_id == hc.bank_account_id),
+async def booking_dates_by_contract_ids(
+    session: AsyncSession,
+    contract_ids: list[int],
+) -> dict[int, list[date]]:
+    """Eindeutige Buchungsdaten pro Vertrag, aufsteigend sortiert."""
+    if not contract_ids:
+        return {}
+    out: dict[int, list[date]] = {int(cid): [] for cid in contract_ids}
+    r = await session.execute(
+        select(Transaction.contract_id, Transaction.booking_date).where(
+            Transaction.contract_id.in_(contract_ids),
+        ),
     )
+    for cid, bd in r.all():
+        if cid is None or bd is None:
+            continue
+        ic = int(cid)
+        if ic in out:
+            out[ic].append(bd)
+    for ic in out:
+        out[ic] = sorted(set(out[ic]))
+    return out
+
+
+def _rule_matches_transaction(tx: Transaction, rule: ContractRule) -> bool:
+    if not rule.enabled:
+        return False
+    cr = rule.category_rule
+    if cr is None or cr.category_missing:
+        return False
+    conds = rule_effective_conditions(cr)
+    return transaction_matches_conditions(tx, conds, normalize_dot_space=bool(cr.normalize_dot_space))
+
+
+async def apply_contracts_for_bank_account(session: AsyncSession, bank_account_id: int) -> int:
+    """
+    Ordnet Buchungen auf einem Konto anhand der Vertragsregeln zu.
+    Strategie: erste passende Regel gewinnt; Reihenfolge: Contract.id ASC, Rule.priority ASC, Rule.id ASC.
+    Umbuchungen (TransferPair/Target) werden ausgeschlossen.
+    """
+    # Alle Transaktionen im Speicher, um TransferPairs einmalig zu berechnen
+    r_all = await session.execute(select(Transaction).where(Transaction.bank_account_id == bank_account_id))
     txs = r_all.scalars().all()
-    acc_ids = [int(t.id) for t in txs]
-    pair_ids = await load_transfer_pair_transaction_ids(session, acc_ids)
-    matched_ids: set[int] = set()
-    for tx in txs:
-        if transaction_matches_contract(tx, hc, pair_transaction_ids=pair_ids):
-            matched_ids.add(int(tx.id))
+    if not txs:
+        return 0
+    pair_ids = await load_transfer_pair_transaction_ids(session, [int(t.id) for t in txs])
+
+    r_contracts = await session.execute(
+        select(Contract)
+        .where(Contract.bank_account_id == bank_account_id)
+        .options(joinedload(Contract.rules).joinedload(ContractRule.category_rule))
+        .order_by(Contract.id.asc()),
+    )
+    contracts = r_contracts.unique().scalars().all()
+    if not contracts:
+        # Wenn keine Verträge existieren: alle Links entfernen
+        res = await session.execute(
+            update(Transaction).where(Transaction.bank_account_id == bank_account_id).values(contract_id=None),
+        )
+        return int(res.rowcount or 0)
 
     updated = 0
     for tx in txs:
-        tid = int(tx.id)
-        want = tid in matched_ids
-        have = tx.contract_id == hc.id
-        if want and not have:
-            tx.contract_id = hc.id
-            updated += 1
-        elif not want and have:
-            tx.contract_id = None
+        if transaction_is_internal_transfer(tx, pair_ids):
+            # interne Umbuchung: nie als Vertrag labeln
+            if tx.contract_id is not None:
+                tx.contract_id = None
+                updated += 1
+            continue
+
+        # Nur Ausgaben typischerweise als Vertrag; kann über Direction-Condition erweitert werden.
+        # Hier bewusst keine harte Einschränkung: DirectionCondition kann "all" sein.
+        match_contract_id: Optional[int] = None
+        for c in contracts:
+            for rule in c.rules:
+                if _rule_matches_transaction(tx, rule):
+                    match_contract_id = int(c.id)
+                    break
+            if match_contract_id is not None:
+                break
+
+        have = tx.contract_id
+        if match_contract_id != have:
+            tx.contract_id = match_contract_id
             updated += 1
 
     return updated
 
 
-async def refresh_confirmed_contract_links_for_bank_account(
-    session: AsyncSession,
-    bank_account_id: int,
-) -> int:
-    """
-    Alle bestätigten Verträge auf diesem Konto erneut gegen die Buchungen matchen
-    (z. B. nach Sync neuer Umsätze — gleiche Logik wie am Ende von ``run_contract_recognition``).
-    Returns: Summe der von ``link_transactions_for_confirmed_contract`` gemeldeten Aktualisierungen.
-    """
-    r = await session.execute(
-        select(HouseholdContract).where(
-            HouseholdContract.bank_account_id == bank_account_id,
-            HouseholdContract.status == ContractStatus.confirmed.value,
-        ),
-    )
-    total = 0
-    for hc in r.scalars().all():
-        total += await link_transactions_for_confirmed_contract(session, hc)
-    return total
-
-
-async def run_contract_recognition(
-    session: AsyncSession,
-    *,
-    acc_ids: list[int],
-    accounts_by_id: dict[int, BankAccount],
-    months_back: int = 60,
-) -> tuple[int, int]:
-    """
-    Analysiert alle Buchungen der Konten im Zeitraum, upsert Vorschläge, aktualisiert bestätigte Links.
-    Returns: (anzahl_vorschlag_änderungen, anzahl_bestätigte_mit_link_updates)
-    """
-    if not acc_ids:
-        return 0, 0
-
-    today = date.today()
-    from_day = today - timedelta(days=30 * months_back)
-
-    r = await session.execute(select(Transaction).where(Transaction.bank_account_id.in_(acc_ids)))
-    txs = [t for t in r.scalars().all() if t.booking_date >= from_day]
-
-    tx_ids = [int(t.id) for t in txs]
-    pair_ids = await load_transfer_pair_transaction_ids(session, tx_ids)
-
-    candidates = detect_contract_candidates(
-        transactions=txs,
-        accounts_by_id=accounts_by_id,
-        min_occurrences=3,
-        pair_transaction_ids=pair_ids,
-    )
-
-    r_existing = await session.execute(
-        select(HouseholdContract).where(HouseholdContract.bank_account_id.in_(acc_ids)),
-    )
-    by_sig: dict[str, HouseholdContract] = {c.signature_hash: c for c in r_existing.scalars().all()}
-
-    suggestion_changes = 0
-    for cand in candidates:
-        sig = contract_signature_hash(cand.bank_account_id, cand.party_norm, cand.amount_typical)
-        existing = by_sig.get(sig)
-        if existing is not None:
-            if existing.status == ContractStatus.ignored.value:
-                continue
-            if existing.status == ContractStatus.confirmed.value:
-                existing.label = cand.label
-                existing.rhythm = cand.rhythm
-                existing.rhythm_display = cand.rhythm_display
-                existing.confidence = float(cand.confidence)
-                existing.occurrences = cand.occurrences
-                existing.first_booking = cand.first_booking
-                existing.last_booking = cand.last_booking
-                existing.updated_at = datetime.utcnow()
-                continue
-            existing.label = cand.label
-            existing.rhythm = cand.rhythm
-            existing.rhythm_display = cand.rhythm_display
-            existing.confidence = float(cand.confidence)
-            existing.occurrences = cand.occurrences
-            existing.first_booking = cand.first_booking
-            existing.last_booking = cand.last_booking
-            existing.updated_at = datetime.utcnow()
-            suggestion_changes += 1
-            continue
-
-        row = HouseholdContract(
-            bank_account_id=cand.bank_account_id,
-            signature_hash=sig,
-            status=ContractStatus.suggested.value,
-            party_norm=cand.party_norm,
-            label=cand.label,
-            amount_abs=Decimal(cand.amount_typical),
-            currency=cand.currency,
-            rhythm=cand.rhythm,
-            rhythm_display=cand.rhythm_display,
-            confidence=float(cand.confidence),
-            occurrences=cand.occurrences,
-            first_booking=cand.first_booking,
-            last_booking=cand.last_booking,
-        )
-        session.add(row)
-        by_sig[sig] = row
-        suggestion_changes += 1
-
-    refreshed = 0
-    acc_id_set = set(int(x) for x in acc_ids)
-    r_conf = await session.execute(
-        select(HouseholdContract).where(
-            HouseholdContract.status == ContractStatus.confirmed.value,
-            HouseholdContract.bank_account_id.in_(acc_id_set),
-        ),
-    )
-    for hc in r_conf.scalars().all():
-        n = await link_transactions_for_confirmed_contract(session, hc)
-        if n:
-            refreshed += 1
-
-    return suggestion_changes, refreshed
-
-
-async def confirm_contract(session: AsyncSession, hc: HouseholdContract) -> None:
-    hc.status = ContractStatus.confirmed.value
-    hc.confirmed_at = datetime.utcnow()
-    hc.updated_at = datetime.utcnow()
-    await link_transactions_for_confirmed_contract(session, hc)
-
-
 async def fetch_transactions_for_contract_detail(
     session: AsyncSession,
-    hc: HouseholdContract,
+    contract: Contract,
     *,
     limit: int = 2000,
 ) -> list[Transaction]:
-    """
-    Buchungen zur Anzeige unter dem Vertrag: bei bestätigt per contract_id,
-    bei Vorschlag alle passenden Ausgaben (gleiche Matching-Heuristik wie Erkennung).
-    """
-    acc_tx_ids = await transaction_ids_on_bank_account(session, hc.bank_account_id)
-    pair_ids = await load_transfer_pair_transaction_ids(session, acc_tx_ids)
-
-    if hc.status == ContractStatus.confirmed.value:
-        r = await session.execute(
-            select(Transaction)
-            .where(Transaction.contract_id == hc.id)
-            .order_by(Transaction.booking_date.desc(), Transaction.id.desc())
-            .limit(limit),
-        )
-        rows = [
-            t
-            for t in r.scalars().all()
-            if not transaction_is_internal_transfer(t, pair_ids)
-        ]
-        return rows
-
-    if hc.status == ContractStatus.suggested.value:
-        r_all = await session.execute(
-            select(Transaction).where(Transaction.bank_account_id == hc.bank_account_id),
-        )
-        matched = [
-            t
-            for t in r_all.scalars().all()
-            if transaction_matches_contract(t, hc, pair_transaction_ids=pair_ids)
-        ]
-        matched.sort(key=lambda t: (t.booking_date, t.id), reverse=True)
-        return matched[:limit]
-
-    return []
-
-
-DIVERS_LABEL = "Divers"
-
-
-async def contract_category_summary_for_list(
-    session: AsyncSession,
-    hc: HouseholdContract,
-) -> tuple[str, Optional[str]]:
-    """
-    Kategorie auf Vertragsebene: einheitlicher Kategoriename + effektive Farbe;
-    alle ohne Kategorie → „—“; gemischt oder mehrere Kategorien → „Divers“.
-    """
-    txs = await fetch_transactions_for_contract_detail(session, hc, limit=8000)
-    if not txs:
-        return "—", None
-
-    distinct = {tx.category_id for tx in txs}
-    if len(distinct) == 1:
-        only = next(iter(distinct))
-        if only is None:
-            return "—", None
-        hid = await household_id_for_bank_account(session, hc.bank_account_id)
-        if hid is None:
-            return DIVERS_LABEL, None
-        r_cat = await session.execute(
-            select(Category)
-            .where(Category.id == only, Category.household_id == hid)
-            .options(
-                joinedload(Category.parent).selectinload(Category.children),
-            ),
-        )
-        cat = r_cat.unique().scalar_one_or_none()
-        if cat is None:
-            return DIVERS_LABEL, None
-        hex_out = _effective_hex_for_category(cat)
-        return cat.name, hex_out
-
-    return DIVERS_LABEL, None
-
-
-async def sample_transaction_ids_for_contract(
-    session: AsyncSession,
-    hc: HouseholdContract,
-    *,
-    limit: int = 5,
-) -> list[int]:
-    """Letzte passende Buchungs-IDs (Anzeige in der Vertragsliste)."""
-    acc_tx_ids = await transaction_ids_on_bank_account(session, hc.bank_account_id)
+    acc_tx_ids = await transaction_ids_on_bank_account(session, contract.bank_account_id)
     pair_ids = await load_transfer_pair_transaction_ids(session, acc_tx_ids)
     r = await session.execute(
         select(Transaction)
-        .where(Transaction.bank_account_id == hc.bank_account_id)
-        .order_by(Transaction.booking_date.desc(), Transaction.id.desc()),
+        .where(Transaction.contract_id == contract.id)
+        .order_by(Transaction.booking_date.desc(), Transaction.id.desc())
+        .limit(limit),
     )
-    out: list[int] = []
-    for tx in r.scalars().all():
-        if transaction_matches_contract(tx, hc, pair_transaction_ids=pair_ids):
-            out.append(int(tx.id))
-            if len(out) >= limit:
-                break
-    return out
-
-
-async def count_transactions_for_contract(session: AsyncSession, hc: HouseholdContract) -> int:
-    if hc.status != ContractStatus.confirmed.value:
-        return 0
-    acc_tx_ids = await transaction_ids_on_bank_account(session, hc.bank_account_id)
-    pair_ids = await load_transfer_pair_transaction_ids(session, acc_tx_ids)
-    r = await session.execute(
-        select(Transaction).where(Transaction.contract_id == hc.id),
-    )
-    return sum(
-        1
-        for t in r.scalars().all()
-        if not transaction_is_internal_transfer(t, pair_ids)
-    )
-
-
-async def ignore_contract(session: AsyncSession, hc: HouseholdContract) -> None:
-    was_confirmed = hc.status == ContractStatus.confirmed.value
-    hc.status = ContractStatus.ignored.value
-    hc.updated_at = datetime.utcnow()
-    if was_confirmed:
-        await session.execute(
-            update(Transaction).where(Transaction.contract_id == hc.id).values(contract_id=None),
-        )
-    hc.confirmed_at = None
+    return [t for t in r.scalars().all() if not transaction_is_internal_transfer(t, pair_ids)]

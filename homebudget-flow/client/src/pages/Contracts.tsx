@@ -1,117 +1,95 @@
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Button,
-  Card,
-  CardContent,
   CircularProgress,
-  Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   FormControl,
-  IconButton,
   InputLabel,
+  IconButton,
   MenuItem,
   Paper,
   Select,
   Stack,
+  TextField,
+  Tab,
   Table,
   TableBody,
   TableCell,
   TableContainer,
   TableHead,
   TableRow,
-  Tab,
   Tabs,
   Tooltip,
   Typography,
 } from '@mui/material';
+import { DeleteOutline as DeleteOutlineIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import {
-  apiErrorMessage,
-  confirmContract,
-  fetchAccounts,
-  fetchContractTransactions,
-  fetchContracts,
-  fetchHouseholds,
-  ignoreContract,
-  recognizeContracts,
-  type BankAccount,
-  type ContractOut,
-} from '../api/client';
-import { formatMoney } from '../lib/transactionUi';
+
+import { describeCategoryRuleCondition, formatDateTime } from '../lib/transactionUi';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 
-type TabKey = 'confirmed' | 'suggested' | 'ignored';
+import {
+  apiErrorMessage,
+  applyContract,
+  createContract,
+  createContractRule,
+  deleteContract,
+  deleteContractRule,
+  fetchAccounts,
+  fetchCategoryRules,
+  fetchContracts,
+  fetchContractSuggestions,
+  fetchIgnoredContractSuggestions,
+  fetchHouseholds,
+  fetchTransactions,
+  ignoreContractSuggestion,
+  unignoreContractSuggestion,
+  type BankAccount,
+  type CategoryRuleCondition,
+  type CategoryRuleOut,
+  type ContractOut,
+  type ContractSuggestionIgnoreOut,
+  type ContractSuggestionOut,
+} from '../api/client';
 
-function _hexValid(h: string | null | undefined): h is string {
-  return Boolean(h && /^#[0-9A-Fa-f]{6}$/i.test(h.trim()));
+function usableCategoryRules(rules: CategoryRuleOut[]): CategoryRuleOut[] {
+  return rules.filter((r) => !r.category_missing && r.category_id != null);
 }
 
-/** Aggregierte Kategorie der Vertrags-Buchungen (einheitlich / Divers / —). */
-function ContractCategorySummary({ r }: { r: ContractOut }) {
-  const label = r.category_summary?.trim() ? r.category_summary : '—';
-  const hex = r.category_color_hex?.trim();
-  const showDot = _hexValid(hex) && label !== '—' && label !== 'Divers';
-  return (
-    <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0, justifyContent: 'flex-end' }}>
-      {showDot ? (
-        <Box
-          aria-hidden
-          sx={{
-            width: 8,
-            height: 8,
-            borderRadius: '50%',
-            flexShrink: 0,
-            bgcolor: hex,
-            boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}`,
-          }}
-        />
-      ) : null}
-      <Typography variant="body2" noWrap component="span" fontWeight={600}>
-        {label}
-      </Typography>
-    </Stack>
-  );
+function rulesForBankAccount(
+  bankAccountId: number,
+  accounts: BankAccount[],
+  byHh: Record<number, CategoryRuleOut[]>,
+): CategoryRuleOut[] {
+  const acc = accounts.find((a) => a.id === bankAccountId);
+  if (!acc) return [];
+  return usableCategoryRules(byHh[acc.household_id] ?? []);
 }
 
 export default function Contracts() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const qc = useQueryClient();
+
   const householdsQ = useQuery({ queryKey: ['households'], queryFn: fetchHouseholds });
   const householdNameById = useMemo(() => {
     const m: Record<number, string> = {};
-    for (const h of householdsQ.data ?? []) {
-      m[h.id] = h.name;
-    }
+    for (const h of householdsQ.data ?? []) m[h.id] = h.name;
     return m;
   }, [householdsQ.data]);
   const multihh = (householdsQ.data?.length ?? 0) > 1;
 
-  /** Ein Konto oder „alle sichtbaren Konten“ für die Liste; Neuerkennung nur mit Einzelkonto. */
-  const [accountFilter, setAccountFilter] = useState<number | 'all' | null>(null);
-
-  const [tab, setTab] = useState<TabKey>('confirmed');
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-
-  useEffect(() => {
-    setExpandedId(null);
-  }, [tab]);
-
-  const contractsQ = useQuery({
-    queryKey: ['contracts', accountFilter],
-    queryFn: () => fetchContracts(accountFilter!),
-    enabled: accountFilter != null,
-  });
-
-  const accountsQ = useQuery({
-    queryKey: ['accounts'],
-    queryFn: () => fetchAccounts(),
-  });
-
+  const accountsQ = useQuery({ queryKey: ['accounts'], queryFn: () => fetchAccounts() });
   const accounts: BankAccount[] = accountsQ.data ?? [];
 
   const accountsSorted = useMemo(() => {
@@ -126,6 +104,28 @@ export default function Contracts() {
     });
   }, [accounts, multihh, householdNameById]);
 
+  const householdIds = useMemo(
+    () => [...new Set(accountsSorted.map((a) => a.household_id))].sort((a, b) => a - b),
+    [accountsSorted],
+  );
+
+  const categoryRulesQueries = useQueries({
+    queries: householdIds.map((hid) => ({
+      queryKey: ['category-rules', hid],
+      queryFn: () => fetchCategoryRules(hid),
+      enabled: householdIds.length > 0,
+    })),
+  });
+
+  const categoryRulesByHousehold = useMemo(() => {
+    const m: Record<number, CategoryRuleOut[]> = {};
+    householdIds.forEach((hid, i) => {
+      m[hid] = categoryRulesQueries[i]?.data?.rules ?? [];
+    });
+    return m;
+  }, [householdIds, categoryRulesQueries]);
+
+  const [accountFilter, setAccountFilter] = useState<number | 'all' | null>(null);
   useEffect(() => {
     if (accountsSorted.length === 0) {
       setAccountFilter(null);
@@ -138,59 +138,223 @@ export default function Contracts() {
     });
   }, [accountsSorted]);
 
-  const rowsByTab = useMemo(() => {
-    const all = contractsQ.data ?? [];
-    const suggested = all.filter((c) => c.status === 'suggested');
-    suggested.sort((a, b) => {
-      const ta = a.last_booking ? new Date(a.last_booking).getTime() : Number.NEGATIVE_INFINITY;
-      const tb = b.last_booking ? new Date(b.last_booking).getTime() : Number.NEGATIVE_INFINITY;
-      return tb - ta;
-    });
-    return {
-      suggested,
-      confirmed: all.filter((c) => c.status === 'confirmed'),
-      ignored: all.filter((c) => c.status === 'ignored'),
-    };
-  }, [contractsQ.data]);
+  const contractsQ = useQuery({
+    queryKey: ['contracts', accountFilter],
+    queryFn: () => fetchContracts(accountFilter!),
+    enabled: accountFilter != null,
+  });
 
-  const currentRows = rowsByTab[tab];
+  const selectedBankAccountId = typeof accountFilter === 'number' ? accountFilter : null;
+  const suggestionsQ = useQuery({
+    queryKey: ['contractSuggestions', selectedBankAccountId],
+    queryFn: () => fetchContractSuggestions(selectedBankAccountId!),
+    enabled: selectedBankAccountId != null,
+  });
 
-  const recognizeMut = useMutation({
-    mutationFn: () => {
-      if (typeof accountFilter !== 'number') {
-        return Promise.reject(new Error('Bitte ein einzelnes Konto wählen.'));
+  const ignoredSuggestionsQ = useQuery({
+    queryKey: ['ignoredContractSuggestions', selectedBankAccountId],
+    queryFn: () => fetchIgnoredContractSuggestions(selectedBankAccountId!),
+    enabled: selectedBankAccountId != null,
+  });
+
+  const ignoreSuggestionMut = useMutation({
+    mutationFn: async (args: { bankAccountId: number; fingerprint: string }) => {
+      await ignoreContractSuggestion(args.bankAccountId, args.fingerprint);
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contractSuggestions'] });
+      await qc.invalidateQueries({ queryKey: ['ignoredContractSuggestions'] });
+    },
+  });
+
+  const unignoreSuggestionMut = useMutation({
+    mutationFn: async (args: { bankAccountId: number; fingerprint: string }) => {
+      await unignoreContractSuggestion(args.bankAccountId, args.fingerprint);
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contractSuggestions'] });
+      await qc.invalidateQueries({ queryKey: ['ignoredContractSuggestions'] });
+    },
+  });
+  const [suggestionTargetByFp, setSuggestionTargetByFp] = useState<Record<string, number | ''>>({});
+  const [suggestionCategoryRuleByFp, setSuggestionCategoryRuleByFp] = useState<Record<string, number | ''>>({});
+  const [suggestionErr, setSuggestionErr] = useState<string | null>(null);
+
+  const suggestions: ContractSuggestionOut[] = suggestionsQ.data ?? [];
+  const ignored: ContractSuggestionIgnoreOut[] = ignoredSuggestionsQ.data ?? [];
+  useEffect(() => {
+    setSuggestionCategoryRuleByFp((prev) => {
+      const next = { ...prev };
+      for (const s of suggestions) {
+        const cur = next[s.fingerprint];
+        if (cur !== undefined && cur !== '') continue;
+        if (s.similar_category_rules?.length === 1) {
+          next[s.fingerprint] = s.similar_category_rules[0].id;
+        }
       }
-      return recognizeContracts(accountFilter, 60);
+      return next;
+    });
+  }, [suggestions]);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createLabel, setCreateLabel] = useState('');
+  const [createAccountId, setCreateAccountId] = useState<number | ''>('');
+  const [createFirstCategoryRuleId, setCreateFirstCategoryRuleId] = useState<number | ''>('');
+  const [createErr, setCreateErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    setCreateErr(null);
+    setCreateFirstCategoryRuleId('');
+  }, [createOpen]);
+
+  const createContractMut = useMutation({
+    mutationFn: async () => {
+      setCreateErr(null);
+      const bankAccountId =
+        typeof accountFilter === 'number' ? accountFilter : typeof createAccountId === 'number' ? createAccountId : null;
+      if (!bankAccountId) throw new Error('Bitte ein Konto auswählen.');
+      const label = createLabel.trim();
+      if (!label) throw new Error('Bitte einen Namen eingeben.');
+      const c = await createContract({ bank_account_id: bankAccountId, label });
+      if (createFirstCategoryRuleId !== '' && typeof createFirstCategoryRuleId === 'number') {
+        await createContractRule(c.id, { category_rule_id: createFirstCategoryRuleId });
+      }
+      return c;
     },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['contracts'] });
-      void qc.invalidateQueries({ queryKey: ['transactions'] });
+    onSuccess: async () => {
+      setCreateOpen(false);
+      setCreateLabel('');
+      setCreateAccountId('');
+      setCreateFirstCategoryRuleId('');
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
+    },
+    onError: (e) => setCreateErr(apiErrorMessage(e)),
+  });
+
+  const applyMut = useMutation({
+    mutationFn: async (contractId: number) => await applyContract(contractId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
     },
   });
 
-  const confirmMut = useMutation({
-    mutationFn: (id: number) => confirmContract(id),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['contracts'] });
-      void qc.invalidateQueries({ queryKey: ['transactions'] });
+  const deleteContractMut = useMutation({
+    mutationFn: async (contractId: number) => {
+      await deleteContract(contractId);
+      return contractId;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
+      await qc.invalidateQueries({ queryKey: ['transactions'] });
     },
   });
 
-  const ignoreMut = useMutation({
-    mutationFn: (id: number) => ignoreContract(id),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['contracts'] }),
+  const createRuleMut = useMutation({
+    mutationFn: async (args: { contractId: number; categoryRuleId: number }) => {
+      return await createContractRule(args.contractId, { category_rule_id: args.categoryRuleId });
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
+    },
   });
 
-  const txQ = useQuery({
-    queryKey: ['contractTx', expandedId, tab],
-    queryFn: () => fetchContractTransactions(expandedId!),
-    enabled: expandedId != null && (tab === 'confirmed' || tab === 'suggested'),
+  const deleteRuleMut = useMutation({
+    mutationFn: async (ruleId: number) => {
+      await deleteContractRule(ruleId);
+      return ruleId;
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
+    },
   });
 
-  function toggleExpand(c: ContractOut) {
-    if (c.status !== 'confirmed' && c.status !== 'suggested') return;
-    setExpandedId((prev) => (prev === c.id ? null : c.id));
-  }
+  const [newRuleOpenByContractId, setNewRuleOpenByContractId] = useState<Record<number, boolean>>({});
+  const [newRuleCategoryRuleIdByContractId, setNewRuleCategoryRuleIdByContractId] = useState<
+    Record<number, number | ''>
+  >({});
+  const [newRuleErrByContractId, setNewRuleErrByContractId] = useState<Record<number, string | null>>({});
+
+  const [tab, setTab] = useState<'confirmed' | 'suggested' | 'ignored'>('confirmed');
+  const [expandedConfirmedId, setExpandedConfirmedId] = useState<number | null>(null);
+  const [expandedSuggestionFp, setExpandedSuggestionFp] = useState<string | null>(null);
+
+  const confirmedTxQ = useQuery({
+    queryKey: ['contractTransactions', expandedConfirmedId],
+    queryFn: async () => {
+      const id = expandedConfirmedId;
+      if (!id) return [];
+      const c = (contractsQ.data ?? []).find((x) => x.id === id);
+      if (!c) return [];
+      return await fetchTransactions({
+        bank_account_id: c.bank_account_id,
+        contract_id: c.id,
+        limit: 50,
+        offset: 0,
+      });
+    },
+    enabled: expandedConfirmedId != null && expandedConfirmedId > 0,
+  });
+
+  const suggestionTxQ = useQuery({
+    queryKey: ['suggestionTransactions', selectedBankAccountId, expandedSuggestionFp],
+    queryFn: async () => {
+      const fp = expandedSuggestionFp;
+      const bankAccountId = selectedBankAccountId;
+      if (!fp || !bankAccountId) return [];
+      const s = (suggestionsQ.data ?? []).find((x) => x.fingerprint === fp);
+      if (!s) return [];
+
+      let amountGte: string | undefined;
+      let amountLte: string | undefined;
+      let descriptionContains: string | undefined;
+      let counterpartyContains: string | undefined;
+      let wholeWords = false;
+      let direction: 'credit' | 'debit' | 'all' = 'all';
+
+      for (const c of (s.conditions ?? []) as Array<any>) {
+        if (!c || typeof c !== 'object') continue;
+        if (c.type === 'direction') {
+          direction = c.value === 'credit' || c.value === 'debit' ? c.value : 'all';
+        }
+        if (c.type === 'amount_between') {
+          const min = typeof c.min_amount === 'string' ? c.min_amount : null;
+          const max = typeof c.max_amount === 'string' ? c.max_amount : null;
+          // Vorschläge arbeiten mit absoluten Beträgen; DB speichert signed amount.
+          if (direction === 'debit') {
+            if (max) amountGte = `-${max}`;
+            if (min) amountLte = `-${min}`;
+          } else if (direction === 'credit') {
+            if (min) amountGte = min;
+            if (max) amountLte = max;
+          } else {
+            // Fallback: ohne Richtung nicht sicher → keine Amount-Filter.
+          }
+        }
+        if (c.type === 'counterparty_contains_word') {
+          counterpartyContains = String(c.pattern || '').trim() || undefined;
+          wholeWords = true;
+        }
+        if (c.type === 'description_contains_word') {
+          descriptionContains = String(c.pattern || '').trim() || undefined;
+          wholeWords = true;
+        }
+      }
+
+      return await fetchTransactions({
+        bank_account_id: bankAccountId,
+        uncontracted_only: true,
+        amount_gte: amountGte,
+        amount_lte: amountLte,
+        description_contains: descriptionContains,
+        counterparty_contains: counterpartyContains,
+        whole_words: wholeWords,
+        limit: 200,
+        offset: 0,
+      });
+    },
+    enabled: selectedBankAccountId != null && expandedSuggestionFp != null,
+  });
 
   if (householdsQ.isLoading || accountsQ.isLoading) {
     return (
@@ -200,16 +364,23 @@ export default function Contracts() {
     );
   }
 
+  const rows: ContractOut[] = contractsQ.data ?? [];
+
+  const createDialogBankId =
+    typeof accountFilter === 'number' ? accountFilter : typeof createAccountId === 'number' ? createAccountId : null;
+  const createDialogRules =
+    createDialogBankId != null ? rulesForBankAccount(createDialogBankId, accountsSorted, categoryRulesByHousehold) : [];
+
   return (
     <Stack spacing={2} sx={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
       <Stack spacing={0.75}>
         <Typography variant={isMobile ? 'h6' : 'h5'} fontWeight={700} component="h1">
-          Verträge und Abos
+          Verträge
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.45 }}>
-          Vorschläge aus der Buchungsanalyse je Konto; bestätigte Verträge erscheinen in der Buchungsübersicht mit
-          einem Symbol. „Alle Konten“ zeigt die Verträge aller sichtbaren Konten; „Neuerkennung“ ist nur bei einzelnem
-          Konto möglich.
+          Jeder Vertrag verknüpft eine oder mehrere <strong>Kategorie-Zuordnungsregeln</strong> (gleiche Logik wie unter
+          Kategorien). Eine Buchung wird dem Vertrag zugeordnet, wenn mindestens eine verknüpfte Regel passt (OR). Die
+          Regeln selbst legst und bearbeitest du unter Einstellungen → Kategorien.
         </Typography>
       </Stack>
 
@@ -235,497 +406,639 @@ export default function Contracts() {
             <MenuItem value="all">Alle Konten</MenuItem>
             {accountsSorted.map((a) => (
               <MenuItem key={a.id} value={a.id}>
-                {multihh && householdNameById[a.household_id]
-                  ? `${householdNameById[a.household_id]} · ${a.name}`
-                  : a.name}
+                {multihh && householdNameById[a.household_id] ? `${householdNameById[a.household_id]} · ${a.name}` : a.name}
               </MenuItem>
             ))}
           </Select>
         </FormControl>
+
         <Button
           variant="contained"
-          fullWidth={isMobile}
-          sx={{ flexShrink: 0, py: { xs: 1.25, sm: 1 } }}
-          title={
-            accountFilter === 'all'
-              ? 'Bitte ein einzelnes Konto wählen, um eine Neuerkennung auszuführen.'
-              : undefined
-          }
-          disabled={
-            accountFilter == null || accountFilter === 'all' || recognizeMut.isPending
-          }
-          onClick={() => recognizeMut.mutate()}
+          onClick={() => {
+            setCreateErr(null);
+            setCreateOpen(true);
+          }}
+          disabled={accountsSorted.length === 0 || accountFilter == null}
+          sx={{ whiteSpace: 'nowrap' }}
         >
-          {recognizeMut.isPending ? 'Analyse…' : 'Neuerkennung'}
+          Vertrag anlegen
         </Button>
-        {recognizeMut.isSuccess ? (
-          <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
-            Aktualisiert: {recognizeMut.data.suggestions_updated} Vorschläge,{' '}
-            {recognizeMut.data.confirmed_links_touched} Links bestätigt
-          </Typography>
-        ) : null}
       </Stack>
 
-      {recognizeMut.isError ? <Alert severity="error">{apiErrorMessage(recognizeMut.error)}</Alert> : null}
-
       {accountsQ.isSuccess && accountsSorted.length === 0 ? (
-        <Alert severity="info">
-          Kein Bankkonto vorhanden — Verträge sind erst nach einem verbundenen Konto sichtbar.
-        </Alert>
+        <Alert severity="info">Kein Bankkonto vorhanden — Verträge sind erst nach einem verbundenen Konto sichtbar.</Alert>
       ) : null}
-
-      <Tabs
-        value={tab}
-        onChange={(_, v) => setTab(v)}
-        variant="scrollable"
-        scrollButtons="auto"
-        allowScrollButtonsMobile
-        sx={{
-          borderBottom: 1,
-          borderColor: 'divider',
-          minHeight: 44,
-          '& .MuiTab-root': { minHeight: 44, py: 1 },
-        }}
-      >
-        <Tab label={`Bestätigt (${rowsByTab.confirmed.length})`} value="confirmed" />
-        <Tab label={`Vorgeschlagen (${rowsByTab.suggested.length})`} value="suggested" />
-        <Tab label={`Ignoriert (${rowsByTab.ignored.length})`} value="ignored" />
-      </Tabs>
 
       {contractsQ.isError ? <Alert severity="error">{apiErrorMessage(contractsQ.error)}</Alert> : null}
 
-      {contractsQ.isLoading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-          <CircularProgress size={32} />
-        </Box>
-      ) : isMobile ? (
-        <ContractListMobile
-          tab={tab}
-          rows={currentRows}
-          accounts={accounts}
-          expandedId={expandedId}
-          onToggleExpand={toggleExpand}
-          txRows={txQ.data ?? []}
-          txLoading={txQ.isLoading}
-          txError={txQ.error}
-          onConfirm={(id) => confirmMut.mutate(id)}
-          onIgnore={(id) => ignoreMut.mutate(id)}
-          confirmPending={confirmMut.isPending}
-          ignorePending={ignoreMut.isPending}
-        />
-      ) : (
-        <Paper elevation={0} sx={{ border: 1, borderColor: 'divider', overflow: 'hidden' }}>
-          <TableContainer>
-            <Table size="small">
-              <TableHead>
-                <TableRow>
-                  {tab === 'confirmed' || tab === 'suggested' ? <TableCell width={48} /> : null}
-                  <TableCell>Gegenpart / Muster</TableCell>
-                  <TableCell align="right">Betrag (typ.)</TableCell>
-                  <TableCell align="right">Kategorie</TableCell>
-                  <TableCell>Rhythmus</TableCell>
-                  <TableCell align="right">Treffer</TableCell>
-                  <TableCell>Zeitraum</TableCell>
-                  <TableCell align="right">Vertrauen</TableCell>
-                  <TableCell>Konto</TableCell>
-                  {tab === 'suggested' ? <TableCell align="right">Aktion</TableCell> : null}
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {currentRows.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={tab === 'ignored' ? 8 : tab === 'suggested' ? 10 : 9}>
-                      <Typography variant="body2" color="text.secondary">
-                        Keine Einträge in dieser Kategorie.
-                      </Typography>
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  currentRows.map((r) => (
-                    <FragmentRowDesktop
-                      key={r.id}
-                      r={r}
-                      tab={tab}
-                      expanded={expandedId === r.id}
-                      onToggleExpand={() => toggleExpand(r)}
-                      accounts={accounts}
-                      txRows={expandedId === r.id ? txQ.data ?? [] : []}
-                      txLoading={expandedId === r.id && txQ.isLoading}
-                      txError={expandedId === r.id ? txQ.error : undefined}
-                      onConfirm={() => confirmMut.mutate(r.id)}
-                      onIgnore={() => ignoreMut.mutate(r.id)}
-                      confirmPending={confirmMut.isPending}
-                      ignorePending={ignoreMut.isPending}
-                    />
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </Paper>
-      )}
-    </Stack>
-  );
-}
-
-function ContractListMobile({
-  tab,
-  rows,
-  accounts,
-  expandedId,
-  onToggleExpand,
-  txRows,
-  txLoading,
-  txError,
-  onConfirm,
-  onIgnore,
-  confirmPending,
-  ignorePending,
-}: {
-  tab: TabKey;
-  rows: ContractOut[];
-  accounts: BankAccount[];
-  expandedId: number | null;
-  onToggleExpand: (c: ContractOut) => void;
-  txRows: import('../api/client').Transaction[];
-  txLoading: boolean;
-  txError: unknown;
-  onConfirm: (id: number) => void;
-  onIgnore: (id: number) => void;
-  confirmPending: boolean;
-  ignorePending: boolean;
-}) {
-  if (rows.length === 0) {
-    return (
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="body2" color="text.secondary">
-          Keine Einträge in dieser Kategorie.
-        </Typography>
-      </Paper>
-    );
-  }
-
-  return (
-    <Stack spacing={1.5} sx={{ width: '100%', minWidth: 0 }}>
-      {rows.map((r) => (
-        <ContractCardMobile
-          key={r.id}
-          r={r}
-          tab={tab}
-          expanded={expandedId === r.id}
-          onToggleExpand={() => onToggleExpand(r)}
-          accounts={accounts}
-          txRows={expandedId === r.id ? txRows : []}
-          txLoading={expandedId === r.id && txLoading}
-          txError={expandedId === r.id ? txError : undefined}
-          onConfirm={() => onConfirm(r.id)}
-          onIgnore={() => onIgnore(r.id)}
-          confirmPending={confirmPending}
-          ignorePending={ignorePending}
-        />
-      ))}
-    </Stack>
-  );
-}
-
-function ContractCardMobile({
-  r,
-  tab,
-  expanded,
-  onToggleExpand,
-  accounts,
-  txRows,
-  txLoading,
-  txError,
-  onConfirm,
-  onIgnore,
-  confirmPending,
-  ignorePending,
-}: {
-  r: ContractOut;
-  tab: TabKey;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  accounts: BankAccount[];
-  txRows: import('../api/client').Transaction[];
-  txLoading: boolean;
-  txError: unknown;
-  onConfirm: () => void;
-  onIgnore: () => void;
-  confirmPending: boolean;
-  ignorePending: boolean;
-}) {
-  const accName =
-    r.bank_account_name ||
-    accounts.find((a) => a.id === r.bank_account_id)?.name ||
-    `#${r.bank_account_id}`;
-  const countLabel =
-    r.status === 'confirmed' ? `${r.transaction_count} Buchungen` : `${r.occurrences} Treffer`;
-  const canExpand = tab === 'confirmed' || tab === 'suggested';
-
-  return (
-    <Card
-      elevation={0}
-      variant="outlined"
-      sx={{
-        width: '100%',
-        maxWidth: '100%',
-        minWidth: 0,
-        overflow: 'hidden',
-      }}
-    >
-      <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
-        <Stack direction="row" alignItems="flex-start" spacing={1} sx={{ width: '100%', minWidth: 0 }}>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="subtitle1" fontWeight={700} sx={{ wordBreak: 'break-word' }}>
-              {r.label}
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-              {accName}
-            </Typography>
-          </Box>
-          {canExpand ? (
-            <Tooltip title="Buchungen anzeigen">
-              <IconButton
-                size="medium"
-                onClick={onToggleExpand}
-                aria-expanded={expanded}
-                aria-label={expanded ? 'Buchungen ausblenden' : 'Buchungen einblenden'}
-                sx={{ flexShrink: 0, mt: -0.5 }}
-              >
-                <ExpandMoreIcon
-                  sx={{
-                    transform: expanded ? 'rotate(180deg)' : 'none',
-                    transition: 'transform 0.2s',
-                  }}
-                />
-              </IconButton>
-            </Tooltip>
-          ) : null}
-        </Stack>
-
-        <Stack spacing={1.25} sx={{ mt: 1.5 }}>
-          <MobileKv label="Betrag" value={formatMoney(r.amount_typical, r.currency)} />
-          <Stack direction="row" alignItems="flex-start" justifyContent="space-between" gap={1.5} sx={{ width: '100%' }}>
-            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, pt: 0.125 }}>
-              Kategorie
-            </Typography>
-            <Box sx={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'flex-end' }}>
-              <ContractCategorySummary r={r} />
-            </Box>
-          </Stack>
-          <MobileKv label="Rhythmus" value={r.rhythm_display} valueAlign="left" />
-          <MobileKv label="Treffer" value={countLabel} />
-          <MobileKv
-            label="Zeitraum"
-            value={`${r.first_booking ?? '—'} → ${r.last_booking ?? '—'}`}
-            valueNoWrap={false}
-          />
-          <MobileKv label="Vertrauen" value={`${Math.round(r.confidence * 100)} %`} valueAlign="left" />
-        </Stack>
+      <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
+        <Tabs
+          value={tab}
+          onChange={(_, v) => setTab(v)}
+          variant="scrollable"
+          allowScrollButtonsMobile
+          sx={{ borderBottom: 1, borderColor: 'divider', mb: 1 }}
+        >
+          <Tab value="confirmed" label={`Bestätigt (${rows.length})`} />
+          <Tab value="suggested" label={`Vorgeschlagen (${selectedBankAccountId != null ? suggestions.length : 0})`} />
+          <Tab value="ignored" label={`Ignoriert (${selectedBankAccountId != null ? ignored.length : 0})`} />
+        </Tabs>
 
         {tab === 'suggested' ? (
-          <Stack direction="column" spacing={1} sx={{ mt: 2 }}>
-            <Button
-              fullWidth
-              variant="contained"
-              size="medium"
-              disabled={confirmPending}
-              onClick={onConfirm}
-            >
-              Bestätigen
-            </Button>
-            <Button fullWidth variant="outlined" color="inherit" disabled={ignorePending} onClick={onIgnore}>
-              Ignorieren
-            </Button>
-          </Stack>
-        ) : null}
+          <>
+            {selectedBankAccountId == null ? (
+              <Alert severity="info">Für Vorschläge bitte ein konkretes Konto auswählen (nicht „Alle Konten“).</Alert>
+            ) : suggestionsQ.isError ? (
+              <Alert severity="error">{apiErrorMessage(suggestionsQ.error)}</Alert>
+            ) : null}
 
-        {canExpand ? (
-          <Collapse in={expanded} timeout="auto" unmountOnExit>
-            <Box
-              sx={{
-                mt: 2,
-                pt: 2,
-                borderTop: 1,
-                borderColor: 'divider',
-                mx: -2,
-                px: 2,
-                pb: 0,
-                bgcolor: 'action.hover',
-              }}
-            >
-              {txLoading ? (
-                <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-                  <CircularProgress size={28} />
-                </Box>
-              ) : txError ? (
-                <Alert severity="error">{apiErrorMessage(txError)}</Alert>
-              ) : (
-                <TransactionBookingsTable
-                  rows={txRows}
-                  accounts={accounts}
-                  title={tab === 'suggested' ? 'Erkannte Buchungen (Vorschlag)' : 'Buchungen zu diesem Vertrag'}
-                  hideInlineHint
-                  categoryColumnAdvanced
-                />
-              )}
-            </Box>
-          </Collapse>
-        ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-function MobileKv({
-  label,
-  value,
-  valueAlign = 'right',
-  valueNoWrap = true,
-}: {
-  label: string;
-  value: string;
-  valueAlign?: 'left' | 'right';
-  valueNoWrap?: boolean;
-}) {
-  return (
-    <Stack direction="row" alignItems="flex-start" justifyContent="space-between" gap={1.5} sx={{ width: '100%' }}>
-      <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0, pt: 0.125 }}>
-        {label}
-      </Typography>
-      <Typography
-        variant="body2"
-        fontWeight={600}
-        textAlign={valueAlign}
-        sx={{
-          flex: 1,
-          minWidth: 0,
-          wordBreak: valueNoWrap ? 'break-all' : 'break-word',
-        }}
-      >
-        {value}
-      </Typography>
-    </Stack>
-  );
-}
-
-function FragmentRowDesktop({
-  r,
-  tab,
-  expanded,
-  onToggleExpand,
-  accounts,
-  txRows,
-  txLoading,
-  txError,
-  onConfirm,
-  onIgnore,
-  confirmPending,
-  ignorePending,
-}: {
-  r: ContractOut;
-  tab: TabKey;
-  expanded: boolean;
-  onToggleExpand: () => void;
-  accounts: BankAccount[];
-  txRows: import('../api/client').Transaction[];
-  txLoading: boolean;
-  txError: unknown;
-  onConfirm: () => void;
-  onIgnore: () => void;
-  confirmPending: boolean;
-  ignorePending: boolean;
-}) {
-  const accName =
-    r.bank_account_name ||
-    accounts.find((a) => a.id === r.bank_account_id)?.name ||
-    `#${r.bank_account_id}`;
-  const countLabel =
-    r.status === 'confirmed' ? `${r.transaction_count} Buchungen` : `${r.occurrences} Treffer`;
-
-  return (
-    <>
-      <TableRow hover>
-        {tab === 'confirmed' || tab === 'suggested' ? (
-          <TableCell>
-            <Tooltip title="Alle zugehörigen Buchungen anzeigen">
-              <IconButton size="small" onClick={onToggleExpand} aria-expanded={expanded}>
-                <ExpandMoreIcon
-                  sx={{
-                    transform: expanded ? 'rotate(180deg)' : 'none',
-                    transition: 'transform 0.2s',
-                  }}
-                />
-              </IconButton>
-            </Tooltip>
-          </TableCell>
-        ) : null}
-        <TableCell sx={{ maxWidth: 280 }}>
-          <Typography variant="body2" fontWeight={600} noWrap title={r.label}>
-            {r.label}
-          </Typography>
-        </TableCell>
-        <TableCell align="right">{formatMoney(r.amount_typical, r.currency)}</TableCell>
-        <TableCell align="right" sx={{ maxWidth: 200 }}>
-          <ContractCategorySummary r={r} />
-        </TableCell>
-        <TableCell>{r.rhythm_display}</TableCell>
-        <TableCell align="right">{countLabel}</TableCell>
-        <TableCell>
-          <Typography variant="body2" color="text.secondary">
-            {r.first_booking ?? '—'} → {r.last_booking ?? '—'}
-          </Typography>
-        </TableCell>
-        <TableCell align="right">{Math.round(r.confidence * 100)}&nbsp;%</TableCell>
-        <TableCell>
-          <Typography variant="body2" noWrap title={accName}>
-            {accName}
-          </Typography>
-        </TableCell>
-        {tab === 'suggested' ? (
-          <TableCell align="right">
-            <Stack direction="row" spacing={1} justifyContent="flex-end">
-              <Button size="small" variant="outlined" disabled={confirmPending} onClick={onConfirm}>
-                Bestätigen
-              </Button>
-              <Button size="small" color="inherit" disabled={ignorePending} onClick={onIgnore}>
-                Ignorieren
-              </Button>
-            </Stack>
-          </TableCell>
-        ) : null}
-      </TableRow>
-      {(tab === 'confirmed' || tab === 'suggested') && expanded ? (
-        <TableRow>
-          <TableCell
-            colSpan={tab === 'suggested' ? 10 : 9}
-            sx={{ borderTop: 0, py: 0, backgroundColor: 'action.hover' }}
-          >
-            <Collapse in={expanded} unmountOnExit>
-              <Box sx={{ py: 2, px: 1 }}>
-                {txLoading ? (
-                  <CircularProgress size={28} />
-                ) : txError ? (
-                  <Alert severity="error">{apiErrorMessage(txError)}</Alert>
-                ) : (
-                  <TransactionBookingsTable
-                    rows={txRows}
-                    accounts={accounts}
-                    title={
-                      tab === 'suggested'
-                        ? 'Erkannte Buchungen (Vorschlag)'
-                        : 'Buchungen zu diesem Vertrag'
-                    }
-                    hideInlineHint
-                    categoryColumnAdvanced
-                  />
-                )}
+            {selectedBankAccountId != null && (suggestionsQ.isLoading || suggestionsQ.isFetching) ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+                <CircularProgress size={24} />
               </Box>
-            </Collapse>
-          </TableCell>
-        </TableRow>
-      ) : null}
-    </>
+            ) : null}
+
+            {selectedBankAccountId != null && suggestions.length > 0 ? (
+              <Stack spacing={1}>
+                <Typography fontWeight={700}>Vorschläge</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Wiederkehrende unkontrakt. Ausgaben. Für einen Vertrag wählst du eine <strong>Kategorie-Regel</strong> aus dem
+                  Haushalt. Bereits ähnliche Regeln werden oben genannt.
+                </Typography>
+                {suggestionErr ? <Alert severity="error">{suggestionErr}</Alert> : null}
+                <Stack spacing={1}>
+                  {suggestions.map((s) => {
+                    const avail =
+                      selectedBankAccountId != null
+                        ? rulesForBankAccount(selectedBankAccountId, accountsSorted, categoryRulesByHousehold)
+                        : [];
+                    return (
+                      <Paper key={s.fingerprint} variant="outlined" sx={{ p: 1.25 }}>
+                        <Stack
+                          direction={{ xs: 'column', sm: 'row' }}
+                          spacing={1}
+                          alignItems={{ sm: 'baseline' }}
+                          justifyContent="space-between"
+                        >
+                          <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
+                            {s.label}
+                          </Typography>
+                          <Typography variant="body2" color="text.secondary">
+                            Rhythmus: {s.recurrence_label || '—'}
+                          </Typography>
+                        </Stack>
+                        {s.similar_category_rules?.length ? (
+                          <Alert severity="info" sx={{ mt: 1 }}>
+                            Ähnliche Kategorie-Regel(n):{' '}
+                            {s.similar_category_rules
+                              .map((x) => x.display_name + (x.category_name ? ` (${x.category_name})` : ''))
+                              .join(' · ')}
+                          </Alert>
+                        ) : (
+                          <Alert severity="warning" sx={{ mt: 1 }}>
+                            Keine sehr ähnliche Kategorie-Regel gefunden — lege ggf. zuerst unter Kategorien eine Regel an.
+                          </Alert>
+                        )}
+                        <Box sx={{ mt: 1 }}>
+                          <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.5 }}>
+                            Heuristik (nur Orientierung — es gilt die gewählte Kategorie-Regel):
+                          </Typography>
+                          <Box component="ul" sx={{ m: 0, pl: 2 }}>
+                            {(s.conditions as CategoryRuleCondition[]).map((cond, i) => (
+                              <li key={i}>
+                                <Typography variant="body2" component="span">
+                                  {describeCategoryRuleCondition(cond)}
+                                </Typography>
+                              </li>
+                            ))}
+                          </Box>
+                        </Box>
+                        <FormControl fullWidth size="small" sx={{ mt: 1 }}>
+                          <InputLabel id={`sugg-cr-${s.fingerprint}`}>Kategorie-Regel</InputLabel>
+                          <Select
+                            labelId={`sugg-cr-${s.fingerprint}`}
+                            label="Kategorie-Regel"
+                            value={suggestionCategoryRuleByFp[s.fingerprint] ?? ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setSuggestionCategoryRuleByFp((prev) => ({
+                                ...prev,
+                                [s.fingerprint]: v === '' ? '' : Number(v),
+                              }));
+                            }}
+                          >
+                            {avail.map((r) => (
+                              <MenuItem key={r.id} value={r.id}>
+                                {r.display_name}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={async () => {
+                              try {
+                                setSuggestionErr(null);
+                                if (!selectedBankAccountId) return;
+                                const crId = suggestionCategoryRuleByFp[s.fingerprint];
+                                if (!crId || typeof crId !== 'number') throw new Error('Bitte eine Kategorie-Regel wählen.');
+                                const c = await createContract({ bank_account_id: selectedBankAccountId, label: s.label });
+                                await createContractRule(c.id, { category_rule_id: crId });
+                                await applyContract(c.id);
+                                await ignoreContractSuggestion(selectedBankAccountId, s.fingerprint);
+                                await qc.invalidateQueries({ queryKey: ['contracts'] });
+                                await qc.invalidateQueries({ queryKey: ['contractSuggestions'] });
+                                await qc.invalidateQueries({ queryKey: ['ignoredContractSuggestions'] });
+                              } catch (e) {
+                                setSuggestionErr(apiErrorMessage(e));
+                              }
+                            }}
+                          >
+                            Bestätigen → Neuer Vertrag
+                          </Button>
+                          <FormControl size="small" sx={{ minWidth: { sm: 260 } }}>
+                            <InputLabel id={`sugg-target-${s.fingerprint}`}>Zu Vertrag</InputLabel>
+                            <Select
+                              labelId={`sugg-target-${s.fingerprint}`}
+                              label="Zu Vertrag"
+                              value={suggestionTargetByFp[s.fingerprint] ?? ''}
+                              onChange={(e) =>
+                                setSuggestionTargetByFp((prev) => ({ ...prev, [s.fingerprint]: Number(e.target.value) }))
+                              }
+                              disabled={rows.length === 0}
+                            >
+                              {rows.map((c) => (
+                                <MenuItem key={c.id} value={c.id}>
+                                  {c.label}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={async () => {
+                              try {
+                                setSuggestionErr(null);
+                                const targetId = suggestionTargetByFp[s.fingerprint];
+                                if (!selectedBankAccountId) return;
+                                if (!targetId || typeof targetId !== 'number') throw new Error('Bitte Ziel-Vertrag auswählen.');
+                                const crId = suggestionCategoryRuleByFp[s.fingerprint];
+                                if (!crId || typeof crId !== 'number') throw new Error('Bitte eine Kategorie-Regel wählen.');
+                                await createContractRule(targetId, { category_rule_id: crId });
+                                await applyContract(targetId);
+                                await ignoreContractSuggestion(selectedBankAccountId, s.fingerprint);
+                                await qc.invalidateQueries({ queryKey: ['contracts'] });
+                                await qc.invalidateQueries({ queryKey: ['contractSuggestions'] });
+                                await qc.invalidateQueries({ queryKey: ['ignoredContractSuggestions'] });
+                              } catch (e) {
+                                setSuggestionErr(apiErrorMessage(e));
+                              }
+                            }}
+                            disabled={rows.length === 0}
+                            sx={{ whiteSpace: 'nowrap' }}
+                          >
+                            Als Regel hinzufügen
+                          </Button>
+                          <Button
+                            size="small"
+                            color="error"
+                            variant="outlined"
+                            onClick={() =>
+                              ignoreSuggestionMut.mutate({
+                                bankAccountId: selectedBankAccountId!,
+                                fingerprint: s.fingerprint,
+                              })
+                            }
+                            disabled={ignoreSuggestionMut.isPending}
+                          >
+                            Ignorieren
+                          </Button>
+                        </Stack>
+
+                        <Accordion
+                          expanded={expandedSuggestionFp === s.fingerprint}
+                          onChange={(_, open) => setExpandedSuggestionFp(open ? s.fingerprint : null)}
+                          variant="outlined"
+                          disableGutters
+                          sx={{ mt: 1, '&:before': { display: 'none' } }}
+                        >
+                          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                            <Typography fontWeight={700}>Buchungen</Typography>
+                          </AccordionSummary>
+                          <AccordionDetails>
+                            <TransactionBookingsTable
+                              rows={suggestionTxQ.data ?? []}
+                              accounts={accountsSorted}
+                              isLoading={suggestionTxQ.isLoading || suggestionTxQ.isFetching}
+                              error={suggestionTxQ.isError ? suggestionTxQ.error : undefined}
+                              title="Buchungen (Vorschlag)"
+                              hideInlineHint
+                              embedded
+                              emptyMessage="Keine."
+                            />
+                          </AccordionDetails>
+                        </Accordion>
+                      </Paper>
+                    );
+                  })}
+                </Stack>
+              </Stack>
+            ) : selectedBankAccountId != null && suggestionsQ.isSuccess ? (
+              <Typography color="text.secondary">Keine Vorschläge.</Typography>
+            ) : null}
+          </>
+        ) : null}
+
+        {tab === 'ignored' ? (
+          <>
+            {selectedBankAccountId == null ? (
+              <Alert severity="info">Für ignorierte Vorschläge bitte ein konkretes Konto auswählen (nicht „Alle Konten“).</Alert>
+            ) : ignoredSuggestionsQ.isError ? (
+              <Alert severity="error">{apiErrorMessage(ignoredSuggestionsQ.error)}</Alert>
+            ) : null}
+
+            {selectedBankAccountId != null && (ignoredSuggestionsQ.isLoading || ignoredSuggestionsQ.isFetching) ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 1 }}>
+                <CircularProgress size={24} />
+              </Box>
+            ) : null}
+
+            {selectedBankAccountId != null && ignored.length > 0 ? (
+              <Stack spacing={1}>
+                {ignored.map((x) => (
+                  <Paper key={x.fingerprint} variant="outlined" sx={{ p: 1.25 }}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} justifyContent="space-between" alignItems="baseline">
+                      <Typography fontWeight={700} sx={{ wordBreak: 'break-word' }}>
+                        {x.fingerprint}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {new Date(x.created_at).toLocaleString('de-DE')}
+                      </Typography>
+                    </Stack>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() =>
+                        unignoreSuggestionMut.mutate({ bankAccountId: selectedBankAccountId!, fingerprint: x.fingerprint })
+                      }
+                      disabled={unignoreSuggestionMut.isPending}
+                      sx={{ mt: 1 }}
+                    >
+                      Wieder anzeigen
+                    </Button>
+                  </Paper>
+                ))}
+              </Stack>
+            ) : selectedBankAccountId != null && ignoredSuggestionsQ.isSuccess ? (
+              <Typography color="text.secondary">Keine ignorierten Vorschläge.</Typography>
+            ) : null}
+          </>
+        ) : null}
+
+        {tab === 'confirmed' ? (
+          <>
+            {contractsQ.isLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress size={32} />
+              </Box>
+            ) : rows.length === 0 ? (
+              <Typography color="text.secondary">Keine Verträge.</Typography>
+            ) : (
+              <Stack spacing={1}>
+                {rows.map((c) => {
+                  const acc = accountsSorted.find((a) => a.id === c.bank_account_id);
+                  const hhRules = acc ? usableCategoryRules(categoryRulesByHousehold[acc.household_id] ?? []) : [];
+                  const usedIds = new Set((c.rules ?? []).map((r) => r.category_rule_id));
+                  const addable = hhRules.filter((r) => !usedIds.has(r.id));
+                  return (
+                    <Paper key={c.id} variant="outlined" sx={{ p: 1.25 }}>
+                      <Stack
+                        direction={{ xs: 'column', sm: 'row' }}
+                        spacing={1}
+                        alignItems={{ sm: 'baseline' }}
+                        justifyContent="space-between"
+                      >
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          alignItems="baseline"
+                          sx={{ minWidth: 0, flex: 1 }}
+                        >
+                          <Typography fontWeight={700} sx={{ wordBreak: 'break-word', minWidth: 0, flex: 1 }}>
+                            {c.label}
+                          </Typography>
+                          <Tooltip title="Vertrag löschen">
+                            <span>
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => {
+                                  if (!window.confirm(`Vertrag wirklich löschen?\n\n${c.label}`)) return;
+                                  deleteContractMut.mutate(c.id);
+                                }}
+                                disabled={deleteContractMut.isPending}
+                                aria-label="Vertrag löschen"
+                              >
+                                <DeleteOutlineIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 0.25, sm: 0 } }}>
+                          {c.bank_account_name} · {c.rules?.length ?? 0} Regel(n) · {c.transaction_count ?? 0} Buchung(en) ·
+                          Rhythmus: {c.recurrence_label || '—'}
+                        </Typography>
+                      </Stack>
+                      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => {
+                            setNewRuleErrByContractId((prev) => ({ ...prev, [c.id]: null }));
+                            setNewRuleOpenByContractId((prev) => ({ ...prev, [c.id]: true }));
+                            setNewRuleCategoryRuleIdByContractId((prev) => ({ ...prev, [c.id]: '' }));
+                          }}
+                        >
+                          Regel hinzufügen
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          onClick={() => applyMut.mutate(c.id)}
+                          disabled={applyMut.isPending}
+                        >
+                          Apply (Buchungen zuordnen)
+                        </Button>
+                      </Stack>
+                      <Accordion
+                        expanded={expandedConfirmedId === c.id}
+                        onChange={(_, open) => setExpandedConfirmedId(open ? c.id : null)}
+                        variant="outlined"
+                        disableGutters
+                        sx={{ mt: 1, '&:before': { display: 'none' } }}
+                      >
+                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                          <Typography fontWeight={700}>Buchungen ({c.transaction_count ?? 0})</Typography>
+                        </AccordionSummary>
+                        <AccordionDetails>
+                          <TransactionBookingsTable
+                            rows={confirmedTxQ.data ?? []}
+                            accounts={accountsSorted}
+                            isLoading={confirmedTxQ.isLoading || confirmedTxQ.isFetching}
+                            error={confirmedTxQ.isError ? confirmedTxQ.error : undefined}
+                            title="Vertrags-Buchungen (contract_id)"
+                            hideInlineHint
+                            embedded
+                            emptyMessage="Keine."
+                          />
+                        </AccordionDetails>
+                      </Accordion>
+
+                      {applyMut.isSuccess && applyMut.variables === c.id ? (
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>
+                          Zuordnung aktualisiert: {applyMut.data.transactions_updated} Buchung(en).
+                        </Typography>
+                      ) : null}
+
+                      <Stack spacing={1} sx={{ mt: 1 }}>
+                        {newRuleOpenByContractId[c.id] ? (
+                          <Paper variant="outlined" sx={{ p: 1 }}>
+                            <Stack spacing={1}>
+                              <Typography variant="body2" fontWeight={700}>
+                                Kategorie-Regel verknüpfen
+                              </Typography>
+                              <FormControl fullWidth size="small">
+                                <InputLabel id={`new-cr-${c.id}`}>Kategorie-Regel</InputLabel>
+                                <Select
+                                  labelId={`new-cr-${c.id}`}
+                                  label="Kategorie-Regel"
+                                  value={newRuleCategoryRuleIdByContractId[c.id] ?? ''}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setNewRuleCategoryRuleIdByContractId((prev) => ({
+                                      ...prev,
+                                      [c.id]: v === '' ? '' : Number(v),
+                                    }));
+                                  }}
+                                >
+                                  {addable.length === 0 ? (
+                                    <MenuItem value="" disabled>
+                                      Keine weiteren Regeln verfügbar
+                                    </MenuItem>
+                                  ) : null}
+                                  {addable.map((r) => (
+                                    <MenuItem key={r.id} value={r.id}>
+                                      {r.display_name}
+                                    </MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                              {newRuleErrByContractId[c.id] ? (
+                                <Alert severity="error">{newRuleErrByContractId[c.id]}</Alert>
+                              ) : null}
+                              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+                                <Button
+                                  size="small"
+                                  variant="contained"
+                                  onClick={() => {
+                                    setNewRuleErrByContractId((prev) => ({ ...prev, [c.id]: null }));
+                                    const rid = newRuleCategoryRuleIdByContractId[c.id];
+                                    if (!rid || typeof rid !== 'number') {
+                                      setNewRuleErrByContractId((prev) => ({
+                                        ...prev,
+                                        [c.id]: 'Bitte eine Kategorie-Regel wählen.',
+                                      }));
+                                      return;
+                                    }
+                                    createRuleMut.mutate(
+                                      { contractId: c.id, categoryRuleId: rid },
+                                      {
+                                        onError: (e) =>
+                                          setNewRuleErrByContractId((prev) => ({ ...prev, [c.id]: apiErrorMessage(e) })),
+                                        onSuccess: () => {
+                                          setNewRuleOpenByContractId((prev) => ({ ...prev, [c.id]: false }));
+                                          setNewRuleCategoryRuleIdByContractId((prev) => ({ ...prev, [c.id]: '' }));
+                                        },
+                                      },
+                                    );
+                                  }}
+                                  disabled={createRuleMut.isPending}
+                                >
+                                  Speichern
+                                </Button>
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  onClick={() => {
+                                    setNewRuleOpenByContractId((prev) => ({ ...prev, [c.id]: false }));
+                                    setNewRuleCategoryRuleIdByContractId((prev) => ({ ...prev, [c.id]: '' }));
+                                    setNewRuleErrByContractId((prev) => ({ ...prev, [c.id]: null }));
+                                  }}
+                                >
+                                  Abbrechen
+                                </Button>
+                              </Stack>
+                            </Stack>
+                          </Paper>
+                        ) : null}
+
+                        {(c.rules ?? []).map((r) => {
+                        return null;
+                      })}
+
+                      {(c.rules ?? []).length === 0 ? null : (
+                        <TableContainer component={Paper} variant="outlined" sx={{ width: '100%', overflowX: 'auto' }}>
+                          <Table size="small" sx={{ minWidth: 760 }}>
+                            <TableHead>
+                              <TableRow>
+                                <TableCell sx={{ minWidth: 180 }}>Anzeigename</TableCell>
+                                <TableCell sx={{ minWidth: 160 }}>Kategorie</TableCell>
+                                <TableCell>Bedingungen (alle müssen zutreffen)</TableCell>
+                                <TableCell sx={{ width: 160, whiteSpace: 'nowrap' }}>Angelegt</TableCell>
+                                <TableCell align="right" sx={{ width: 56 }} />
+                              </TableRow>
+                            </TableHead>
+                            <TableBody>
+                              {(c.rules ?? []).map((r) => (
+                                <TableRow key={r.id} hover>
+                                  <TableCell sx={{ fontWeight: 600, wordBreak: 'break-word' }}>
+                                    {r.category_rule_display_name || `Kategorie-Regel #${r.category_rule_id}`}
+                                  </TableCell>
+                                  <TableCell sx={{ wordBreak: 'break-word' }}>
+                                    {r.category_name || `#${r.category_rule_id}`}
+                                  </TableCell>
+                                  <TableCell sx={{ maxWidth: 520 }}>
+                                    {(r.conditions as CategoryRuleCondition[]).length ? (
+                                      <Stack spacing={0.5}>
+                                        {(r.conditions as CategoryRuleCondition[]).map((cond, i) => (
+                                          <Typography key={i} variant="body2">
+                                            {describeCategoryRuleCondition(cond)}
+                                          </Typography>
+                                        ))}
+                                      </Stack>
+                                    ) : (
+                                      <Typography variant="body2" color="text.secondary">
+                                        —
+                                      </Typography>
+                                    )}
+                                  </TableCell>
+                                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatDateTime(r.created_at)}</TableCell>
+                                  <TableCell align="right">
+                                    <Tooltip title="Verknüpfung löschen">
+                                      <span>
+                                        <IconButton
+                                          size="small"
+                                          color="error"
+                                          onClick={() => deleteRuleMut.mutate(r.id)}
+                                          disabled={deleteRuleMut.isPending}
+                                          aria-label="Verknüpfung löschen"
+                                        >
+                                          <DeleteOutlineIcon fontSize="small" />
+                                        </IconButton>
+                                      </span>
+                                    </Tooltip>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </TableContainer>
+                      )}
+                      </Stack>
+                    </Paper>
+                  );
+                })}
+              </Stack>
+            )}
+          </>
+        ) : null}
+      </Paper>
+
+      <Dialog
+        open={createOpen}
+        onClose={() => {
+          if (createContractMut.isPending) return;
+          setCreateOpen(false);
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Vertrag anlegen</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            {typeof accountFilter !== 'number' ? (
+              <FormControl fullWidth>
+                <InputLabel id="create-contract-acc">Konto</InputLabel>
+                <Select
+                  labelId="create-contract-acc"
+                  label="Konto"
+                  value={createAccountId === '' ? '' : createAccountId}
+                  onChange={(e) => setCreateAccountId(Number(e.target.value))}
+                >
+                  {accountsSorted.map((a) => (
+                    <MenuItem key={a.id} value={a.id}>
+                      {multihh && householdNameById[a.household_id] ? `${householdNameById[a.household_id]} · ${a.name}` : a.name}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            ) : (
+              <Alert severity="info">Konto: {accountsSorted.find((a) => a.id === accountFilter)?.name ?? String(accountFilter)}</Alert>
+            )}
+
+            <TextField
+              label="Name"
+              value={createLabel}
+              onChange={(e) => setCreateLabel(e.target.value)}
+              autoFocus
+              fullWidth
+              inputProps={{ maxLength: 512 }}
+            />
+
+            <Alert severity="info">
+              Optional: direkt eine Kategorie-Regel verknüpfen. Weitere Verknüpfungen fügst du am Vertrag hinzu.
+            </Alert>
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="create-first-cr">Kategorie-Regel (optional)</InputLabel>
+              <Select
+                labelId="create-first-cr"
+                label="Kategorie-Regel (optional)"
+                value={createFirstCategoryRuleId === '' ? '' : createFirstCategoryRuleId}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setCreateFirstCategoryRuleId(v === '' ? '' : Number(v));
+                }}
+              >
+                <MenuItem value="">— keine —</MenuItem>
+                {createDialogRules.map((r) => (
+                  <MenuItem key={r.id} value={r.id}>
+                    {r.display_name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            {createErr ? <Alert severity="error">{createErr}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              if (createContractMut.isPending) return;
+              setCreateOpen(false);
+            }}
+          >
+            Abbrechen
+          </Button>
+          <Button variant="contained" onClick={() => createContractMut.mutate()} disabled={createContractMut.isPending}>
+            Anlegen
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Stack>
   );
 }

@@ -40,15 +40,6 @@ class ExternalRecordSource(str, enum.Enum):
     paypal = "paypal"
     amazon = "amazon"
 
-
-class ContractStatus(str, enum.Enum):
-    """Persistierter Vertrag: Vorschlag aus Erkennung, bestätigt (Buchungen verknüpft), ignoriert."""
-
-    suggested = "suggested"
-    confirmed = "confirmed"
-    ignored = "ignored"
-
-
 class CategoryRuleType(str, enum.Enum):
     """Zuordnungsregel: Verwendungszweck oder Gegenpartei, enthält oder exakt (ohne Groß-/Kleinschreibung)."""
 
@@ -251,7 +242,7 @@ class BankAccount(Base):
         back_populates="bank_account",
         cascade="all, delete-orphan",
     )
-    household_contracts: Mapped[list["HouseholdContract"]] = relationship(
+    contracts: Mapped[list["Contract"]] = relationship(
         back_populates="bank_account",
         cascade="all, delete-orphan",
     )
@@ -395,37 +386,69 @@ class CategoryRuleSuggestionDismissal(Base):
     household: Mapped[Household] = relationship(back_populates="category_rule_suggestion_dismissals")
 
 
-class HouseholdContract(Base):
-    """Erkannte/bestätigte wiederkehrende Zahlung (Vertrag/Abo) — eindeutig pro Bankkonto und Signatur."""
+class Contract(Base):
+    """Vom Nutzer gepflegter Vertrag; besteht aus 1..n Regeln (OR), die Buchungen diesem Vertrag zuordnen."""
 
-    __tablename__ = "household_contracts"
-    __table_args__ = (
-        UniqueConstraint("bank_account_id", "signature_hash", name="uq_bank_account_contract_signature"),
-    )
+    __tablename__ = "contracts"
+    __table_args__ = (Index("ix_contracts_bank_account_id", "bank_account_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
-    signature_hash: Mapped[str] = mapped_column(String(64), index=True)
-    status: Mapped[str] = mapped_column(String(32), default=ContractStatus.suggested.value)
-    party_norm: Mapped[str] = mapped_column(Text)
     label: Mapped[str] = mapped_column(String(512))
-    amount_abs: Mapped[Decimal] = mapped_column(Numeric(18, 2))
-    currency: Mapped[str] = mapped_column(String(8), default="EUR")
-    rhythm: Mapped[str] = mapped_column(String(32), default="unknown")
-    rhythm_display: Mapped[str] = mapped_column(String(64), default="")
-    confidence: Mapped[float] = mapped_column(Float, default=0.0)
-    occurrences: Mapped[int] = mapped_column(default=0)
-    first_booking: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    last_booking: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-    bank_account: Mapped[BankAccount] = relationship(back_populates="household_contracts")
+    bank_account: Mapped[BankAccount] = relationship(back_populates="contracts")
+    rules: Mapped[list["ContractRule"]] = relationship(
+        back_populates="contract",
+        cascade="all, delete-orphan",
+        order_by="ContractRule.priority.asc(), ContractRule.id.asc()",
+    )
     transactions: Mapped[list["Transaction"]] = relationship(
         back_populates="contract",
         foreign_keys="Transaction.contract_id",
     )
+
+
+class ContractRule(Base):
+    """Eine Regel innerhalb eines Vertrags; alle Regeln eines Vertrags sind OR-verknüpft."""
+
+    __tablename__ = "contract_rules"
+    __table_args__ = (
+        Index("ix_contract_rules_contract_id", "contract_id"),
+        UniqueConstraint("contract_id", "category_rule_id", name="uq_contract_rules_contract_category"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    contract_id: Mapped[int] = mapped_column(ForeignKey("contracts.id", ondelete="CASCADE"))
+    category_rule_id: Mapped[int] = mapped_column(ForeignKey("category_rules.id", ondelete="CASCADE"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(default=0)
+    conditions_json: Mapped[str] = mapped_column(Text, default="[]")
+    normalize_dot_space: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    display_name_override: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    contract: Mapped[Contract] = relationship(back_populates="rules")
+    category_rule: Mapped["CategoryRule"] = relationship(lazy="joined")
+
+
+class ContractSuggestionIgnore(Base):
+    """Persistiert „ignorierte“ Vertragsvorschläge (Fingerprint), damit sie nicht erneut angezeigt werden."""
+
+    __tablename__ = "contract_suggestion_ignores"
+    __table_args__ = (
+        UniqueConstraint("bank_account_id", "fingerprint", name="uq_contract_sugg_ignore_acc_fp"),
+        Index("ix_contract_sugg_ignore_bank_account_id", "bank_account_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_accounts.id", ondelete="CASCADE"))
+    fingerprint: Mapped[str] = mapped_column(String(64))  # z.B. sha1 hex
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    bank_account: Mapped[BankAccount] = relationship(lazy="joined")
 
 
 class Transaction(Base):
@@ -459,7 +482,7 @@ class Transaction(Base):
     category_id: Mapped[Optional[int]] = mapped_column(ForeignKey("categories.id"), nullable=True)
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     contract_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("household_contracts.id", ondelete="SET NULL"),
+        ForeignKey("contracts.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -472,7 +495,7 @@ class Transaction(Base):
         lazy="joined",
     )
     category: Mapped[Optional["Category"]] = relationship(back_populates="tagged_transactions")
-    contract: Mapped[Optional["HouseholdContract"]] = relationship(
+    contract: Mapped[Optional["Contract"]] = relationship(
         back_populates="transactions",
         foreign_keys=[contract_id],
     )

@@ -182,6 +182,8 @@ export type ContractOut = {
   transaction_count: number;
   /** Geschätzter Rhythmus (z. B. monatlich) aus Buchungsdaten. */
   recurrence_label: string;
+  /** Median der Abstände (Tage) zwischen Buchungen. */
+  recurrence_median_days?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -228,6 +230,7 @@ export type ContractSuggestionOut = {
   scanned_transactions_returned: number;
   scan_limit: number;
   recurrence_label: string;
+  recurrence_median_days?: number | null;
   similar_category_rules: ContractSuggestionSimilarRule[];
   transactions_preview: Array<{
     id: number;
@@ -1026,6 +1029,7 @@ export async function patchTransactionCategory(
 }
 
 export async function fetchTransactions(params: {
+  ids?: number[];
   from?: string;
   to?: string;
   bank_account_id?: number;
@@ -1042,6 +1046,7 @@ export async function fetchTransactions(params: {
 }): Promise<Transaction[]> {
   const { data } = await api.get<Transaction[]>('/api/transactions', {
     params: {
+      ids: params.ids,
       from: params.from,
       to: params.to,
       bank_account_id: params.bank_account_id,

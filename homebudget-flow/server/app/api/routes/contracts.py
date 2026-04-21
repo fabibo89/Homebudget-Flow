@@ -33,7 +33,7 @@ from app.schemas.contracts import (
 from app.schemas.transaction import TransactionOut, TransferKind, transaction_to_out
 from app.schemas.category_rule_conditions import conditions_for_api, resolved_rule_display_name
 from app.services.access import bank_account_ids_visible_to_user, bank_account_visible_to_user
-from app.services.contract_recurrence import infer_recurrence_label_de
+from app.services.contract_recurrence import infer_recurrence_label_de, infer_recurrence_median_days
 from app.services.contract_suggestion_similarity import (
     similar_category_rules_for_suggestion,
     similar_rule_out_entries,
@@ -210,7 +210,9 @@ async def _generate_contract_suggestions(
         fp = _suggestion_fingerprint(bank_account_id, conditions, True)
         if fp in ignored:
             continue
-        rec = infer_recurrence_label_de(list(meta.get("dates") or []))
+        dates = list(meta.get("dates") or [])
+        rec = infer_recurrence_label_de(dates)
+        rec_med = infer_recurrence_median_days(dates)
         sim_rules = similar_category_rules_for_suggestion(conditions, household_cat_rules)
         sim_out = [
             ContractSuggestionSimilarRuleOut(**row) for row in similar_rule_out_entries(sim_rules)
@@ -230,6 +232,7 @@ async def _generate_contract_suggestions(
                 scanned_transactions_returned=txs_returned,
                 scan_limit=_CONTRACT_SUGGESTION_SCAN_LIMIT,
                 recurrence_label=rec,
+                recurrence_median_days=rec_med,
                 similar_category_rules=sim_out,
                 transactions_preview=prev_out,
             )
@@ -314,6 +317,7 @@ async def _contract_out(
     *,
     transaction_count: Optional[int] = None,
     recurrence_label: Optional[str] = None,
+    recurrence_median_days: Optional[int] = None,
 ) -> ContractOut:
     acc_name = c.bank_account.name if c.bank_account else ""
     if transaction_count is None:
@@ -321,7 +325,9 @@ async def _contract_out(
         transaction_count = int(cnt_map.get(int(c.id), 0))
     if recurrence_label is None:
         dates_map = await booking_dates_by_contract_ids(session, [int(c.id)])
-        recurrence_label = infer_recurrence_label_de(dates_map.get(int(c.id), []))
+        dates = dates_map.get(int(c.id), [])
+        recurrence_label = infer_recurrence_label_de(dates)
+        recurrence_median_days = infer_recurrence_median_days(dates)
     return ContractOut(
         id=c.id,
         bank_account_id=c.bank_account_id,
@@ -330,6 +336,7 @@ async def _contract_out(
         rules=[_rule_out(r) for r in (c.rules or [])],
         transaction_count=int(transaction_count),
         recurrence_label=str(recurrence_label or ""),
+        recurrence_median_days=recurrence_median_days,
         created_at=c.created_at,
         updated_at=c.updated_at,
     )
@@ -390,12 +397,14 @@ async def list_contracts(
     counts = await _transaction_counts_for_contract_ids(session, ids)
     dates_map = await booking_dates_by_contract_ids(session, ids)
     rec_by_id = {cid: infer_recurrence_label_de(dates_map.get(cid, [])) for cid in ids}
+    rec_med_by_id = {cid: infer_recurrence_median_days(dates_map.get(cid, [])) for cid in ids}
     return [
         await _contract_out(
             session,
             c,
             transaction_count=int(counts.get(int(c.id), 0)),
             recurrence_label=rec_by_id.get(int(c.id), "unbekannt"),
+            recurrence_median_days=rec_med_by_id.get(int(c.id)),
         )
         for c in rows
     ]

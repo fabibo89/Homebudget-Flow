@@ -6,6 +6,19 @@ from datetime import date
 from statistics import median
 
 
+def infer_recurrence_median_days(dates: list[date]) -> int | None:
+    """Median der Tagesabstände (unique, sortiert)."""
+    if not dates:
+        return None
+    uniq = sorted({d for d in dates if d is not None})
+    if len(uniq) < 2:
+        return None
+    deltas = [(uniq[i + 1] - uniq[i]).days for i in range(len(uniq) - 1)]
+    if not deltas:
+        return None
+    return int(round(float(median(deltas))))
+
+
 def infer_recurrence_label_de(dates: list[date]) -> str:
     """
     Schätzt aus den Buchungsdaten einen typischen Abstand (Median der aufsteigend sortierten,

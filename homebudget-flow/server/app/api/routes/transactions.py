@@ -204,6 +204,15 @@ async def _transfer_kind_map_for_transactions(
 async def list_transactions(
     user: CurrentUser,
     session: AsyncSession = Depends(get_session),
+    ids: Optional[list[int]] = Query(
+        None,
+        description="Optional: explizite Transaction-IDs (subset der sichtbaren).",
+    ),
+    ids_bracket: Optional[list[int]] = Query(
+        None,
+        alias="ids[]",
+        description="Wie ids, aber akzeptiert Query-Serialisierung ids[]=1&ids[]=2.",
+    ),
     from_date: Optional[date] = Query(None, alias="from"),
     to_date: Optional[date] = Query(None, alias="to"),
     bank_account_id: Optional[int] = None,
@@ -218,6 +227,11 @@ async def list_transactions(
     offset: int = 0,
 ) -> list[TransactionOut]:
     q = _transactions_base_query(user)
+    eff_ids = ids_bracket or ids
+    if eff_ids:
+        eff_ids_int = [int(x) for x in eff_ids if int(x) >= 1]
+        if eff_ids_int:
+            q = q.where(Transaction.id.in_(eff_ids_int))
     if bank_account_id is not None:
         if not await bank_account_visible_to_user(session, user, bank_account_id):
             raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to account")

@@ -29,7 +29,7 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import { DeleteOutline as DeleteOutlineIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
+import { DeleteOutline as DeleteOutlineIcon, EditOutlined as EditOutlinedIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import { useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -54,6 +54,7 @@ import {
   fetchTransactions,
   ignoreContractSuggestion,
   resetContractAssignments,
+  updateContract,
   unignoreContractSuggestion,
   type BankAccount,
   type CategoryRuleCondition,
@@ -260,6 +261,17 @@ export default function Contracts() {
     },
   });
 
+  const updateContractMut = useMutation({
+    mutationFn: async (args: { contractId: number; label: string }) => {
+      const label = args.label.trim();
+      if (!label) throw new Error('Bitte einen Namen eingeben.');
+      return await updateContract(args.contractId, { label });
+    },
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
+    },
+  });
+
   const createRuleMut = useMutation({
     mutationFn: async (args: { contractId: number; categoryRuleId: number }) => {
       return await createContractRule(args.contractId, { category_rule_id: args.categoryRuleId });
@@ -288,6 +300,10 @@ export default function Contracts() {
   const [tab, setTab] = useState<'confirmed' | 'suggested' | 'ignored'>('confirmed');
   const [expandedConfirmedId, setExpandedConfirmedId] = useState<number | null>(null);
   const [expandedSuggestionFp, setExpandedSuggestionFp] = useState<string | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameContractId, setRenameContractId] = useState<number | null>(null);
+  const [renameLabel, setRenameLabel] = useState('');
+  const [renameErr, setRenameErr] = useState<string | null>(null);
 
   const confirmedTxQ = useQuery({
     queryKey: ['contractTransactions', expandedConfirmedId],
@@ -306,60 +322,20 @@ export default function Contracts() {
     enabled: expandedConfirmedId != null && expandedConfirmedId > 0,
   });
 
-  const suggestionTxQ = useQuery({
-    queryKey: ['suggestionTransactions', selectedBankAccountId, expandedSuggestionFp],
+  const suggestionSeedTxQ = useQuery({
+    queryKey: ['suggestionSeedTransactions', selectedBankAccountId, expandedSuggestionFp],
     queryFn: async () => {
       const fp = expandedSuggestionFp;
       const bankAccountId = selectedBankAccountId;
       if (!fp || !bankAccountId) return [];
       const s = (suggestionsQ.data ?? []).find((x) => x.fingerprint === fp);
       if (!s) return [];
-
-      let amountGte: string | undefined;
-      let amountLte: string | undefined;
-      let descriptionContains: string | undefined;
-      let counterpartyContains: string | undefined;
-      let wholeWords = false;
-      let direction: 'credit' | 'debit' | 'all' = 'all';
-
-      for (const c of (s.conditions ?? []) as Array<any>) {
-        if (!c || typeof c !== 'object') continue;
-        if (c.type === 'direction') {
-          direction = c.value === 'credit' || c.value === 'debit' ? c.value : 'all';
-        }
-        if (c.type === 'amount_between') {
-          const min = typeof c.min_amount === 'string' ? c.min_amount : null;
-          const max = typeof c.max_amount === 'string' ? c.max_amount : null;
-          // Vorschläge arbeiten mit absoluten Beträgen; DB speichert signed amount.
-          if (direction === 'debit') {
-            if (max) amountGte = `-${max}`;
-            if (min) amountLte = `-${min}`;
-          } else if (direction === 'credit') {
-            if (min) amountGte = min;
-            if (max) amountLte = max;
-          } else {
-            // Fallback: ohne Richtung nicht sicher → keine Amount-Filter.
-          }
-        }
-        if (c.type === 'counterparty_contains_word') {
-          counterpartyContains = String(c.pattern || '').trim() || undefined;
-          wholeWords = true;
-        }
-        if (c.type === 'description_contains_word') {
-          descriptionContains = String(c.pattern || '').trim() || undefined;
-          wholeWords = true;
-        }
-      }
-
+      const ids = (s.transactions_preview ?? []).map((t) => t.id).filter((x) => typeof x === 'number');
+      if (ids.length === 0) return [];
       return await fetchTransactions({
+        ids,
         bank_account_id: bankAccountId,
-        uncontracted_only: true,
-        amount_gte: amountGte,
-        amount_lte: amountLte,
-        description_contains: descriptionContains,
-        counterparty_contains: counterpartyContains,
-        whole_words: wholeWords,
-        limit: 200,
+        limit: 2000,
         offset: 0,
       });
     },
@@ -514,6 +490,7 @@ export default function Contracts() {
                           </Typography>
                           <Typography variant="body2" color="text.secondary">
                             Rhythmus: {s.recurrence_label || '—'}
+                            {s.recurrence_median_days != null ? ` · Median ${s.recurrence_median_days}d` : ''}
                           </Typography>
                         </Stack>
                         {s.similar_category_rules?.length ? (
@@ -659,11 +636,11 @@ export default function Contracts() {
                           </AccordionSummary>
                           <AccordionDetails>
                             <TransactionBookingsTable
-                              rows={suggestionTxQ.data ?? []}
+                              rows={suggestionSeedTxQ.data ?? []}
                               accounts={accountsSorted}
-                              isLoading={suggestionTxQ.isLoading || suggestionTxQ.isFetching}
-                              error={suggestionTxQ.isError ? suggestionTxQ.error : undefined}
-                              title="Buchungen (Vorschlag)"
+                              isLoading={suggestionSeedTxQ.isLoading || suggestionSeedTxQ.isFetching}
+                              error={suggestionSeedTxQ.isError ? suggestionSeedTxQ.error : undefined}
+                              title="Buchungen (die zum Vorschlag geführt haben)"
                               hideInlineHint
                               embedded
                               emptyMessage="Keine."
@@ -759,6 +736,23 @@ export default function Contracts() {
                           <Typography fontWeight={700} sx={{ wordBreak: 'break-word', minWidth: 0, flex: 1 }}>
                             {c.label}
                           </Typography>
+                          <Tooltip title="Umbenennen">
+                            <span>
+                              <IconButton
+                                size="small"
+                                onClick={() => {
+                                  setRenameErr(null);
+                                  setRenameContractId(c.id);
+                                  setRenameLabel(c.label);
+                                  setRenameOpen(true);
+                                }}
+                                disabled={deleteContractMut.isPending}
+                                aria-label="Vertrag umbenennen"
+                              >
+                                <EditOutlinedIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
                           <Tooltip title="Vertrag löschen">
                             <span>
                               <IconButton
@@ -779,6 +773,7 @@ export default function Contracts() {
                         <Typography variant="body2" color="text.secondary" sx={{ mt: { xs: 0.25, sm: 0 } }}>
                           {c.bank_account_name} · {c.rules?.length ?? 0} Regel(n) · {c.transaction_count ?? 0} Buchung(en) ·
                           Rhythmus: {c.recurrence_label || '—'}
+                          {c.recurrence_median_days != null ? ` · Median ${c.recurrence_median_days}d` : ''}
                         </Typography>
                       </Stack>
                       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} sx={{ mt: 1 }}>
@@ -1065,6 +1060,58 @@ export default function Contracts() {
           </Button>
           <Button variant="contained" onClick={() => createContractMut.mutate()} disabled={createContractMut.isPending}>
             Anlegen
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={renameOpen}
+        onClose={() => {
+          if (updateContractMut.isPending) return;
+          setRenameOpen(false);
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Vertrag umbenennen</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <TextField
+              label="Name"
+              value={renameLabel}
+              onChange={(e) => setRenameLabel(e.target.value)}
+              autoFocus
+              fullWidth
+              inputProps={{ maxLength: 512 }}
+            />
+            {renameErr ? <Alert severity="error">{renameErr}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              if (updateContractMut.isPending) return;
+              setRenameOpen(false);
+            }}
+          >
+            Abbrechen
+          </Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              setRenameErr(null);
+              if (!renameContractId) return;
+              updateContractMut.mutate(
+                { contractId: renameContractId, label: renameLabel },
+                {
+                  onSuccess: () => setRenameOpen(false),
+                  onError: (e) => setRenameErr(apiErrorMessage(e)),
+                },
+              );
+            }}
+            disabled={updateContractMut.isPending || !renameLabel.trim()}
+          >
+            Speichern
           </Button>
         </DialogActions>
       </Dialog>

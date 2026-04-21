@@ -36,6 +36,10 @@ class ContractOut(BaseModel):
         "",
         description="Geschätzter Rhythmus aus Buchungsdaten (z. B. monatlich, jährlich).",
     )
+    recurrence_median_days: Optional[int] = Field(
+        None,
+        description="Median der Abstände (Tage) zwischen den Buchungen, die zum Rhythmus führen.",
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -96,6 +100,10 @@ class ContractSuggestionOut(BaseModel):
     recurrence_label: str = Field(
         "",
         description="Geschätzter Rhythmus aus den Buchungsterminen der Gruppe im Scan-Fenster.",
+    )
+    recurrence_median_days: Optional[int] = Field(
+        None,
+        description="Median der Abstände (Tage) zwischen den Gruppentreffern im Scan-Fenster.",
     )
     similar_category_rules: list[ContractSuggestionSimilarRuleOut] = Field(default_factory=list)
     transactions_preview: list[ContractSuggestionTransactionPreviewOut] = Field(default_factory=list)

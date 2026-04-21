@@ -612,6 +612,37 @@ async def apply_contract(
     return ContractApplyResult(ok=True, transactions_updated=n)
 
 
+@router.post("/reset-assignments", response_model=ContractApplyResult)
+async def reset_contract_assignments(
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+    bank_account_id: int = Query(..., ge=1),
+) -> ContractApplyResult:
+    """
+    Setzt alle transaction.contract_id für ein Konto zurück (NULL).
+    Hilfreich, wenn alte Vertragszuordnungen Vorschläge blockieren.
+    """
+    if not await bank_account_visible_to_user(session, user, int(bank_account_id)):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf dieses Konto")
+    r = await session.execute(
+        select(Transaction.id).where(
+            Transaction.bank_account_id == int(bank_account_id),
+            Transaction.contract_id.is_not(None),
+        )
+    )
+    tx_ids = [int(x) for x in r.scalars().all()]
+    if not tx_ids:
+        return ContractApplyResult(ok=True, transactions_updated=0)
+    r2 = await session.execute(
+        select(Transaction).where(Transaction.id.in_(tx_ids)),
+    )
+    rows = r2.scalars().all()
+    for tx in rows:
+        tx.contract_id = None
+    await session.commit()
+    return ContractApplyResult(ok=True, transactions_updated=len(rows))
+
+
 @router.get("/suggestions", response_model=list[ContractSuggestionOut])
 async def list_contract_suggestions(
     user: CurrentUser,

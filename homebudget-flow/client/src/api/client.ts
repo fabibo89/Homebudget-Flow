@@ -288,6 +288,13 @@ export async function applyContract(contractId: number): Promise<ContractApplyRe
   return data;
 }
 
+export async function resetContractAssignments(bankAccountId: number): Promise<ContractApplyResult> {
+  const { data } = await api.post<ContractApplyResult>('/api/contracts/reset-assignments', null, {
+    params: { bank_account_id: bankAccountId },
+  });
+  return data;
+}
+
 export async function fetchContractSuggestions(bankAccountId: number, limit = 30): Promise<ContractSuggestionOut[]> {
   const { data } = await api.get<ContractSuggestionOut[]>('/api/contracts/suggestions', {
     params: { bank_account_id: bankAccountId, limit },

@@ -53,6 +53,7 @@ import {
   fetchHouseholds,
   fetchTransactions,
   ignoreContractSuggestion,
+  resetContractAssignments,
   unignoreContractSuggestion,
   type BankAccount,
   type CategoryRuleCondition,
@@ -239,6 +240,15 @@ export default function Contracts() {
     },
   });
 
+  const resetAssignmentsMut = useMutation({
+    mutationFn: async (bankAccountId: number) => await resetContractAssignments(bankAccountId),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ['contracts'] });
+      await qc.invalidateQueries({ queryKey: ['transactions'] });
+      await qc.invalidateQueries({ queryKey: ['contractSuggestions'] });
+    },
+  });
+
   const deleteContractMut = useMutation({
     mutationFn: async (contractId: number) => {
       await deleteContract(contractId);
@@ -422,6 +432,25 @@ export default function Contracts() {
           sx={{ whiteSpace: 'nowrap' }}
         >
           Vertrag anlegen
+        </Button>
+
+        <Button
+          variant="outlined"
+          color="warning"
+          disabled={selectedBankAccountId == null || resetAssignmentsMut.isPending}
+          onClick={() => {
+            if (!selectedBankAccountId) return;
+            if (
+              !window.confirm(
+                'Alle Vertrags-Zuordnungen (contract_id) für dieses Konto wirklich löschen?\n\nDanach erscheinen ggf. wieder Vorschläge und du musst bei Bedarf neu „Apply“ ausführen.',
+              )
+            )
+              return;
+            resetAssignmentsMut.mutate(selectedBankAccountId);
+          }}
+          sx={{ whiteSpace: 'nowrap' }}
+        >
+          Contract-IDs löschen
         </Button>
       </Stack>
 

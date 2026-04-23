@@ -109,24 +109,23 @@ export default function ExpenseRuleSunburstChart(props: {
             borderColor: theme.palette.divider,
           },
           levels: [
-            {},
             {
-              // Ebene 1: Hauptkategorien
-              r0: '12%',
-              r: '38%',
-              label: { rotate: 'tangential', fontSize: 11 },
+              // Ebene 1: Hauptkategorien (innerster Ring)
+              r0: '0%',
+              r: '34%',
+              label: { rotate: 'tangential', fontSize: 11, minAngle: 8 },
             },
             {
               // Ebene 2: Unterkategorien
-              r0: '38%',
+              r0: '34%',
               r: '64%',
-              label: { rotate: 'tangential', fontSize: 10 },
+              label: { rotate: 'tangential', fontSize: 10, minAngle: 7 },
             },
             {
-              // Ebene 3: Regel-Anzeigename
+              // Ebene 3: Regel-Anzeigename (außen)
               r0: '64%',
               r: '92%',
-              label: { position: 'outside', padding: 2, silent: false, fontSize: 9 },
+              label: { position: 'outside', padding: 2, silent: false, fontSize: 9, minAngle: 6 },
             },
           ],
         },

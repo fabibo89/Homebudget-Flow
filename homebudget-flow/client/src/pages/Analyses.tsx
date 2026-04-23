@@ -565,40 +565,83 @@ function sumSunburstDatumSubtree(node: ExpenseSunburstDatum): number {
   return ch.reduce((s, c) => s + sumSunburstDatumSubtree(c), 0);
 }
 
-/** Daten für ECharts-Sunburst: Wurzel „Ausgaben“ → Hauptkategorie → Unterkategorie → Regel-Anzeigename. */
+function resolveCategoryRootAndSubNodes(
+  categoryId: number | null,
+  nodeById: Map<number, CategoryOut>,
+): { rootName: string; rootColorHex: string | null; subName: string; subColorHex: string | null } {
+  if (categoryId == null) {
+    return { rootName: 'Ohne Kategorie', rootColorHex: null, subName: '—', subColorHex: null };
+  }
+  const leaf = nodeById.get(categoryId);
+  if (!leaf) {
+    return {
+      rootName: 'Kategorie (unbekannt)',
+      rootColorHex: null,
+      subName: String(categoryId),
+      subColorHex: null,
+    };
+  }
+
+  const chain: CategoryOut[] = [];
+  let cur: CategoryOut | undefined = leaf;
+  const seen = new Set<number>();
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    chain.push(cur);
+    if (cur.parent_id == null) break;
+    cur = nodeById.get(cur.parent_id);
+  }
+
+  const rootNode = chain[chain.length - 1] ?? leaf;
+  const childUnderRoot = chain.length >= 2 ? chain[chain.length - 2] : leaf;
+
+  return {
+    rootName: rootNode.name,
+    rootColorHex: rootNode.effective_color_hex?.trim() || null,
+    subName: childUnderRoot.name,
+    subColorHex: childUnderRoot.effective_color_hex?.trim() || null,
+  };
+}
+
+/** Daten für ECharts-Sunburst: Hauptkategorie → Unterkategorie → Regel-Anzeigename. */
 function buildExpenseRuleSunburstSeries(
   expenseTxs: Transaction[],
   nodeById: Map<number, CategoryOut>,
   rulesSorted: CategoryRuleOut[],
-  rootColorByName: Map<string, string>,
   piePalette: string[],
 ): ExpenseSunburstDatum[] {
+  const uncategorizedFallback = '#6b7280';
   type L3 = Map<string, number>;
-  type L2 = Map<string, L3>;
-  const l1 = new Map<string, L2>();
+  type L2 = Map<string, { colorHex: string | null; rules: L3 }>;
+  const l1 = new Map<string, { colorHex: string | null; subs: L2 }>();
 
   for (const t of expenseTxs) {
     const amt = Number(t.amount);
     if (!Number.isFinite(amt) || amt >= 0) continue;
     const abs = Math.abs(amt);
-    const { root, sub } = resolveCategoryRootAndSub(t.category_id, nodeById);
+    const resolved = resolveCategoryRootAndSubNodes(t.category_id, nodeById);
     const { label: ruleLabel } = displayNameClusterForTransaction(t, rulesSorted);
-    if (!l1.has(root)) l1.set(root, new Map());
-    const l2 = l1.get(root)!;
-    if (!l2.has(sub)) l2.set(sub, new Map());
-    const l3 = l2.get(sub)!;
+    if (!l1.has(resolved.rootName)) {
+      l1.set(resolved.rootName, { colorHex: resolved.rootColorHex, subs: new Map() });
+    }
+    const l2 = l1.get(resolved.rootName)!.subs;
+    if (!l2.has(resolved.subName)) {
+      l2.set(resolved.subName, { colorHex: resolved.subColorHex, rules: new Map() });
+    }
+    const l3 = l2.get(resolved.subName)!.rules;
     l3.set(ruleLabel, (l3.get(ruleLabel) ?? 0) + abs);
   }
 
   let rootIdx = 0;
   const roots: ExpenseSunburstDatum[] = [];
-  for (const [rootName, l2] of l1) {
-    const color = rootColorByName.get(rootName) ?? piePalette[rootIdx % piePalette.length];
+  for (const [rootName, rootRow] of l1) {
+    const rootColor = rootRow.colorHex ?? piePalette[rootIdx % piePalette.length];
     rootIdx += 1;
     const subs: ExpenseSunburstDatum[] = [];
-    for (const [subName, l3] of l2) {
+    for (const [subName, subRow] of rootRow.subs) {
+      const subColor = subRow.colorHex ?? rootColor;
       const leaves: ExpenseSunburstDatum[] = [];
-      for (const [ruleName, value] of l3) {
+      for (const [ruleName, value] of subRow.rules) {
         leaves.push({
           name: ruleName,
           value,
@@ -609,6 +652,7 @@ function buildExpenseRuleSunburstSeries(
       subs.push({
         name: subName,
         pathFilter: { depth: 2, root: rootName, sub: subName },
+        itemStyle: { color: subColor },
         children: leaves,
       });
     }
@@ -616,18 +660,13 @@ function buildExpenseRuleSunburstSeries(
     roots.push({
       name: rootName,
       pathFilter: { depth: 1, root: rootName },
-      itemStyle: { color },
+      itemStyle: { color: rootName === 'Ohne Kategorie' ? uncategorizedFallback : rootColor },
       children: subs,
     });
   }
   roots.sort((a, b) => sumSunburstDatumSubtree(b) - sumSunburstDatumSubtree(a));
 
-  return [
-    {
-      name: 'Ausgaben',
-      children: roots,
-    },
-  ];
+  return roots;
 }
 
 type AnalysisTab =
@@ -1929,15 +1968,6 @@ export default function Analyses() {
     [mergedCategoryRoots],
   );
 
-  const rootColorByCategoryRootName = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const r of mergedCategoryRoots) {
-      const hex = r.effective_color_hex?.trim();
-      if (hex && !m.has(r.name)) m.set(r.name, hex);
-    }
-    return m;
-  }, [mergedCategoryRoots]);
-
   const expenseSunburstSeriesData = useMemo(() => {
     const rules = allRulesSorted;
     const txs = analysisTransactions.filter((t) => Number(t.amount) < 0);
@@ -1946,10 +1976,9 @@ export default function Analyses() {
       txs,
       categoryNodeById,
       rules,
-      rootColorByCategoryRootName,
       piePalette,
     );
-  }, [analysisTransactions, categoryNodeById, allRulesSorted, rootColorByCategoryRootName, piePalette]);
+  }, [analysisTransactions, categoryNodeById, allRulesSorted, piePalette]);
 
   const expenseSunburstSelectionTitle = useMemo(() => {
     const sel = expenseSunburstSelection;

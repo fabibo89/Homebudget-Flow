@@ -75,7 +75,9 @@ function rulesForBankAccount(
 ): CategoryRuleOut[] {
   const acc = accounts.find((a) => a.id === bankAccountId);
   if (!acc) return [];
-  return usableCategoryRules(byHh[acc.household_id] ?? []);
+  return usableCategoryRules(byHh[acc.household_id] ?? []).sort((a, b) =>
+    (a.display_name || '').localeCompare(b.display_name || '', 'de', { sensitivity: 'base' }),
+  );
 }
 
 export default function Contracts() {
@@ -718,7 +720,9 @@ export default function Contracts() {
                   const acc = accountsSorted.find((a) => a.id === c.bank_account_id);
                   const hhRules = acc ? usableCategoryRules(categoryRulesByHousehold[acc.household_id] ?? []) : [];
                   const usedIds = new Set((c.rules ?? []).map((r) => r.category_rule_id));
-                  const addable = hhRules.filter((r) => !usedIds.has(r.id));
+                  const addable = hhRules
+                    .filter((r) => !usedIds.has(r.id))
+                    .sort((a, b) => (a.display_name || '').localeCompare(b.display_name || '', 'de', { sensitivity: 'base' }));
                   return (
                     <Paper key={c.id} variant="outlined" sx={{ p: 1.25 }}>
                       <Stack

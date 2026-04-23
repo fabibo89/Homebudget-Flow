@@ -110,19 +110,27 @@ export default function ExpenseRuleSunburstChart(props: {
           },
           levels: [
             {
-              // Ebene 1: Hauptkategorien (innerster Ring)
+              // Ebene 0: implizite Root (ECharts) — unsichtbar lassen
+              // ECharts behandelt `series.data` als children eines Root-Knotens.
+              // Darum sind Kategorien Tiefe 1, Subkategorien Tiefe 2, Regeln Tiefe 3.
+              r0: '0%',
+              r: '0%',
+              label: { show: false },
+            },
+            {
+              // Ebene 1: Kategorien (innerster Ring)
               r0: '0%',
               r: '34%',
               label: { rotate: 'tangential', fontSize: 11, minAngle: 8 },
             },
             {
-              // Ebene 2: Unterkategorien
+              // Ebene 2: Subkategorien
               r0: '34%',
               r: '64%',
               label: { rotate: 'tangential', fontSize: 10, minAngle: 7 },
             },
             {
-              // Ebene 3: Regel-Anzeigename (außen)
+              // Ebene 3: Regeln (außen)
               r0: '64%',
               r: '92%',
               label: { position: 'outside', padding: 2, silent: false, fontSize: 9, minAngle: 6 },

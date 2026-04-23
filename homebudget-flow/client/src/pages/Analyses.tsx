@@ -565,6 +565,36 @@ function sumSunburstDatumSubtree(node: ExpenseSunburstDatum): number {
   return ch.reduce((s, c) => s + sumSunburstDatumSubtree(c), 0);
 }
 
+function clamp01(n: number): number {
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const h = (hex || '').trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  const n = Number.parseInt(h, 16);
+  return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+}
+
+function rgbToHex(r: number, g: number, b: number): string {
+  const to2 = (x: number) => Math.round(x).toString(16).padStart(2, '0');
+  return `#${to2(r)}${to2(g)}${to2(b)}`;
+}
+
+/** Mix base color towards white (t>0) or black (t<0). */
+function tintShade(hex: string, t: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const tt = clamp01(Math.abs(t));
+  const target = t >= 0 ? { r: 255, g: 255, b: 255 } : { r: 0, g: 0, b: 0 };
+  const r = rgb.r + (target.r - rgb.r) * tt;
+  const g = rgb.g + (target.g - rgb.g) * tt;
+  const b = rgb.b + (target.b - rgb.b) * tt;
+  return rgbToHex(r, g, b);
+}
+
 function resolveCategoryRootAndSubNodes(
   categoryId: number | null,
   nodeById: Map<number, CategoryOut>,
@@ -641,32 +671,66 @@ function buildExpenseRuleSunburstSeries(
     for (const [subName, subRow] of rootRow.subs) {
       const subColor = subRow.colorHex ?? rootColor;
       const leaves: ExpenseSunburstDatum[] = [];
-      for (const [ruleName, value] of subRow.rules) {
+      const rulesSortedByName = Array.from(subRow.rules.entries()).sort((a, b) => a[0].localeCompare(b[0], 'de'));
+      const ruleCount = rulesSortedByName.length;
+      for (let ri = 0; ri < rulesSortedByName.length; ri++) {
+        const [ruleName, value] = rulesSortedByName[ri];
+        // spread -0.18..+0.22 across rules (subtle but visible), deterministic per subcategory
+        const denom = Math.max(1, ruleCount - 1);
+        const pos = denom === 0 ? 0.5 : ri / denom;
+        const t = -0.18 + pos * 0.4;
+        const ruleColor = tintShade(subColor, t);
         leaves.push({
           name: ruleName,
           value,
           pathFilter: { depth: 3, root: rootName, sub: subName, rule: ruleName },
+          itemStyle: { color: ruleColor },
         });
       }
       leaves.sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+      const subTotal = leaves.reduce((s, x) => s + (typeof x.value === 'number' ? x.value : 0), 0);
       subs.push({
         name: subName,
+        value: subTotal,
         pathFilter: { depth: 2, root: rootName, sub: subName },
         itemStyle: { color: subColor },
-        children: leaves,
+        children: leaves.map((leaf) => ({
+          ...leaf,
+          tooltipMeta: { totalSub: subTotal },
+        })),
       });
     }
     subs.sort((a, b) => sumSunburstDatumSubtree(b) - sumSunburstDatumSubtree(a));
+    const catTotal = subs.reduce((s, x) => s + (typeof x.value === 'number' ? x.value : 0), 0);
     roots.push({
       name: rootName,
+      value: catTotal,
       pathFilter: { depth: 1, root: rootName },
       itemStyle: { color: rootName === 'Ohne Kategorie' ? uncategorizedFallback : rootColor },
-      children: subs,
+      children: subs.map((sub) => ({
+        ...sub,
+        tooltipMeta: { totalCat: catTotal },
+      })),
     });
   }
   roots.sort((a, b) => sumSunburstDatumSubtree(b) - sumSunburstDatumSubtree(a));
 
-  return roots;
+  const totalAll = roots.reduce((s, x) => s + (typeof x.value === 'number' ? x.value : 0), 0);
+
+  return roots.map((cat) => ({
+    ...cat,
+    tooltipMeta: { totalAll },
+    children: (cat.children ?? []).map((sub) => ({
+      ...(sub as ExpenseSunburstDatum),
+      tooltipMeta: { totalAll, totalCat: (cat as ExpenseSunburstDatum).value as number },
+      children: (((sub as ExpenseSunburstDatum).children ?? []) as ExpenseSunburstDatum[]).map((leaf) => ({
+        ...leaf,
+        tooltipMeta: {
+          totalSub: (sub as ExpenseSunburstDatum).value as number,
+        },
+      })),
+    })),
+  }));
 }
 
 type AnalysisTab =
@@ -1979,6 +2043,44 @@ export default function Analyses() {
       piePalette,
     );
   }, [analysisTransactions, categoryNodeById, allRulesSorted, piePalette]);
+
+  const expenseSunburstChartData = useMemo(() => {
+    const sel = expenseSunburstSelection;
+    if (!sel) return expenseSunburstSeriesData;
+
+    const cats = expenseSunburstSeriesData;
+    const cat = cats.find((c) => c.pathFilter?.depth === 1 && c.pathFilter.root === sel.root);
+    if (!cat) return expenseSunburstSeriesData;
+    if (sel.depth === 1) return [cat];
+
+    const subs = (cat.children ?? []) as ExpenseSunburstDatum[];
+    const sub = subs.find((s) => s.pathFilter?.depth === 2 && s.pathFilter.sub === sel.sub);
+    if (!sub) return [cat];
+    if (sel.depth === 2) return [{ ...cat, children: [sub] }];
+
+    const leaves = (sub.children ?? []) as ExpenseSunburstDatum[];
+    const leaf = leaves.find((l) => l.pathFilter?.depth === 3 && l.pathFilter.rule === sel.rule);
+    if (!leaf) return [{ ...cat, children: [sub] }];
+    return [{ ...cat, children: [{ ...sub, children: [leaf] }] }];
+  }, [expenseSunburstSeriesData, expenseSunburstSelection]);
+
+  const handleSunburstSelect = useCallback(
+    (next: ExpenseSunburstPathFilter | null) => {
+      if (!next) {
+        setExpenseSunburstSelection(null);
+        return;
+      }
+      const cur = expenseSunburstSelection;
+      const same =
+        !!cur &&
+        cur.depth === next.depth &&
+        cur.root === next.root &&
+        (cur.depth < 2 || (cur as any).sub === (next as any).sub) &&
+        (cur.depth < 3 || (cur as any).rule === (next as any).rule);
+      setExpenseSunburstSelection(same ? null : next);
+    },
+    [expenseSunburstSelection],
+  );
 
   const expenseSunburstSelectionTitle = useMemo(() => {
     const sel = expenseSunburstSelection;
@@ -3505,11 +3607,11 @@ export default function Analyses() {
                 <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
                   <Box sx={{ width: '100%', maxWidth: 900, mx: 'auto' }}>
                     <ExpenseRuleSunburstChart
-                      data={expenseSunburstSeriesData}
+                      data={expenseSunburstChartData}
                       height={isXs ? 420 : 520}
                       currency={defaultCurrency}
                       theme={theme}
-                      onSelectPath={setExpenseSunburstSelection}
+                      onSelectPath={handleSunburstSelect}
                     />
                   </Box>
                 </Paper>

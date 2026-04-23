@@ -16,6 +16,11 @@ export type ExpenseSunburstPathFilter =
 
 export type ExpenseSunburstDatum = NonNullable<SunburstSeriesOption['data']>[number] & {
   pathFilter?: ExpenseSunburstPathFilter;
+  tooltipMeta?: {
+    totalAll?: number;
+    totalCat?: number;
+    totalSub?: number;
+  };
 };
 
 function formatMoneyDe(n: number, currency: string): string {
@@ -23,6 +28,11 @@ function formatMoneyDe(n: number, currency: string): string {
     style: 'currency',
     currency: currency || 'EUR',
   }).format(n);
+}
+
+function formatPct(frac: number): string {
+  if (!Number.isFinite(frac) || frac <= 0) return '0%';
+  return new Intl.NumberFormat('de-DE', { style: 'percent', maximumFractionDigits: 1 }).format(frac);
 }
 
 export default function ExpenseRuleSunburstChart(props: {
@@ -80,13 +90,48 @@ export default function ExpenseRuleSunburstChart(props: {
         borderColor: theme.palette.divider,
         textStyle: { color: theme.palette.text.primary, fontSize: 12 },
         formatter: (p: unknown) => {
-          const item = p as { name?: string; value?: number; treePathInfo?: { name: string }[] };
+          const item = p as {
+            name?: string;
+            value?: number;
+            treePathInfo?: { name: string }[];
+            data?: ExpenseSunburstDatum;
+          };
           const path = (item.treePathInfo ?? []).map((x) => x.name).filter(Boolean);
           const label = path.join(' › ');
           const v = item.value;
           const valStr =
             typeof v === 'number' && Number.isFinite(v) ? formatMoneyDe(v, currency) : '—';
-          return `${label}<br/><strong>${valStr}</strong>`;
+
+          const d = item.data;
+          const depth = d?.pathFilter?.depth;
+          const meta = d?.tooltipMeta;
+
+          const lines: string[] = [];
+          lines.push(label);
+          lines.push(`<strong>${valStr}</strong>`);
+
+          if (depth === 1) {
+            const all = meta?.totalAll;
+            if (typeof all === 'number' && all > 0 && typeof v === 'number') {
+              lines.push(`${formatPct(v / all)} von allen Ausgaben`);
+            }
+          } else if (depth === 2) {
+            const all = meta?.totalAll;
+            const cat = meta?.totalCat;
+            if (typeof cat === 'number' && cat > 0 && typeof v === 'number') {
+              lines.push(`${formatPct(v / cat)} von Kategorie`);
+            }
+            if (typeof all === 'number' && all > 0 && typeof v === 'number') {
+              lines.push(`${formatPct(v / all)} von allen Ausgaben`);
+            }
+          } else if (depth === 3) {
+            const sub = meta?.totalSub;
+            if (typeof sub === 'number' && sub > 0 && typeof v === 'number') {
+              lines.push(`${formatPct(v / sub)} von Subkategorie`);
+            }
+          }
+
+          return lines.join('<br/>');
         },
       },
       series: [

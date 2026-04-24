@@ -101,6 +101,9 @@ def _extract_bmw_rows_with_columns(pdf_bytes: bytes) -> list[dict]:
         "Entgelt",
         "Sonstige Bezüge",
         "Bruttoentgelt",
+        # Legacy PDFs sometimes omit the suffix and only show "Gesetzliche Abzüge"
+        "Gesetzliche Abzüge",
+        "Gesetzliche Abzuege",
         "Gesetzliche Abzüge Steuer",
         "Gesetzliche Abzüge Sozialversicherung",
         "Nettoentgelt",

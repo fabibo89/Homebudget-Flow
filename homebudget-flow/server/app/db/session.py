@@ -528,6 +528,45 @@ async def _ensure_earnings_documents_owner_user(conn) -> None:
         )
 
 
+async def _ensure_earnings_documents_household_dropped(conn) -> None:
+    """
+    Legacy: earnings_documents hatte household_id NOT NULL. Nach Umstellung auf owner_user_id
+    muss household_id entfernt werden, sonst schlagen Inserts fehl und das Schema driftet.
+    """
+    url = settings.database_url.lower()
+    if "postgresql" in url:
+        r_chk = await conn.execute(
+            text(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'earnings_documents' "
+                "AND column_name = 'household_id'",
+            ),
+        )
+        row = r_chk.fetchone()
+        if row is None:
+            return
+        # Drop FK (falls vorhanden), dann Column entfernen (inkl. abhängiger Indizes/Constraints).
+        r_fk = await conn.execute(
+            text(
+                "SELECT tc.constraint_name FROM information_schema.table_constraints tc "
+                "JOIN information_schema.key_column_usage kcu "
+                "ON tc.constraint_schema = kcu.constraint_schema "
+                "AND tc.constraint_name = kcu.constraint_name "
+                "WHERE tc.table_schema = current_schema() AND tc.table_name = 'earnings_documents' "
+                "AND tc.constraint_type = 'FOREIGN KEY' AND kcu.column_name = 'household_id'",
+            ),
+        )
+        for (cname,) in r_fk.fetchall():
+            await conn.execute(text(f'ALTER TABLE earnings_documents DROP CONSTRAINT "{cname}"'))
+        await conn.execute(text("ALTER TABLE earnings_documents DROP COLUMN IF EXISTS household_id CASCADE"))
+        return
+
+    if "sqlite" not in url:
+        return
+    # SQLite: best-effort, da DROP COLUMN/NOT NULL je nach Version/Table-Rebuild nötig ist.
+    return
+
+
 async def _ensure_bank_accounts_credential_nullable(conn) -> None:
     """Manuelle Konten ohne FinTS: ``credential_id`` NULL; FK ON DELETE SET NULL beim Löschen des Zugangs."""
     url = settings.database_url.lower()
@@ -871,6 +910,7 @@ async def init_db() -> None:
         await _migrate_transaction_external_ids_to_txv1(conn)
         await _ensure_earnings_documents_period_fields(conn)
         await _ensure_earnings_documents_owner_user(conn)
+        await _ensure_earnings_documents_household_dropped(conn)
         # earnings_document_lines: nur "amount" (keine Zusatzspalten mehr)
 
 

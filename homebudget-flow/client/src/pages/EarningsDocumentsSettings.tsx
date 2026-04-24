@@ -712,7 +712,9 @@ export default function EarningsDocumentsSettings() {
                   <Button
                     size="small"
                     variant="outlined"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
                       const ids = docs.map((d) => d.id);
                       if (!ids.length) return;
                       if (!confirm(`Rerun für alle ${ids.length} Dokumente starten?`)) return;
@@ -815,7 +817,11 @@ export default function EarningsDocumentsSettings() {
                                 <Button
                                   size="small"
                                   variant="outlined"
-                                  onClick={() => rerunMut.mutate(d.id)}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    rerunMut.mutate(d.id);
+                                  }}
                                   disabled={rerunMut.isPending || deleteMut.isPending}
                                 >
                                   Rerun
@@ -827,6 +833,9 @@ export default function EarningsDocumentsSettings() {
                                   href={downloadUrl(d.id)}
                                   target="_blank"
                                   rel="noreferrer"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                  }}
                                 >
                                   Download
                                 </Button>
@@ -834,7 +843,9 @@ export default function EarningsDocumentsSettings() {
                                   size="small"
                                   variant="outlined"
                                   color="error"
-                                  onClick={() => {
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
                                     if (!confirm(`Verdienstnachweis löschen?\n\n${d.file_name}`)) return;
                                     deleteMut.mutate(d.id);
                                   }}

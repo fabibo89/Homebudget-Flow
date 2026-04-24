@@ -33,6 +33,67 @@ router = APIRouter(prefix="/earnings-documents", tags=["earnings-documents"])
 log = logging.getLogger(__name__)
 
 
+def _norm_ws(s: str) -> str:
+    return " ".join(str(s or "").replace("\u00a0", " ").strip().split())
+
+
+def _norm_lower(s: str) -> str:
+    return _norm_ws(s).lower()
+
+
+def _infer_gesetzliche_abzuege_suffix(doc: dict, section_id: int) -> str | None:
+    """
+    Legacy PDFs nennen einzelne Blöcke teils nur "Gesetzliche Abzüge".
+    Wir normalisieren für Anzeige/sectionpath, wenn klar ist ob es Steuer vs. Sozialversicherung ist.
+    """
+
+    def _descendants(root_id: int) -> set[int]:
+        out: set[int] = set()
+        stack = [root_id]
+        while stack:
+            cur = stack.pop()
+            for cid in doc.get("children", {}).get(cur, []):
+                if cid in out:
+                    continue
+                out.add(cid)
+                stack.append(cid)
+        return out
+
+    desc = _descendants(section_id)
+    tokens: list[str] = []
+    for nid in desc | {section_id}:
+        n = doc.get("nodes", {}).get(int(nid))
+        if not n:
+            continue
+        tokens.append(_norm_lower(n.get("label") or ""))
+
+    blob = " ".join([t for t in tokens if t])
+    if not blob:
+        return None
+
+    steuer_keys = ["steuer", "lohnsteuer", "soli", "solidar", "kirchensteuer", "lst"]
+    sozial_keys = ["sozial", "sozialversicherung", "kranken", "kv", "pflege", "pv", "rente", "rv", "arbeitslos", "av"]
+    has_steuer = any(k in blob for k in steuer_keys)
+    has_sozial = any(k in blob for k in sozial_keys)
+
+    if has_steuer and not has_sozial:
+        return "Steuer"
+    if has_sozial and not has_steuer:
+        return "Sozialversicherung"
+    return None
+
+
+def _normalized_section_label(doc: dict, section_id: int) -> str:
+    n = doc.get("nodes", {}).get(int(section_id))
+    raw = _norm_ws(str(n.get("label") if n else "")) or ""
+    low = _norm_lower(raw)
+    if low in ("gesetzliche abzuege", "gesetzliche abzüge"):
+        suf = _infer_gesetzliche_abzuege_suffix(doc, int(section_id))
+        if suf:
+            return f"Gesetzliche Abzüge {suf}"
+    return raw
+
+
 def _safe_rel_path(p: str) -> str:
     v = (p or "").replace("\\", "/").strip().lstrip("/")
     # Normalisiere .. und doppelte Slashes
@@ -169,6 +230,9 @@ async def _parse_and_persist_lines(session: AsyncSession, doc: EarningsDocument)
         "Bruttoentgelt": "Nettoentgelt",
         "Gesetzliche Abzüge Steuer": "Nettoentgelt",
         "Gesetzliche Abzüge Sozialversicherung": "Nettoentgelt",
+        # Legacy: un-suffixed block
+        "Gesetzliche Abzüge": "Nettoentgelt",
+        "Gesetzliche Abzuege": "Nettoentgelt",
         "Nettoentgelt": "Auszahlungsbetrag",
         "Persönliche Be- und Abzüge": "Auszahlungsbetrag",
         "Überweisungen": "Auszahlungsbetrag",
@@ -432,7 +496,7 @@ async def earnings_documents_timeline(
                     if not n:
                         break
                     if n["kind"] == "section":
-                        parts.append(str(n["label"] or "").strip().lower())
+                        parts.append(_normalized_section_label(doc, int(cur)).strip().lower())
                     pid = n.get("parent_id")
                     if pid is None:
                         break
@@ -568,7 +632,7 @@ async def earnings_documents_timeline_breakdown(
             if not n:
                 break
             if n["kind"] == "section":
-                parts.append(str(n["label"] or "").strip().lower())
+                parts.append(_normalized_section_label(doc, int(cur)).strip().lower())
             pid = n.get("parent_id")
             if pid is None:
                 break
@@ -829,7 +893,7 @@ async def earnings_documents_timeline_metrics(
         n = nodes.get(sid)
         if not n or n["kind"] != "section":
             return
-        lab = str(n["label"] or "").strip()
+        lab = _normalized_section_label({"nodes": nodes, "children": children}, int(sid)).strip()
         next_path = path + [lab]
         metric_id = "sectionpath:" + "/".join([p for p in next_path if p])
         out.append(EarningsDocumentsTimelineMetricOut(id=metric_id, label=lab or "(ohne Name)", depth=depth))

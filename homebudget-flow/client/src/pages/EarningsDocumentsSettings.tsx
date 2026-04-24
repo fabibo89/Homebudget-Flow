@@ -408,7 +408,7 @@ export default function EarningsDocumentsSettings() {
   const breakdown = useMemo(() => {
     const data = (breakdownQuery.data ?? null) as EarningsDocumentsTimelineBreakdownOut | null;
     if (!data) return null;
-    const labels = data.points.map((p) => `${String(p.month).padStart(2, '0')}.${p.year}`);
+    const labels = data.points.map((p) => `${String(p.month).padStart(2, '0')}/${String(p.year).slice(-2)}`);
     const series = data.series.map((s) => ({
       id: s.id,
       label: s.label,
@@ -489,7 +489,7 @@ export default function EarningsDocumentsSettings() {
 
   const analysisTimeline = useMemo(() => {
     const pts = timelineQuery.data?.points ?? [];
-    const labels = pts.map((p) => `${String(p.month).padStart(2, '0')}.${p.year}`);
+    const labels = pts.map((p) => `${String(p.month).padStart(2, '0')}/${String(p.year).slice(-2)}`);
     const values = pts.map((p) => p.value ?? 0);
     const ym = pts.map((p) => `${p.year}-${String(p.month).padStart(2, '0')}`);
     return { labels, values, ym };

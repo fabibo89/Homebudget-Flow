@@ -680,7 +680,7 @@ export default function EarningsDocumentsSettings() {
 
           {importMut.isPending ? (
             <Alert severity="info" icon={<CircularProgress size={18} />}>
-              Import läuft… (Haushalt: {householdLabel})
+              Import läuft…
             </Alert>
           ) : importMut.isError ? (
             <Alert severity="error">{apiErrorMessage(importMut.error)}</Alert>

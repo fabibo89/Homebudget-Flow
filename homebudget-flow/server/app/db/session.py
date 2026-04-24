@@ -480,6 +480,54 @@ async def _ensure_categories_unique_sub_name_under_parent(conn) -> None:
 _TXV1_PREFIX = "txv1|"
 
 
+async def _ensure_earnings_documents_period_fields(conn) -> None:
+    """Zeitraum-Felder (Monat/Jahr/Label) für Verdienstnachweise."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(earnings_documents)"))
+        cols = [row[1] for row in r.fetchall()]
+        if not cols:
+            return
+        if "period_year" not in cols:
+            await conn.execute(text("ALTER TABLE earnings_documents ADD COLUMN period_year INTEGER"))
+        if "period_month" not in cols:
+            await conn.execute(text("ALTER TABLE earnings_documents ADD COLUMN period_month INTEGER"))
+        if "period_label" not in cols:
+            await conn.execute(text("ALTER TABLE earnings_documents ADD COLUMN period_label VARCHAR(64) NOT NULL DEFAULT ''"))
+        return
+    if "postgresql" in url:
+        await conn.execute(text("ALTER TABLE earnings_documents ADD COLUMN IF NOT EXISTS period_year INTEGER"))
+        await conn.execute(text("ALTER TABLE earnings_documents ADD COLUMN IF NOT EXISTS period_month INTEGER"))
+        await conn.execute(
+            text("ALTER TABLE earnings_documents ADD COLUMN IF NOT EXISTS period_label VARCHAR(64) NOT NULL DEFAULT ''"),
+        )
+
+
+async def _ensure_earnings_documents_owner_user(conn) -> None:
+    """Verdienstnachweise gehören einem User (owner_user_id)."""
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(earnings_documents)"))
+        cols = [row[1] for row in r.fetchall()]
+        if not cols:
+            return
+        if "owner_user_id" not in cols:
+            await conn.execute(text("ALTER TABLE earnings_documents ADD COLUMN owner_user_id INTEGER"))
+        # Backfill (best effort)
+        if "uploaded_by_user_id" in cols:
+            await conn.execute(
+                text("UPDATE earnings_documents SET owner_user_id = uploaded_by_user_id WHERE owner_user_id IS NULL"),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text("ALTER TABLE earnings_documents ADD COLUMN IF NOT EXISTS owner_user_id INTEGER"),
+        )
+        await conn.execute(
+            text("UPDATE earnings_documents SET owner_user_id = uploaded_by_user_id WHERE owner_user_id IS NULL"),
+        )
+
+
 async def _ensure_bank_accounts_credential_nullable(conn) -> None:
     """Manuelle Konten ohne FinTS: ``credential_id`` NULL; FK ON DELETE SET NULL beim Löschen des Zugangs."""
     url = settings.database_url.lower()
@@ -587,7 +635,11 @@ async def _ensure_bank_accounts_credential_nullable(conn) -> None:
             if idx_name.startswith("sqlite_autoindex"):
                 continue
             fixed = str(idx_sql).replace("bank_accounts_hbtmp_cred", "bank_accounts")
-            await conn.execute(text(fixed))
+            try:
+                await conn.execute(text(fixed))
+            except Exception:
+                # Index könnte bereits existieren (je nach vorherigem Schema / parallelem Init).
+                pass
         await conn.execute(text("DROP TABLE bank_accounts_hbtmp_cred"))
     finally:
         await conn.execute(text("PRAGMA foreign_keys=ON"))
@@ -792,6 +844,9 @@ async def _ensure_category_rules_normalize_dot_space(conn) -> None:
 
 async def init_db() -> None:
     async with engine.begin() as conn:
+        # Wichtig: Modelle importieren, damit sie im SQLAlchemy-Metadata registriert sind
+        # und create_all auch neue Tabellen anlegt.
+        import app.db.models  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)
         await _ensure_users_all_household_column(conn)
         await _ensure_categories_created_by_user_id(conn)
@@ -814,6 +869,9 @@ async def init_db() -> None:
         await _ensure_bank_credentials_fints_verification(conn)
         await _ensure_bank_accounts_credential_nullable(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)
+        await _ensure_earnings_documents_period_fields(conn)
+        await _ensure_earnings_documents_owner_user(conn)
+        # earnings_document_lines: nur "amount" (keine Zusatzspalten mehr)
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

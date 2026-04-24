@@ -17,6 +17,7 @@ import CategoriesSettings from './pages/CategoriesSettings';
 import { useAuthStore } from './store/authStore';
 import EnrichmentsSettings from './pages/EnrichmentsSettings';
 import UserSettings from './pages/UserSettings';
+import EarningsDocumentsSettings from './pages/EarningsDocumentsSettings';
 
 export default function App() {
   const token = useAuthStore((s) => s.token);
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="dayzero" element={<DayZero />} />
           <Route path="vertraege" element={<Contracts />} />
           <Route path="umbuchungen" element={<Transfers />} />
+          <Route path="verdienstnachweise" element={<EarningsDocumentsSettings />} />
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<Navigate to="profile" replace />} />
             <Route path="profile" element={<UserSettings />} />
@@ -45,6 +47,7 @@ export default function App() {
             <Route path="categories" element={<CategoriesSettings />} />
             <Route path="integration" element={<Integration />} />
             <Route path="enrichments" element={<EnrichmentsSettings />} />
+            <Route path="earnings-docs" element={<EarningsDocumentsSettings />} />
           </Route>
           <Route path="setup" element={<Navigate to="/settings/setup" replace />} />
           <Route path="credentials" element={<Navigate to="/settings/fints" replace />} />

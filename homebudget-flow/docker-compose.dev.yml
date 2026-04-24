@@ -12,6 +12,7 @@ services:
   api:
     volumes:
       - ./server/app:/app/app
+      - earnings_docs:/app/data/verdienstnachweise
     command:
       [
         "uvicorn",
@@ -31,3 +32,6 @@ services:
       # Vite baut nach ../server/app/static/ui (siehe vite.config.ts) – muss ins Repo schreiben
       - ./server/app/static/ui:/work/server/app/static/ui
     command: ["sh", "-lc", "npm install && npm run build:watch"]
+
+volumes:
+  earnings_docs:

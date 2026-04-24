@@ -5,6 +5,7 @@ import SyncAltIcon from '@mui/icons-material/SyncAlt';
 import {
   Alert,
   Box,
+  Button,
   CircularProgress,
   Paper,
   Stack,
@@ -18,8 +19,14 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
-import { useQuery } from '@tanstack/react-query';
-import { apiErrorMessage, fetchAccounts, fetchTransferPairs, type TransferPair } from '../api/client';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  apiErrorMessage,
+  fetchAccounts,
+  fetchTransferPairs,
+  recheckTransferPairsAll,
+  type TransferPair,
+} from '../api/client';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
 import { amountSxColorFromTransaction, formatDate, formatMoney } from '../lib/transactionUi';
 
@@ -38,6 +45,7 @@ function kindIcon(k: TransferPair['out_transaction']['transfer_kind']) {
 }
 
 export default function Transfers() {
+  const qc = useQueryClient();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
 
@@ -54,6 +62,14 @@ export default function Transfers() {
         to: to || undefined,
         limit: 500,
       }),
+  });
+
+  const recheckTransfersMut = useMutation({
+    mutationFn: recheckTransferPairsAll,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['transactions'] });
+      void qc.invalidateQueries({ queryKey: ['transfers'] });
+    },
   });
 
   const rows = useMemo(() => {
@@ -85,23 +101,33 @@ export default function Transfers() {
       </Box>
 
       <Paper elevation={0} sx={{ p: 2, border: 1, borderColor: 'divider' }}>
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
-          <TextField
-            size="small"
-            label="Von"
-            type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-          />
-          <TextField
-            size="small"
-            label="Bis"
-            type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            InputLabelProps={{ shrink: true }}
-          />
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap">
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} flexWrap="wrap">
+            <TextField
+              size="small"
+              label="Von"
+              type="date"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+            <TextField
+              size="small"
+              label="Bis"
+              type="date"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+          </Stack>
+          <Box sx={{ flex: 1 }} />
+          <Button
+            variant="outlined"
+            onClick={() => recheckTransfersMut.mutate()}
+            disabled={recheckTransfersMut.isPending || q.isLoading}
+          >
+            {recheckTransfersMut.isPending ? <CircularProgress size={20} /> : 'Umbuchungen prüfen (alle)'}
+          </Button>
         </Stack>
       </Paper>
 
@@ -114,6 +140,7 @@ export default function Transfers() {
         </Stack>
       ) : null}
       {q.isError ? <Alert severity="error">{apiErrorMessage(q.error)}</Alert> : null}
+      {recheckTransfersMut.isError ? <Alert severity="error">{apiErrorMessage(recheckTransfersMut.error)}</Alert> : null}
 
       <TableContainer component={Paper} elevation={0} sx={{ border: 1, borderColor: 'divider' }}>
         <Table size="small">

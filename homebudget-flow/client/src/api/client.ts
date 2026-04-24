@@ -3,7 +3,7 @@ import { setAppTimeZone } from '../lib/appTimeZone';
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE ?? '',
-  headers: { 'Content-Type': 'application/json' },
+  // Kein globales Content-Type: axios setzt es passend je Request (JSON vs FormData).
 });
 
 export function setAuthToken(token: string | null) {
@@ -1017,6 +1017,151 @@ export async function importTransactionEnrichments(body: {
   skipped_internal?: number;
 }> {
   const { data } = await api.post('/api/transactions/enrichments/import', body);
+  return data;
+}
+
+// --- Verdienstnachweise ---
+
+export type EarningsDocumentOut = {
+  id: number;
+  owner_user_id: number;
+  uploaded_by_user_id: number | null;
+  file_name: string;
+  mime: string;
+  size_bytes: number;
+  sha256: string;
+  period_year: number | null;
+  period_month: number | null;
+  period_label: string;
+  relative_path: string;
+  created_at: string;
+};
+
+export type EarningsDocumentsImportResult = {
+  imported: number;
+  skipped_existing: number;
+  items: EarningsDocumentOut[];
+};
+
+export type EarningsDocumentsAnalysisOut = {
+  total: number;
+  by_top_level: Array<{ key: string; count: number }>;
+  by_year: Array<{ key: string; count: number }>;
+};
+
+export type EarningsDocumentsTimelinePoint = {
+  year: number;
+  month: number;
+  value: number;
+};
+
+export type EarningsDocumentsTimelineOut = {
+  metric: string;
+  points: EarningsDocumentsTimelinePoint[];
+};
+
+export type EarningsDocumentsTimelineMetricOut = { id: string; label: string; depth: number };
+
+export type EarningsDocumentsTimelineBreakdownPoint = {
+  year: number;
+  month: number;
+  values: Record<string, number>;
+};
+
+export type EarningsDocumentsTimelineBreakdownSeries = { id: string; label: string; depth: number };
+
+export type EarningsDocumentsTimelineBreakdownOut = {
+  metric: string;
+  series: EarningsDocumentsTimelineBreakdownSeries[];
+  points: EarningsDocumentsTimelineBreakdownPoint[];
+};
+
+export type EarningsDocumentLineOut = {
+  id: number;
+  document_id: number;
+  parent_id: number | null;
+  kind: string;
+  label: string;
+  amount: string | null;
+  currency: string;
+  order_index: number;
+};
+
+export async function fetchEarningsDocuments(): Promise<EarningsDocumentOut[]> {
+  const { data } = await api.get<EarningsDocumentOut[]>('/api/earnings-documents');
+  return data;
+}
+
+export async function fetchEarningsDocumentsAnalysis(): Promise<EarningsDocumentsAnalysisOut> {
+  const { data } = await api.get<EarningsDocumentsAnalysisOut>('/api/earnings-documents/analysis');
+  return data;
+}
+
+export async function fetchEarningsDocumentsTimeline(args?: {
+  prefix?: string[];
+  metric?: string;
+  from_ym?: string;
+  to_ym?: string;
+}): Promise<EarningsDocumentsTimelineOut> {
+  const { data } = await api.get<EarningsDocumentsTimelineOut>('/api/earnings-documents/timeline', {
+    params: {
+      ...(args?.prefix?.length ? { prefix: args.prefix } : {}),
+      ...(args?.metric?.trim() ? { metric: args.metric } : {}),
+      ...(args?.from_ym?.trim() ? { from_ym: args.from_ym } : {}),
+      ...(args?.to_ym?.trim() ? { to_ym: args.to_ym } : {}),
+    },
+  });
+  return data;
+}
+
+export async function fetchEarningsDocumentsTimelineMetrics(prefix?: string[]): Promise<EarningsDocumentsTimelineMetricOut[]> {
+  const { data } = await api.get<EarningsDocumentsTimelineMetricOut[]>('/api/earnings-documents/timeline/metrics', {
+    params: prefix?.length ? { prefix } : undefined,
+  });
+  return data;
+}
+
+export async function fetchEarningsDocumentsTimelineBreakdown(args: {
+  metric: string;
+  from_ym?: string;
+  to_ym?: string;
+}): Promise<EarningsDocumentsTimelineBreakdownOut> {
+  const { data } = await api.get<EarningsDocumentsTimelineBreakdownOut>('/api/earnings-documents/timeline/breakdown', {
+    params: {
+      metric: args.metric,
+      ...(args.from_ym?.trim() ? { from_ym: args.from_ym } : {}),
+      ...(args.to_ym?.trim() ? { to_ym: args.to_ym } : {}),
+    },
+  });
+  return data;
+}
+
+export async function importEarningsDocuments(args: {
+  items: Array<{ file: File; relative_path: string }>;
+}): Promise<EarningsDocumentsImportResult> {
+  const form = new FormData();
+  for (const it of args.items) {
+    form.append('paths', it.relative_path);
+    form.append('files', it.file, it.file.name);
+  }
+  // Wichtig: Content-Type NICHT manuell setzen, sonst fehlt oft die Boundary
+  // und Backends (FastAPI/Starlette) verarbeiten Multi-Parts nicht zuverlässig.
+  const { data } = await api.post<EarningsDocumentsImportResult>('/api/earnings-documents/import', form);
+  return data;
+}
+
+export async function fetchEarningsDocumentLines(docId: number): Promise<EarningsDocumentLineOut[]> {
+  const { data } = await api.get<EarningsDocumentLineOut[]>(`/api/earnings-documents/${docId}/lines`);
+  return data;
+}
+
+export async function rerunEarningsDocument(docId: number): Promise<{ ok: boolean; parsed_lines: number }> {
+  const { data } = await api.post<{ ok: boolean; parsed_lines: number }>(`/api/earnings-documents/${docId}/rerun`);
+  return data;
+}
+
+export async function deleteEarningsDocument(docId: number): Promise<{ ok: boolean }> {
+  const { data } = await api.delete<{ ok: boolean }>(`/api/earnings-documents/${docId}`);
   return data;
 }
 

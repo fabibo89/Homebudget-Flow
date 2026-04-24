@@ -12,6 +12,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://hb:hb@db:5432/homebudget
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # Persistente Ablage für Verdienstnachweise im Container
+      EARNINGS_DOCS_DIR: /app/data/verdienstnachweise
+    volumes:
+      - earnings_docs:/app/data/verdienstnachweise
     depends_on:
       db:
         condition: service_healthy
@@ -32,3 +36,4 @@ services:
 
 volumes:
   pgdata:
+  earnings_docs:

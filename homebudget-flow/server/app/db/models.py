@@ -201,7 +201,7 @@ class BankAccount(Base):
     __tablename__ = "bank_accounts"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     account_group_id: Mapped[int] = mapped_column(ForeignKey("account_groups.id", ondelete="CASCADE"))
-    credential_id: Mapped[int | None] = mapped_column(
+    credential_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("bank_credentials.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -223,7 +223,7 @@ class BankAccount(Base):
     tag_zero_rule_display_name_override: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     account_group: Mapped[AccountGroup] = relationship(back_populates="bank_accounts")
-    credential: Mapped[BankCredential | None] = relationship(back_populates="bank_accounts")
+    credential: Mapped[Optional[BankCredential]] = relationship(back_populates="bank_accounts")
     tag_zero_rule_category_rule: Mapped[Optional["CategoryRule"]] = relationship(
         foreign_keys=[tag_zero_rule_category_rule_id],
         lazy="joined",
@@ -577,3 +577,70 @@ class TransactionEnrichment(Base):
 
     transaction: Mapped[Transaction] = relationship(back_populates="enrichments")
     external_record: Mapped[ExternalTransactionRecord] = relationship(back_populates="tx_links")
+
+
+class EarningsDocument(Base):
+    """
+    Verdienstnachweis-Datei (z. B. PDF), inkl. Hierarchie aus dem Importpfad.
+
+    Datei liegt serverseitig im Dateisystem (storage_path); DB hält Metadaten für Übersicht/Analyse.
+    """
+
+    __tablename__ = "earnings_documents"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "sha256", name="uq_earnings_docs_owner_sha256"),
+        Index("ix_earnings_docs_owner_created", "owner_user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # Owner (Verdienstnachweise sind user-scoped, nicht household-scoped)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    uploaded_by_user_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    file_name: Mapped[str] = mapped_column(String(512))
+    mime: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column()
+    sha256: Mapped[str] = mapped_column(String(64))
+
+    # Zeitraum (aus dem Dokumenttext, z.B. "für Januar 2023")
+    period_year: Mapped[Optional[int]] = mapped_column(nullable=True)
+    period_month: Mapped[Optional[int]] = mapped_column(nullable=True)
+    period_label: Mapped[str] = mapped_column(String(64), default="")
+
+    # Pfad im Import (z. B. "2025/05/Max Mustermann/abrechnung.pdf")
+    relative_path: Mapped[str] = mapped_column(Text, default="")
+
+    # Absoluter/relativer Pfad im Server-Dateisystem (unter settings.earnings_docs_dir)
+    storage_path: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    owner_user: Mapped["User"] = relationship(lazy="joined", foreign_keys=[owner_user_id])
+    uploaded_by_user: Mapped[Optional["User"]] = relationship(lazy="joined", foreign_keys=[uploaded_by_user_id])
+
+
+class EarningsDocumentLine(Base):
+    """Hierarchische Positionen eines Verdienstnachweises (Einzel- und Summenpositionen)."""
+
+    __tablename__ = "earnings_document_lines"
+    __table_args__ = (
+        Index("ix_earnings_doc_lines_doc_order", "document_id", "order_index"),
+        Index("ix_earnings_doc_lines_doc_parent", "document_id", "parent_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("earnings_documents.id", ondelete="CASCADE"))
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("earnings_document_lines.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), default="item")  # section | item | sum
+    label: Mapped[str] = mapped_column(String(512))
+    # Einfacher Wert (Legacy / UI)
+    amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), default="EUR")
+    order_index: Mapped[int] = mapped_column(default=0)
+
+    document: Mapped["EarningsDocument"] = relationship(lazy="joined")
+    parent: Mapped[Optional["EarningsDocumentLine"]] = relationship(remote_side="EarningsDocumentLine.id")

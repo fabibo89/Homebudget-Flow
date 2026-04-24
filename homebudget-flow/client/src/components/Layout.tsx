@@ -46,6 +46,7 @@ function resolveTitle(pathname: string): string {
   if (pathname.startsWith('/analysen')) return 'Analysen';
   if (pathname.startsWith('/umbuchungen')) return 'Umbuchungen';
   if (pathname.startsWith('/vertraege')) return 'Verträge';
+  if (pathname.startsWith('/verdienstnachweise')) return 'Verdienstnachweise';
   if (pathname.startsWith('/settings')) return 'Einstellungen';
   return 'HomeBudget Flow';
 }
@@ -86,9 +87,21 @@ export default function Layout() {
 
   const openUserMenu = (e: React.MouseEvent<HTMLElement>) => setUserMenuAnchor(e.currentTarget);
   const closeUserMenu = () => setUserMenuAnchor(null);
+  const goFromUserMenu = (path: string) => {
+    navigate(path);
+    closeUserMenu();
+  };
 
   const goSettings = (
-    sub: 'profile' | 'setup' | 'fints' | 'accounts' | 'categories' | 'integration' | 'enrichments',
+    sub:
+      | 'profile'
+      | 'setup'
+      | 'fints'
+      | 'accounts'
+      | 'categories'
+      | 'integration'
+      | 'enrichments'
+      | 'earnings-docs',
   ) => {
     navigate(`/settings/${sub}`);
     closeUserMenu();
@@ -162,13 +175,13 @@ export default function Layout() {
         </ListItem>
         <ListItem disablePadding>
           <ListItemButton
-            selected={location.pathname.startsWith('/umbuchungen')}
-            onClick={() => go('/umbuchungen')}
+            selected={location.pathname.startsWith('/verdienstnachweise')}
+            onClick={() => go('/verdienstnachweise')}
           >
             <ListItemIcon>
-              <CompareArrowsIcon />
+              <AssignmentIcon />
             </ListItemIcon>
-            <ListItemText primary="Umbuchungen" secondary="Ausgang & Eingang als Paar" />
+            <ListItemText primary="Verdienstnachweise" secondary="PDFs, Positionen & Summen" />
           </ListItemButton>
         </ListItem>
       </List>
@@ -233,6 +246,13 @@ export default function Layout() {
               </ListItemIcon>
               Konto
             </MenuItem>
+            <MenuItem onClick={() => goFromUserMenu('/umbuchungen')}>
+              <ListItemIcon>
+                <CompareArrowsIcon fontSize="small" />
+              </ListItemIcon>
+              Umbuchungen
+            </MenuItem>
+            <Divider />
             <MenuItem onClick={() => goSettings('setup')}>
               <ListItemIcon>
                 <SettingsIcon fontSize="small" />
@@ -268,6 +288,12 @@ export default function Layout() {
                 <DarkModeIcon fontSize="small" />
               </ListItemIcon>
               Import
+            </MenuItem>
+            <MenuItem onClick={() => goSettings('earnings-docs')}>
+              <ListItemIcon>
+                <AssignmentIcon fontSize="small" />
+              </ListItemIcon>
+              Verdienstnachweise
             </MenuItem>
             <Divider />
             <MenuItem onClick={closeUserMenu} sx={{ pointerEvents: 'none', opacity: 0.85 }}>

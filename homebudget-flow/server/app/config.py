@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # IANA-Zeitzonen-ID (z. B. Europe/Berlin). Wird u. a. für den täglichen Bank-Sync (SYNC_CRON_*) verwendet.
     app_timezone: str = "Europe/Berlin"
 
+    # Verdienstnachweise: Ablageort für hochgeladene Dateien (Server-Dateisystem).
+    # Default relativ zum server/-Arbeitsverzeichnis (z. B. ./data/verdienstnachweise).
+    earnings_docs_dir: str = "./data/verdienstnachweise"
+
     sync_cron_hour: int = 6
     sync_cron_minute: int = 30
 

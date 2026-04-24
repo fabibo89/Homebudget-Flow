@@ -35,6 +35,7 @@ from app.api.routes import (
     categories,
     category_rules,
     contracts,
+    earnings_documents,
     ha,
     health,
     households,
@@ -88,6 +89,7 @@ app.include_router(accounts.router, prefix="/api")
 app.include_router(contracts.router, prefix="/api")
 app.include_router(sync.router, prefix="/api")
 app.include_router(ha.router, prefix="/api")
+app.include_router(earnings_documents.router, prefix="/api")
 
 
 @app.get("/assets/{asset_path:path}")

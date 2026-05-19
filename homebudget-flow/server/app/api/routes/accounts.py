@@ -51,6 +51,7 @@ def _day_zero_booking_ref(tx: Transaction) -> DayZeroMeltdownBookingRef:
         transfer_target_bank_account_id=tx.transfer_target_bank_account_id,
         contract_id=tx.contract_id,
         contract_label=c.label if c is not None else None,
+        meltdown_exclude_from_start=bool(getattr(tx, "meltdown_exclude_from_start", False)),
     )
 
 

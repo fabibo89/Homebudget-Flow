@@ -100,6 +100,10 @@ class TransactionOut(BaseModel):
     transfer_kind: TransferKind = TransferKind.none
     contract_id: Optional[int] = None
     contract_label: Optional[str] = None
+    meltdown_exclude_from_start: bool = Field(
+        default=False,
+        description="Positive Buchung: nicht in Meltdown-Start (Einnahmen-Summe), aber im Meltdown-Verlauf.",
+    )
     # Externe Positionsbeschreibungen (z. B. alle Amazon-Produkte) für die Listenansicht
     enrichment_preview_lines: list[str] = Field(default_factory=list)
 
@@ -153,6 +157,7 @@ def transaction_to_out(
             if getattr(row, "contract", None) is not None
             else None
         ),
+        meltdown_exclude_from_start=bool(getattr(row, "meltdown_exclude_from_start", False)),
         enrichment_preview_lines=list(enrichment_preview_lines or []),
     )
 
@@ -169,6 +174,12 @@ class TransactionCategoryUpdate(BaseModel):
     """Nur Kategorie setzen oder entfernen (``category_id: null``)."""
 
     category_id: Optional[int] = None
+
+
+class TransactionMeltdownFlagsUpdate(BaseModel):
+    """Meltdown-Zuordnung für positive Buchungen."""
+
+    meltdown_exclude_from_start: bool
 
 
 class BulkTransactionCategoryItem(BaseModel):

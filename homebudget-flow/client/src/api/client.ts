@@ -801,6 +801,8 @@ export type DayZeroMeltdownDay = {
   contract_net_daily_avg?: string;
   spend_target_fixed: string;
   spend_target_dynamic: string;
+  /** Positive Buchungen am Tag ohne Meltdown-Start (erhöhen Meltdown-Restlinie). */
+  meltdown_inflow_excl_start?: string;
   remaining: string;
 };
 
@@ -813,6 +815,7 @@ export type DayZeroMeltdownBookingRef = {
   transfer_target_bank_account_id?: number | null;
   contract_id?: number | null;
   contract_label?: string | null;
+  meltdown_exclude_from_start?: boolean;
 };
 
 export type DayZeroMeltdownOut = {
@@ -931,6 +934,7 @@ export type Transaction = {
   enrichment_preview_lines?: string[];
   contract_id?: number | null;
   contract_label?: string | null;
+  meltdown_exclude_from_start?: boolean;
 };
 
 export async function fetchContractTransactions(contractId: number, limit = 500): Promise<Transaction[]> {
@@ -1030,6 +1034,7 @@ export type EarningsDocumentOut = {
   mime: string;
   size_bytes: number;
   sha256: string;
+  payout_amount: number | null;
   period_year: number | null;
   period_month: number | null;
   period_label: string;
@@ -1155,6 +1160,14 @@ export async function fetchEarningsDocumentLines(docId: number): Promise<Earning
   return data;
 }
 
+export async function downloadEarningsDocument(docId: number): Promise<{ blob: Blob; filename: string }> {
+  const res = await api.get(`/api/earnings-documents/${docId}/download`, { responseType: 'blob' });
+  const cd = String((res.headers as any)?.['content-disposition'] || '');
+  const m = /filename\\*=UTF-8''([^;]+)|filename=\"?([^\";]+)\"?/i.exec(cd);
+  const filenameRaw = decodeURIComponent((m?.[1] || m?.[2] || `earnings-document-${docId}.pdf`).trim());
+  return { blob: res.data as Blob, filename: filenameRaw };
+}
+
 export async function rerunEarningsDocument(docId: number): Promise<{ ok: boolean; parsed_lines: number }> {
   const { data } = await api.post<{ ok: boolean; parsed_lines: number }>(`/api/earnings-documents/${docId}/rerun`);
   return data;
@@ -1170,6 +1183,14 @@ export async function patchTransactionCategory(
   body: { category_id: number | null },
 ): Promise<Transaction> {
   const { data } = await api.patch<Transaction>(`/api/transactions/${transactionId}`, body);
+  return data;
+}
+
+export async function patchTransactionMeltdownFlags(
+  transactionId: number,
+  body: { meltdown_exclude_from_start: boolean },
+): Promise<Transaction> {
+  const { data } = await api.patch<Transaction>(`/api/transactions/${transactionId}/meltdown`, body);
   return data;
 }
 

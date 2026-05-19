@@ -13,6 +13,7 @@ class EarningsDocumentOut(BaseModel):
     mime: str
     size_bytes: int
     sha256: str
+    payout_amount: float | None = None
     period_year: int | None = None
     period_month: int | None = None
     period_label: str = ""

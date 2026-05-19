@@ -9,6 +9,7 @@ import {
   Checkbox,
   CircularProgress,
   FormControl,
+  FormControlLabel,
   Paper,
   InputLabel,
   MenuItem,
@@ -30,6 +31,7 @@ import * as echarts from 'echarts';
 import {
   apiErrorMessage,
   deleteEarningsDocument,
+  downloadEarningsDocument,
   fetchEarningsDocumentLines,
   fetchEarningsDocuments,
   fetchEarningsDocumentsAnalysis,
@@ -43,11 +45,6 @@ import {
   type EarningsDocumentsTimelineMetricOut,
   type EarningsDocumentsTimelineBreakdownOut,
 } from '../api/client';
-
-function downloadUrl(docId: number): string {
-  const base = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '');
-  return `${base}/api/earnings-documents/${docId}/download`;
-}
 
 function isPdfName(name: string): boolean {
   return String(name || '').toLowerCase().endsWith('.pdf');
@@ -353,6 +350,7 @@ export default function EarningsDocumentsSettings() {
   const [analysisMetric, setAnalysisMetric] = useState<string>('payout');
   const [analysisFromYm, setAnalysisFromYm] = useState<string>('');
   const [analysisToYm, setAnalysisToYm] = useState<string>('');
+  const [analysisAggregateYear, setAnalysisAggregateYear] = useState<boolean>(false);
   const [rerunAllDone, setRerunAllDone] = useState(0);
 
   const docsQuery = useQuery({
@@ -408,11 +406,33 @@ export default function EarningsDocumentsSettings() {
   const breakdown = useMemo(() => {
     const data = (breakdownQuery.data ?? null) as EarningsDocumentsTimelineBreakdownOut | null;
     if (!data) return null;
-    const labels = data.points.map((p) => `${String(p.month).padStart(2, '0')}/${String(p.year).slice(-2)}`);
+    if (!analysisAggregateYear) {
+      const labels = data.points.map((p) => `${String(p.month).padStart(2, '0')}/${String(p.year).slice(-2)}`);
+      const series = data.series.map((s) => ({
+        id: s.id,
+        label: s.label,
+        values: data.points.map((p) => Number(p.values?.[s.id] ?? 0)),
+      }));
+      return { labels, series };
+    }
+
+    // Aggregate breakdown points by year
+    const byYear = new Map<number, Record<string, number>>();
+    for (const p of data.points) {
+      const y = Number(p.year);
+      const cur = byYear.get(y) ?? {};
+      for (const s of data.series) {
+        const v = Number(p.values?.[s.id] ?? 0);
+        cur[s.id] = (cur[s.id] ?? 0) + (Number.isFinite(v) ? v : 0);
+      }
+      byYear.set(y, cur);
+    }
+    const years = Array.from(byYear.keys()).sort((a, b) => a - b);
+    const labels = years.map((y) => String(y));
     const series = data.series.map((s) => ({
       id: s.id,
       label: s.label,
-      values: data.points.map((p) => Number(p.values?.[s.id] ?? 0)),
+      values: years.map((y) => Number(byYear.get(y)?.[s.id] ?? 0)),
     }));
     return { labels, series };
   }, [breakdownQuery.data]);
@@ -489,10 +509,20 @@ export default function EarningsDocumentsSettings() {
 
   const analysisTimeline = useMemo(() => {
     const pts = timelineQuery.data?.points ?? [];
-    const labels = pts.map((p) => `${String(p.month).padStart(2, '0')}/${String(p.year).slice(-2)}`);
-    const values = pts.map((p) => p.value ?? 0);
-    const ym = pts.map((p) => `${p.year}-${String(p.month).padStart(2, '0')}`);
-    return { labels, values, ym };
+    if (!analysisAggregateYear) {
+      const labels = pts.map((p) => `${String(p.month).padStart(2, '0')}/${String(p.year).slice(-2)}`);
+      const values = pts.map((p) => p.value ?? 0);
+      const ym = pts.map((p) => `${p.year}-${String(p.month).padStart(2, '0')}`);
+      return { labels, values, ym };
+    }
+    const byYear = new Map<number, number>();
+    for (const p of pts) {
+      const y = Number(p.year);
+      const v = Number(p.value ?? 0);
+      byYear.set(y, (byYear.get(y) ?? 0) + (Number.isFinite(v) ? v : 0));
+    }
+    const years = Array.from(byYear.keys()).sort((a, b) => a - b);
+    return { labels: years.map(String), values: years.map((y) => Number(byYear.get(y) ?? 0)), ym: [] as string[] };
   }, [timelineQuery.data]);
 
   const timelineYmOptions = useMemo(() => {
@@ -751,8 +781,7 @@ export default function EarningsDocumentsSettings() {
                   <TableHead>
                     <TableRow>
                       <TableCell>Zeitraum</TableCell>
-                      <TableCell>Datei</TableCell>
-                      <TableCell>Pfad</TableCell>
+                      <TableCell align="right">Auszahlungsbetrag</TableCell>
                       <TableCell>Größe</TableCell>
                       <TableCell>Erstellt</TableCell>
                       <TableCell align="right">Aktionen</TableCell>
@@ -791,24 +820,8 @@ export default function EarningsDocumentsSettings() {
                             sx={{ cursor: 'pointer' }}
                           >
                             <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatPeriod(d)}</TableCell>
-                            <TableCell>
-                              <Button
-                                variant="text"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setSelectedDocId(d.id);
-                                  setTab(2);
-                                }}
-                                sx={{ textTransform: 'none', px: 0 }}
-                              >
-                                {d.file_name}
-                              </Button>
-                            </TableCell>
-                            <TableCell sx={{ maxWidth: 420 }}>
-                              <Typography variant="body2" noWrap title={d.relative_path || ''}>
-                                {d.relative_path || '—'}
-                              </Typography>
+                            <TableCell align="right" sx={{ whiteSpace: 'nowrap', fontWeight: 800 }}>
+                              {d.payout_amount == null ? '—' : fmtCurrency(d.payout_amount, 'EUR')}
                             </TableCell>
                             <TableCell>{new Intl.NumberFormat('de-DE').format(d.size_bytes)} B</TableCell>
                             <TableCell>{String(d.created_at).slice(0, 19).replace('T', ' ')}</TableCell>
@@ -829,12 +842,24 @@ export default function EarningsDocumentsSettings() {
                                 <Button
                                   size="small"
                                   variant="outlined"
-                                  component="a"
-                                  href={downloadUrl(d.id)}
-                                  target="_blank"
-                                  rel="noreferrer"
                                   onClick={(e) => {
+                                    e.preventDefault();
                                     e.stopPropagation();
+                                    void (async () => {
+                                      try {
+                                        const { blob, filename } = await downloadEarningsDocument(d.id);
+                                        const url = URL.createObjectURL(blob);
+                                        const a = document.createElement('a');
+                                        a.href = url;
+                                        a.download = filename || `${d.id}.pdf`;
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        a.remove();
+                                        URL.revokeObjectURL(url);
+                                      } catch (err) {
+                                        alert(apiErrorMessage(err));
+                                      }
+                                    })();
                                   }}
                                 >
                                   Download
@@ -945,11 +970,22 @@ export default function EarningsDocumentsSettings() {
                       ))}
                     </Select>
                   </FormControl>
+
+                  <FormControlLabel
+                    sx={{ ml: 0.5 }}
+                    control={
+                      <Checkbox
+                        checked={analysisAggregateYear}
+                        onChange={(e) => setAnalysisAggregateYear(Boolean(e.target.checked))}
+                      />
+                    }
+                    label="Pro Jahr"
+                  />
                 </Box>
 
                 <Paper elevation={0} sx={{ border: 1, borderColor: 'divider', p: 2 }}>
                   <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-                    Zeitverlauf (Beträge pro Monat)
+                    Zeitverlauf ({analysisAggregateYear ? 'Beträge pro Jahr' : 'Beträge pro Monat'})
                   </Typography>
                   {timelineQuery.isError ? (
                     <Alert severity="error">{apiErrorMessage(timelineQuery.error)}</Alert>
@@ -1070,8 +1106,8 @@ export default function EarningsDocumentsSettings() {
             {!selectedDoc ? <Alert severity="warning">Wähle in der Übersicht ein Dokument aus.</Alert> : null}
             {selectedDoc ? (
               <Stack spacing={2}>
-                <Typography variant="subtitle1" fontWeight={700}>
-                  {selectedDoc.file_name}
+                <Typography variant="subtitle1" fontWeight={800}>
+                  {formatPeriod(selectedDoc)}
                 </Typography>
                 {linesQuery.isError ? <Alert severity="error">{apiErrorMessage(linesQuery.error)}</Alert> : null}
                 {linesQuery.isLoading ? (

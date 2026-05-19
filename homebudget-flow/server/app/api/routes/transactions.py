@@ -32,8 +32,9 @@ from app.schemas.transaction import (
     BulkTransactionCategoryBody,
     BulkTransactionCategoryResult,
     TransactionCategoryUpdate,
+    TransactionMeltdownFlagsUpdate,
     TransactionOut,
-  TransferKind,
+    TransferKind,
     transaction_to_out,
 )
 from app.schemas.transaction_enrichment import (
@@ -569,6 +570,51 @@ async def patch_transaction_category(
         tx2,
         enrichment_preview_lines=m.preview_lines,
         transfer_kind=transfer_kind_map.get(tx2.id, TransferKind.none),
+    )
+
+
+@router.patch("/{transaction_id}/meltdown", response_model=TransactionOut)
+async def patch_transaction_meltdown_flags(
+    transaction_id: int,
+    body: TransactionMeltdownFlagsUpdate,
+    user: CurrentUser,
+    session: AsyncSession = Depends(get_session),
+) -> TransactionOut:
+    r = await session.execute(
+        select(Transaction)
+        .where(Transaction.id == transaction_id)
+        .options(
+            joinedload(Transaction.bank_account).joinedload(BankAccount.account_group),
+            joinedload(Transaction.category)
+            .joinedload(Category.parent)
+            .selectinload(Category.children),
+            joinedload(Transaction.contract),
+        ),
+    )
+    tx = r.unique().scalar_one_or_none()
+    if tx is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Buchung nicht gefunden")
+    if not await bank_account_visible_to_user(session, user, tx.bank_account_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Kein Zugriff auf diese Buchung")
+    if Decimal(str(tx.amount)) <= 0:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Meltdown-Flag gilt nur für positive Buchungen (Einnahmen).",
+        )
+    tx.meltdown_exclude_from_start = bool(body.meltdown_exclude_from_start)
+    await refresh_day_zero_for_bank_account(session, tx.bank_account_id)
+    await session.commit()
+    meta_map = await enrichment_list_meta_for_transactions(session, [tx.id])
+    m = meta_map[tx.id]
+    transfer_kind_map = await _transfer_kind_map_for_transactions(
+        session,
+        current_user_id=user.id,
+        rows=[tx],
+    )
+    return transaction_to_out(
+        tx,
+        enrichment_preview_lines=m.preview_lines,
+        transfer_kind=transfer_kind_map.get(tx.id, TransferKind.none),
     )
 
 

@@ -36,6 +36,7 @@ import {
 } from '../api/client';
 import { apiErrorMessage } from '../api/client';
 import TransactionBookingsTable from '../components/transactions/TransactionBookingsTable';
+import TransactionDetailDialog from '../components/transactions/TransactionDetailDialog';
 import { formatMoney } from '../lib/transactionUi';
 import { getAppTimeZone } from '../lib/appTimeZone';
 
@@ -181,6 +182,15 @@ function transferBookingsBySign(
 
 type GeldeingangRow = { kind: 'income' | 'transfer_in'; row: DayZeroMeltdownBookingRef };
 
+/** Zeile in Meltdown-Buchungstabellen: Klick öffnet Buchungsdetails (wie Übersicht). */
+function meltdownBookingRowClickProps(onOpen: () => void) {
+  return {
+    hover: true as const,
+    onClick: onOpen,
+    sx: { cursor: 'pointer' },
+  };
+}
+
 function mergeGeldeingaengeRows(
   income: DayZeroMeltdownBookingRef[] | undefined,
   transfersIn: DayZeroMeltdownBookingRef[],
@@ -228,8 +238,8 @@ function tableKontoMorningTagNull(data: DayZeroMeltdownOut): number | null {
   return Number.isFinite(m) ? m : null;
 }
 
-function MeltdownBookingSumFooter(props: { sum: number; currency: string }) {
-  const { sum, currency } = props;
+function MeltdownBookingSumFooter(props: { sum: number; currency: string; colSpan?: number }) {
+  const { sum, currency, colSpan = 2 } = props;
   return (
     <TableFooter>
       <TableRow>
@@ -246,9 +256,87 @@ function MeltdownBookingSumFooter(props: { sum: number; currency: string }) {
         >
           {formatMoney(sum.toFixed(2), currency)}
         </TableCell>
-        <TableCell colSpan={2} sx={{ borderTop: 1, borderColor: 'divider' }} />
+        <TableCell colSpan={colSpan} sx={{ borderTop: 1, borderColor: 'divider' }} />
       </TableRow>
     </TableFooter>
+  );
+}
+
+function sumGeldeingangRows(rows: GeldeingangRow[]): number {
+  return rows.reduce((s, x) => {
+    const n = Number(x.row.amount);
+    return s + (Number.isFinite(n) ? n : 0);
+  }, 0);
+}
+
+function GeldeingaengeBookingsTable({
+  rows,
+  currency,
+  accountNameById,
+  onOpenBooking,
+}: {
+  rows: GeldeingangRow[];
+  currency: string;
+  accountNameById: Map<number, string>;
+  onOpenBooking: (id: number) => void;
+}) {
+  if (rows.length === 0) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        Keine.
+      </Typography>
+    );
+  }
+  return (
+    <TableContainer>
+      <Table size="small">
+        <TableHead>
+          <TableRow>
+            <TableCell>Datum</TableCell>
+            <TableCell align="right">Betrag</TableCell>
+            <TableCell>Art</TableCell>
+            <TableCell>Vertrag</TableCell>
+            <TableCell>Gegenpart / Text</TableCell>
+            <TableCell>Zielkonto</TableCell>
+          </TableRow>
+        </TableHead>
+        <TableBody>
+          {rows.map(({ kind, row: r }) => (
+            <TableRow key={`${kind}-${r.id}`} {...meltdownBookingRowClickProps(() => onOpenBooking(r.id))}>
+              <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
+              <TableCell align="right">{formatMoney(r.amount, currency)}</TableCell>
+              <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                {kind === 'income' ? 'Einnahme' : 'Umbuchung (eingehend)'}
+              </TableCell>
+              <TableCell>
+                {kind === 'income'
+                  ? r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')
+                  : '—'}
+              </TableCell>
+              <TableCell sx={{ maxWidth: 280 }}>
+                {(r.counterparty_name || '').trim() || '—'}
+                {r.description?.trim() ? (
+                  <Typography component="span" variant="caption" color="text.secondary" display="block">
+                    {r.description.slice(0, 120)}
+                    {r.description.length > 120 ? '…' : ''}
+                  </Typography>
+                ) : null}
+              </TableCell>
+              <TableCell>
+                {kind === 'transfer_in' && r.transfer_target_bank_account_id != null
+                  ? (() => {
+                      const tid = r.transfer_target_bank_account_id;
+                      const nm = accountNameById.get(tid)?.trim();
+                      return nm ? `${nm} (#${tid})` : `#${tid}`;
+                    })()
+                  : '—'}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+        <MeltdownBookingSumFooter sum={sumGeldeingangRows(rows)} currency={currency} colSpan={4} />
+      </Table>
+    </TableContainer>
   );
 }
 
@@ -341,7 +429,7 @@ function tableKontoMorgenStartInklEinnahmen(data: DayZeroMeltdownOut): number | 
 
 /**
  * Saldo-Diagramm · Meltdown‑Linie: Start = „Konto · ohne Fixkosten“; pro Tag um die nicht‑Vertrags‑Ausgaben
- * (``spend_excl_contract``) verringert — kumulativ je Kalendertag (Vertragsausgaben wirken nicht).
+ * (``spend_excl_contract``) verringert; Zuflüsse ohne Start (``meltdown_inflow_excl_start``) erhöhen die Restlinie.
  */
 function saldoReferenzMeltdownLineSeries(data: DayZeroMeltdownOut): (number | null)[] {
   const ref = tableKontoMorgenStartInklEinnahmen(data);
@@ -350,6 +438,8 @@ function saldoReferenzMeltdownLineSeries(data: DayZeroMeltdownOut): (number | nu
   }
   let run = ref;
   return data.days.map((d) => {
+    const inflow = Number(d.meltdown_inflow_excl_start ?? 0);
+    if (Number.isFinite(inflow) && inflow > 0) run += inflow;
     const excl = Number(d.spend_excl_contract ?? 0);
     const s = Number.isFinite(excl) && excl >= 0 ? excl : 0;
     run -= s;
@@ -919,6 +1009,8 @@ export default function DayZero() {
   const [showSpendIstTag, setShowSpendIstTag] = useState(true);
   const [showSpendSollTag, setShowSpendSollTag] = useState(true);
   const [showGeldBarSonstige, setShowGeldBarSonstige] = useState(true);
+  const [bookingDetailTxId, setBookingDetailTxId] = useState<number | null>(null);
+  const [bookingDetailTx, setBookingDetailTx] = useState<Transaction | null>(null);
 
   const effectiveAccountId = pick === '' ? (accounts[0]?.id ?? null) : pick;
 
@@ -1381,6 +1473,20 @@ export default function DayZero() {
         offset: 0,
       }),
   });
+
+  const bookingDetailQ = useQuery({
+    queryKey: ['dayzero-booking-detail', bookingDetailTxId],
+    enabled: bookingDetailTxId != null,
+    queryFn: async () => {
+      const rows = await fetchTransactions({ ids: [bookingDetailTxId as number], limit: 1 });
+      return (rows[0] as Transaction | undefined) ?? null;
+    },
+  });
+
+  const bookingDetailOpenTx =
+    bookingDetailTx != null && bookingDetailTx.id === bookingDetailTxId
+      ? bookingDetailTx
+      : bookingDetailQ.data ?? null;
 
   return (
     <Stack spacing={3}>
@@ -1905,8 +2011,8 @@ export default function DayZero() {
                         Geldeingänge (im Zeitraum)
                       </Typography>
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.25 }}>
-                        Alle Zuflüsse: sonstige Einnahmen (ohne Umbuchungs-Erkennung) <strong>und</strong> eingehende
-                        Umbuchungen (positive Beträge). Summe positiver Buchungen inkl. eingehender Umbuchungen (API):{' '}
+                        Zuflüsse, die in den <strong>Meltdown-Start</strong> einfließen (ohne markierte Buchungen). Summe
+                        (API):{' '}
                         <strong>
                           {meltdownQ.data.einnahmen_summe_tag_zero_zeitraum != null &&
                           String(meltdownQ.data.einnahmen_summe_tag_zero_zeitraum).trim() !== ''
@@ -1916,73 +2022,42 @@ export default function DayZero() {
                               )
                             : '—'}
                         </strong>
-                        . Der Startwert „Konto · ohne Fixkosten“ rechnet diese Einnahmen weiterhin mit.
+                        . Zeile anklicken für Buchungsdetails.
                       </Typography>
                       {(() => {
                         const d = meltdownQ.data;
                         const transfersIn = transferBookingsBySign(d.transfer_bookings, 'positive');
-                        const rows = mergeGeldeingaengeRows(d.income_bookings, transfersIn);
-                        const sumRows = rows.reduce((s, x) => {
-                          const n = Number(x.row.amount);
-                          return s + (Number.isFinite(n) ? n : 0);
-                        }, 0);
-                        if (rows.length === 0) {
-                          return (
-                            <Typography variant="body2" color="text.secondary">
-                              Keine.
-                            </Typography>
-                          );
-                        }
+                        const allRows = mergeGeldeingaengeRows(d.income_bookings, transfersIn);
+                        const rowsInStart = allRows.filter((x) => !x.row.meltdown_exclude_from_start);
+                        const rowsMeltdownOnly = allRows.filter((x) => x.row.meltdown_exclude_from_start);
+                        const openBooking = (id: number) => {
+                          setBookingDetailTxId(id);
+                          setBookingDetailTx(null);
+                        };
                         return (
-                          <TableContainer>
-                            <Table size="small">
-                              <TableHead>
-                                <TableRow>
-                                  <TableCell>Datum</TableCell>
-                                  <TableCell align="right">Betrag</TableCell>
-                                  <TableCell>Art</TableCell>
-                                  <TableCell>Vertrag</TableCell>
-                                  <TableCell>Gegenpart / Text</TableCell>
-                                  <TableCell>Zielkonto</TableCell>
-                                </TableRow>
-                              </TableHead>
-                              <TableBody>
-                                {rows.map(({ kind, row: r }) => (
-                                  <TableRow key={`${kind}-${r.id}`}>
-                                    <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
-                                    <TableCell align="right">{formatMoney(r.amount, d.currency)}</TableCell>
-                                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                                      {kind === 'income' ? 'Einnahme' : 'Umbuchung (eingehend)'}
-                                    </TableCell>
-                                    <TableCell>
-                                      {kind === 'income'
-                                        ? r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')
-                                        : '—'}
-                                    </TableCell>
-                                    <TableCell sx={{ maxWidth: 280 }}>
-                                      {(r.counterparty_name || '').trim() || '—'}
-                                      {r.description?.trim() ? (
-                                        <Typography component="span" variant="caption" color="text.secondary" display="block">
-                                          {r.description.slice(0, 120)}
-                                          {r.description.length > 120 ? '…' : ''}
-                                        </Typography>
-                                      ) : null}
-                                    </TableCell>
-                                    <TableCell>
-                                      {kind === 'transfer_in' && r.transfer_target_bank_account_id != null
-                                        ? (() => {
-                                            const tid = r.transfer_target_bank_account_id;
-                                            const nm = accountNameById.get(tid)?.trim();
-                                            return nm ? `${nm} (#${tid})` : `#${tid}`;
-                                          })()
-                                        : '—'}
-                                    </TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                              <MeltdownBookingSumFooter sum={sumRows} currency={d.currency} />
-                            </Table>
-                          </TableContainer>
+                          <Stack spacing={2}>
+                            <GeldeingaengeBookingsTable
+                              rows={rowsInStart}
+                              currency={d.currency}
+                              accountNameById={accountNameById}
+                              onOpenBooking={openBooking}
+                            />
+                            <Stack spacing={0.75}>
+                              <Typography variant="body2" fontWeight={600}>
+                                Nur Meltdown-Verlauf (ohne Meltdown-Start)
+                              </Typography>
+                              <Typography variant="caption" color="text.secondary" display="block">
+                                Markierte positive Buchungen: erhöhen am Buchungstag die Meltdown-Restlinie, nicht die
+                                Start-Summe der Geldeingänge.
+                              </Typography>
+                              <GeldeingaengeBookingsTable
+                                rows={rowsMeltdownOnly}
+                                currency={d.currency}
+                                accountNameById={accountNameById}
+                                onOpenBooking={openBooking}
+                              />
+                            </Stack>
+                          </Stack>
                         );
                       })()}
                     </Stack>
@@ -1992,7 +2067,7 @@ export default function DayZero() {
                       </Typography>
                       <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.25 }}>
                         Nur ausgehende Umbuchungen: Buchungen, die als interne Umbuchung erkannt wurden und einen{' '}
-                        <strong>negativen</strong> Betrag haben (Abfluss vom Konto).
+                        <strong>negativen</strong> Betrag haben (Abfluss vom Konto). Zeile anklicken für Buchungsdetails.
                       </Typography>
                       {(() => {
                         const d = meltdownQ.data;
@@ -2017,7 +2092,10 @@ export default function DayZero() {
                               </TableHead>
                               <TableBody>
                                 {transfersOut.map((r) => (
-                                  <TableRow key={r.id}>
+                                  <TableRow
+                                    key={r.id}
+                                    {...meltdownBookingRowClickProps(() => setBookingDetailTxId(r.id))}
+                                  >
                                     <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
                                     <TableCell align="right">{formatMoney(r.amount, d.currency)}</TableCell>
                                     <TableCell sx={{ maxWidth: 280 }}>
@@ -2054,6 +2132,9 @@ export default function DayZero() {
                       <Typography variant="body2" fontWeight={600}>
                         Vertrags-Buchungen (contract_id im Zeitraum)
                       </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: -0.25 }}>
+                        Zeile anklicken für Buchungsdetails.
+                      </Typography>
                       {(meltdownQ.data.contract_bookings ?? []).length === 0 ? (
                         <Typography variant="body2" color="text.secondary">
                           Keine.
@@ -2071,7 +2152,10 @@ export default function DayZero() {
                             </TableHead>
                             <TableBody>
                               {(meltdownQ.data.contract_bookings ?? []).map((r) => (
-                                <TableRow key={r.id}>
+                                <TableRow
+                                  key={r.id}
+                                  {...meltdownBookingRowClickProps(() => setBookingDetailTxId(r.id))}
+                                >
                                   <TableCell>{formatEuropeanDate(r.booking_date, getAppTimeZone())}</TableCell>
                                   <TableCell align="right">{formatMoney(r.amount, meltdownQ.data.currency)}</TableCell>
                                   <TableCell>{r.contract_label?.trim() || (r.contract_id != null ? `#${r.contract_id}` : '—')}</TableCell>
@@ -2171,6 +2255,7 @@ export default function DayZero() {
                         accounts={accountsAll}
                         emptyMessage="Keine Buchungen an diesem Tag."
                         hideInlineHint
+                        showAmountSumFooter
                       />
                     )}
                   </Stack>
@@ -2180,6 +2265,18 @@ export default function DayZero() {
           ) : null}
         </>
       )}
+
+      <TransactionDetailDialog
+        open={bookingDetailTxId != null}
+        tx={bookingDetailOpenTx}
+        accounts={accountsAll}
+        onClose={() => {
+          setBookingDetailTxId(null);
+          setBookingDetailTx(null);
+        }}
+        onTxUpdated={(updated) => setBookingDetailTx(updated)}
+        loading={bookingDetailQ.isFetching && bookingDetailOpenTx == null}
+      />
     </Stack>
   );
 }

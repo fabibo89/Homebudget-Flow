@@ -19,6 +19,7 @@ import {
   TableBody,
   TableCell,
   TableContainer,
+  TableFooter,
   TableHead,
   TableRow,
   TextField,
@@ -46,7 +47,7 @@ import {
   formatDate,
   formatMoney,
 } from '../../lib/transactionUi';
-import TransactionDetailFields from './TransactionDetailFields';
+import TransactionDetailDialog from './TransactionDetailDialog';
 import GroupsIcon from '@mui/icons-material/Groups';
 import PersonIcon from '@mui/icons-material/Person';
 import SyncAltIcon from '@mui/icons-material/SyncAlt';
@@ -135,6 +136,8 @@ type Props = {
   categoryColumnAdvanced?: boolean;
   /** true: kein äußerer Rahmen — z. B. eingebettet in eine andere Tabelle (Umbuchungen). */
   embedded?: boolean;
+  /** Summenzeile unter der Tabelle (signed Beträge). */
+  showAmountSumFooter?: boolean;
 };
 
 export default function TransactionBookingsTable({
@@ -147,6 +150,7 @@ export default function TransactionBookingsTable({
   hideInlineHint = false,
   categoryColumnAdvanced = true,
   embedded = false,
+  showAmountSumFooter = false,
 }: Props) {
   const qc = useQueryClient();
   const theme = useTheme();
@@ -168,6 +172,18 @@ export default function TransactionBookingsTable({
     accounts.forEach((a) => m.set(a.id, a.name));
     return m;
   }, [accounts]);
+
+  const amountSumFooter = useMemo(() => {
+    if (!showAmountSumFooter || rows.length === 0) return null;
+    let sum = 0;
+    let currency = rows[0]?.currency || 'EUR';
+    for (const t of rows) {
+      const n = Number(t.amount);
+      if (Number.isFinite(n)) sum += n;
+      if (t.currency) currency = t.currency;
+    }
+    return { sum, currency };
+  }, [rows, showAmountSumFooter]);
 
   const categoryDialogHouseholdId = useMemo(() => {
     if (!categoryDialogTx) return null;
@@ -296,22 +312,13 @@ export default function TransactionBookingsTable({
             : ' Kategorie-Spalte für Zuordnung oder Regel.'}
         </Typography>
       ) : null}
-      <Dialog
+      <TransactionDetailDialog
         open={txDetail !== null}
+        tx={txDetail}
+        accounts={accounts}
         onClose={() => setTxDetail(null)}
-        fullScreen={isXs}
-        maxWidth="sm"
-        fullWidth
-        scroll="paper"
-      >
-        <DialogTitle>Buchungsdetails</DialogTitle>
-        <DialogContent dividers>
-          {txDetail ? <TransactionDetailFields tx={txDetail} accountNameById={accountNameById} /> : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setTxDetail(null)}>Schließen</Button>
-        </DialogActions>
-      </Dialog>
+        onTxUpdated={(updated) => setTxDetail(updated)}
+      />
       <CreateCategoryRuleDialog
         open={Boolean(categoryDialogTx) && categoryDialogUseRuleFlow}
         onClose={() => setCategoryDialogTx(null)}
@@ -637,6 +644,26 @@ export default function TransactionBookingsTable({
                 </CardContent>
               </Card>
             ))}
+            {amountSumFooter ? (
+              <Stack direction="row" justifyContent="space-between" alignItems="baseline" sx={{ pt: 0.5, px: 0.5 }}>
+                <Typography variant="body2" fontWeight={700}>
+                  Summe
+                </Typography>
+                <Typography
+                  variant="body2"
+                  fontWeight={700}
+                  sx={{
+                    fontVariantNumeric: 'tabular-nums',
+                    color: amountSxColorFromTransaction({
+                      ...rows[0],
+                      amount: amountSumFooter.sum.toFixed(2),
+                    }),
+                  }}
+                >
+                  {formatMoney(amountSumFooter.sum.toFixed(2), amountSumFooter.currency)}
+                </Typography>
+              </Stack>
+            ) : null}
           </Stack>
         )
       ) : (
@@ -799,6 +826,31 @@ export default function TransactionBookingsTable({
                 ))
               )}
             </TableBody>
+            {amountSumFooter ? (
+              <TableFooter>
+                <TableRow>
+                  <TableCell colSpan={3} sx={{ fontWeight: 700, borderTop: 1, borderColor: 'divider' }}>
+                    Summe
+                  </TableCell>
+                  <TableCell
+                    align="right"
+                    sx={{
+                      fontWeight: 700,
+                      fontVariantNumeric: 'tabular-nums',
+                      borderTop: 1,
+                      borderColor: 'divider',
+                      color: amountSxColorFromTransaction({
+                        ...rows[0],
+                        amount: amountSumFooter.sum.toFixed(2),
+                      }),
+                    }}
+                  >
+                    {formatMoney(amountSumFooter.sum.toFixed(2), amountSumFooter.currency)}
+                  </TableCell>
+                  <TableCell colSpan={3} sx={{ borderTop: 1, borderColor: 'divider' }} />
+                </TableRow>
+              </TableFooter>
+            ) : null}
           </Table>
         </TableContainer>
       )}

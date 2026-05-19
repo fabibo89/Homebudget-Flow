@@ -358,6 +358,28 @@ async def _ensure_transactions_fints_raw_and_reference_fields(conn) -> None:
         await conn.execute(text("ALTER TABLE transactions ADD COLUMN IF NOT EXISTS prima_nota VARCHAR(64)"))
 
 
+async def _ensure_transactions_meltdown_exclude_from_start(conn) -> None:
+    url = settings.database_url.lower()
+    if "sqlite" in url:
+        r = await conn.execute(text("PRAGMA table_info(transactions)"))
+        cols = [row[1] for row in r.fetchall()]
+        if cols and "meltdown_exclude_from_start" not in cols:
+            await conn.execute(
+                text(
+                    "ALTER TABLE transactions ADD COLUMN meltdown_exclude_from_start "
+                    "BOOLEAN NOT NULL DEFAULT 0",
+                ),
+            )
+        return
+    if "postgresql" in url:
+        await conn.execute(
+            text(
+                "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS meltdown_exclude_from_start "
+                "BOOLEAN NOT NULL DEFAULT FALSE",
+            ),
+        )
+
+
 async def _ensure_category_rules_conditions_json(conn) -> None:
     """JSON-Liste der Regelbedingungen (komponierbar); Legacy-Zeilen haben NULL."""
     url = settings.database_url.lower()
@@ -905,6 +927,7 @@ async def init_db() -> None:
         await _ensure_household_contracts_bank_account_scope(conn)
         await _ensure_transactions_counterparty_fields(conn)
         await _ensure_transactions_fints_raw_and_reference_fields(conn)
+        await _ensure_transactions_meltdown_exclude_from_start(conn)
         await _ensure_bank_credentials_fints_verification(conn)
         await _ensure_bank_accounts_credential_nullable(conn)
         await _migrate_transaction_external_ids_to_txv1(conn)

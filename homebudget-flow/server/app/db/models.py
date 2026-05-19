@@ -485,6 +485,8 @@ class Transaction(Base):
         ForeignKey("contracts.id", ondelete="SET NULL"),
         nullable=True,
     )
+    #: Positive Buchung: nicht in Meltdown-Start (Einnahmen-Summe), aber im Meltdown-Pfad am Buchungstag.
+    meltdown_exclude_from_start: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     bank_account: Mapped[BankAccount] = relationship(
         back_populates="transactions",

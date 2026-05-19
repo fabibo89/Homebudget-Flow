@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, update, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser
@@ -152,6 +152,7 @@ def _to_out(doc: EarningsDocument) -> EarningsDocumentOut:
         mime=str(doc.mime or "application/octet-stream"),
         size_bytes=int(doc.size_bytes),
         sha256=str(doc.sha256),
+        payout_amount=None,
         period_year=int(doc.period_year) if doc.period_year is not None else None,
         period_month=int(doc.period_month) if doc.period_month is not None else None,
         period_label=str(doc.period_label or ""),
@@ -275,7 +276,34 @@ async def list_earnings_documents(
         .order_by(EarningsDocument.created_at.desc(), EarningsDocument.id.desc())
         .limit(5000)
     )
-    return [_to_out(x) for x in r.scalars().all()]
+    docs = r.scalars().all()
+    if not docs:
+        return []
+
+    doc_ids = [int(d.id) for d in docs]
+    payout_expr = func.max(
+        case(
+            (
+                func.lower(EarningsDocumentLine.label).like("auszahlungsbetrag%")
+                & (EarningsDocumentLine.kind == "sum"),
+                EarningsDocumentLine.amount,
+            ),
+            else_=None,
+        )
+    ).label("payout_amount")
+    r_p = await session.execute(
+        select(EarningsDocumentLine.document_id, payout_expr)
+        .where(EarningsDocumentLine.document_id.in_(doc_ids))
+        .group_by(EarningsDocumentLine.document_id)
+    )
+    payout_by_doc = {int(did): (float(v) if v is not None else None) for (did, v) in r_p.all()}
+
+    out: list[EarningsDocumentOut] = []
+    for d in docs:
+        o = _to_out(d)
+        o.payout_amount = payout_by_doc.get(int(d.id))
+        out.append(o)
+    return out
 
 
 @router.get("/timeline", response_model=EarningsDocumentsTimelineOut)

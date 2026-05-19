@@ -20,6 +20,10 @@ class DayZeroMeltdownBookingRef(BaseModel):
     )
     contract_id: Optional[int] = None
     contract_label: Optional[str] = None
+    meltdown_exclude_from_start: bool = Field(
+        default=False,
+        description="True: positiver Betrag zählt nicht in die Einnahmen-Summe (Meltdown-Start), aber im Meltdown-Verlauf.",
+    )
 
 
 class DayZeroMeltdownDay(BaseModel):
@@ -74,6 +78,13 @@ class DayZeroMeltdownDay(BaseModel):
     spend_target_dynamic: str = Field(
         ...,
         description="Soll-Ausgaben pro Tag (dynamisch, abhängig vom Ist-Saldo und verbleibenden Tagen).",
+    )
+    meltdown_inflow_excl_start: str = Field(
+        default="0",
+        description=(
+            "Positive Buchungen am Tag, die nicht in den Meltdown-Start einfließen "
+            "(meltdown_exclude_from_start); erhöhen die Meltdown-Restlinie an diesem Tag."
+        ),
     )
 
     remaining: str = Field(..., description="Übrig (gleich balance_actual).")

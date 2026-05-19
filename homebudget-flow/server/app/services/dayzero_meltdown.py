@@ -18,6 +18,10 @@ from app.services.tag_zero_rule import bank_account_has_tag_zero_rule, find_tag_
 logger = logging.getLogger(__name__)
 
 
+def _tx_meltdown_exclude_from_start(tx: Transaction) -> bool:
+    return bool(getattr(tx, "meltdown_exclude_from_start", False))
+
+
 def _bank_balance_decimal(account: BankAccount) -> Decimal:
     """Kontostand als Decimal; None/ungültig → 0 (vermeidet Decimal('None') / 500 in Meltdown & Chart)."""
     raw = getattr(account, "balance", None)
@@ -501,14 +505,22 @@ async def compute_dayzero_meltdown_for_account(
     konto_bank_opening = (L - total_ledger_net).quantize(Decimal("0.01"))
     konto_saldo_morgen_tag_null = konto_bank_opening
     einnahmen_summe_tag_zero_zeitraum = Decimal("0")
+    meltdown_inflow_excl_start_by_day: dict[date, Decimal] = {d: Decimal("0") for d in days}
     for tx in txs:
         bd = tx.booking_date
         if not (start <= bd < end_exclusive):
             continue
         amt = Decimal(str(tx.amount))
         if amt > 0:
-            einnahmen_summe_tag_zero_zeitraum += amt
+            if _tx_meltdown_exclude_from_start(tx):
+                if bd in meltdown_inflow_excl_start_by_day:
+                    meltdown_inflow_excl_start_by_day[bd] += amt
+            else:
+                einnahmen_summe_tag_zero_zeitraum += amt
     einnahmen_summe_tag_zero_zeitraum = einnahmen_summe_tag_zero_zeitraum.quantize(Decimal("0.01"))
+    meltdown_inflow_excl_start_by_day = {
+        d: v.quantize(Decimal("0.01")) for d, v in meltdown_inflow_excl_start_by_day.items()
+    }
     vertraege_netto_summe_tag_zero_zeitraum = Decimal("0")
     for tx in txs:
         bd = tx.booking_date
@@ -603,6 +615,9 @@ async def compute_dayzero_meltdown_for_account(
                 "contract_net_daily_avg": str(contract_net_daily_avg.quantize(Decimal("0.01"))),
                 "spend_target_fixed": str(per_day_fixed.quantize(Decimal("0.01"))),
                 "spend_target_dynamic": str(per_day_dyn.quantize(Decimal("0.01"))),
+                "meltdown_inflow_excl_start": str(
+                    meltdown_inflow_excl_start_by_day.get(d, Decimal("0")).quantize(Decimal("0.01")),
+                ),
                 "remaining": str(bal_actual.quantize(Decimal("0.01"))),
                 "konto_balance_actual": str(konto_bal.quantize(Decimal("0.01"))),
                 "konto_balance_excl_contract_smooth": str(konto_bal_smooth.quantize(Decimal("0.01"))),
@@ -724,10 +739,13 @@ def ha_konto_ohne_fixkosten_tabellen_start(inp: DayZeroInputs) -> Decimal:
 
 
 def ha_saldo_referenz_meltdown_line_series(days: list[dict], ref: Decimal) -> list[Decimal]:
-    """Meltdown-Linie (ohne Fixkosten): Start ``ref``, pro Tag − ``spend_excl_contract`` (wie Web-UI)."""
+    """Meltdown-Linie (ohne Fixkosten): Start ``ref``, pro Tag − ``spend_excl_contract`` + Zuflüsse ohne Start (wie Web-UI)."""
     run = ref
     out: list[Decimal] = []
     for row in days:
+        inflow = Decimal(str(row.get("meltdown_inflow_excl_start", "0")))
+        if inflow > 0:
+            run = (run + inflow).quantize(Decimal("0.01"))
         excl = Decimal(str(row.get("spend_excl_contract", "0")))
         s = excl if excl >= 0 else Decimal("0")
         run = (run - s).quantize(Decimal("0.01"))

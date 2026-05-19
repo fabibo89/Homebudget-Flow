@@ -6,7 +6,6 @@ export const TX_DETAIL_FIELDS: { key: keyof Transaction; label: string; mono?: b
   { key: 'bank_account_id', label: 'Bankkonto' },
   { key: 'external_id', label: 'Externe ID', mono: true },
   { key: 'amount', label: 'Betrag', mono: true },
-  { key: 'currency', label: 'Währung' },
   { key: 'booking_date', label: 'Buchungsdatum' },
   { key: 'value_date', label: 'Wertstellung' },
   { key: 'category_name', label: 'Kategorie' },
